@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deployguard
+  labels:
+    name: deployguard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployguard-analysis
+  namespace: deployguard
+  labels:
+    app: deployguard-analysis
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: deployguard-analysis
+  template:
+    metadata:
+      labels:
+        app: deployguard-analysis
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: deployguard-analysis
+        image: 189060532132.dkr.ecr.ap-northeast-2.amazonaws.com/deployguard-analysis:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 12
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployguard-analysis
+  namespace: deployguard
+  labels:
+    app: deployguard-analysis
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: deployguard-analysis
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: deployguard-analysis
+  namespace: deployguard
+  labels:
+    app: deployguard-analysis
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - analysis.example.com
+    secretName: analysis-tls
+  rules:
+  - host: analysis.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: deployguard-analysis
+            port:
+              number: 80

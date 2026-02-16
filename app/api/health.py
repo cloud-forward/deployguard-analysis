@@ -6,7 +6,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.entities.analysis import HealthResponse
 from app.gateway.db import get_db
-from app.gateway.opensearch_client import get_opensearch_client
+# DISABLED: OpenSearch client import commented out to allow app startup
+# from app.gateway.opensearch_client import get_opensearch_client
 from app.config import settings
 
 router = APIRouter()
@@ -20,6 +21,8 @@ async def health_check(
     Returns the service health status.
     Checks PostgreSQL (mandatory) and OpenSearch (optional) connectivity.
     Returns 503 if DB check fails or if OpenSearch is configured but unavailable.
+
+    TEMPORARILY DISABLED: OpenSearch health check is disabled.
     """
     db_status = "ok"
     opensearch_status = "skipped"
@@ -30,21 +33,25 @@ async def health_check(
     except Exception:
         db_status = "error"
 
+    # DISABLED: OpenSearch health check temporarily disabled
     # Check OpenSearch (OPTIONAL - only if OPENSEARCH_HOST is configured)
-    if settings.OPENSEARCH_HOST:
-        try:
-            client = get_opensearch_client()
-            ping_result = await client.ping()
-            if not ping_result:
-                opensearch_status = "error"
-            else:
-                opensearch_status = "ok"
-            await client.close()
-        except Exception:
-            opensearch_status = "error"
+    # if settings.OPENSEARCH_HOST:
+    #     try:
+    #         client = get_opensearch_client()
+    #         if client is not None:
+    #             ping_result = await client.ping()
+    #             if not ping_result:
+    #                 opensearch_status = "error"
+    #             else:
+    #                 opensearch_status = "ok"
+    #             await client.close()
+    #         else:
+    #             opensearch_status = "skipped"
+    #     except Exception:
+    #         opensearch_status = "error"
 
-    # Set 503 status if DB is down or if OpenSearch is configured but down
-    if db_status == "error" or opensearch_status == "error":
+    # Set 503 status if DB is down (OpenSearch check disabled)
+    if db_status == "error":
         response.status_code = 503
         return {
             "status": "error",

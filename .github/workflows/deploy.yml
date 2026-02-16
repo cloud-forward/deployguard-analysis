@@ -23,32 +23,32 @@ permissions:
 jobs:
   build-push-deploy:
     name: Build, Push, and Deploy to Kubernetes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       # 1️⃣ Checkout
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ AWS OIDC 인증
+      # 2️⃣ Configure AWS credentials (OIDC)
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::189060532132:role/deployguard-analysis-github-role
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3️⃣ ECR 로그인
+      # 3️⃣ Login to ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4️⃣ Git SHA 추출
+      # 4️⃣ Extract Git SHA
       - name: Extract Git metadata
         id: meta
         run: |
           echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
 
-      # 5️⃣ Docker 빌드
+      # 5️⃣ Build Docker image
       - name: Build Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -60,7 +60,7 @@ jobs:
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA \
             .
 
-      # 6️⃣ ECR 푸시
+      # 6️⃣ Push Docker image
       - name: Push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -70,57 +70,47 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA
 
-      # 7️⃣ kubectl 설치
+      # 7️⃣ Install kubectl
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
-          version: 'v1.28.0'
+          version: 'v1.29.0'
 
-      # 8️⃣ kubeconfig 설정
-      - name: Configure kubeconfig
-        env:
-          KUBE_CONFIG_BASE64: ${{ secrets.KUBE_CONFIG_BASE64 }}
-        run: |
-          mkdir -p $HOME/.kube
-          echo "$KUBE_CONFIG_BASE64" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
 
-      # 9️⃣ 클러스터 연결 확인
+      # 9️⃣ Verify cluster connectivity
       - name: Verify cluster connectivity
         run: |
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          kubectl version --short
           kubectl cluster-info
           kubectl get nodes
 
-      # 🔟 Manifest 적용 + SHA 이미지로 강제 교체
+      # 🔟 Apply manifests and update image
       - name: Deploy to Kubernetes
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
         run: |
-          # 기본 리소스 적용
-          kubectl apply -f k8s/ -n $K8S_NAMESPACE
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          set -e
 
-          # SHA 태그로 이미지 강제 업데이트
+          kubectl apply -f k8s/
+
           kubectl set image deployment/$DEPLOYMENT_NAME \
             $CONTAINER_NAME=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA \
             -n $K8S_NAMESPACE
 
-          # 롤아웃 완료 대기
           kubectl rollout status deployment/$DEPLOYMENT_NAME -n $K8S_NAMESPACE
 
-      # 1️⃣1️⃣ 배포 상태 출력
+      # 1️⃣1️⃣ Verify deployment
       - name: Verify deployment
         run: |
+          export KUBECONFIG=/etc/kubernetes/admin.conf
           kubectl get pods -n $K8S_NAMESPACE
           kubectl get deployment $DEPLOYMENT_NAME -n $K8S_NAMESPACE
 
-      # 1️⃣2️⃣ kubeconfig 정리
-      - name: Cleanup kubeconfig
-        if: always()
-        run: |
-          rm -f $HOME/.kube/config
 
-      # 1️⃣3️⃣ 결과 출력
+      # 1️⃣3️⃣ Output summary
       - name: Output deployment summary
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}

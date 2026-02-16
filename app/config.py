@@ -15,9 +15,9 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/deployguard"
-    
-    # OpenSearch
-    OPENSEARCH_HOST: str = "localhost"
+
+    # OpenSearch (optional)
+    OPENSEARCH_HOST: str | None = None
     OPENSEARCH_PORT: int = 9200
     OPENSEARCH_USER: str = "admin"
     OPENSEARCH_PASSWORD: str = "admin"

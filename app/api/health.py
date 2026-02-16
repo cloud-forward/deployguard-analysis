@@ -1,7 +1,7 @@
 """
 Health check endpoint.
 """
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.entities.analysis import HealthResponse
@@ -14,20 +14,19 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check(
-    response: Response,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Returns the service health status.
-    Checks PostgreSQL (mandatory) and OpenSearch (optional) connectivity.
-    Returns 503 if DB check fails or if OpenSearch is configured but unavailable.
+    Checks PostgreSQL and OpenSearch connectivity for informational purposes.
+    Always returns HTTP 200 to prevent Kubernetes pod restarts on DB downtime.
 
     TEMPORARILY DISABLED: OpenSearch health check is disabled.
     """
     db_status = "ok"
     opensearch_status = "skipped"
 
-    # Check PostgreSQL (MANDATORY)
+    # Check PostgreSQL (informational only - does not affect HTTP status)
     try:
         await db.execute(text("SELECT 1"))
     except Exception:
@@ -50,15 +49,7 @@ async def health_check(
     #     except Exception:
     #         opensearch_status = "error"
 
-    # Set 503 status if DB is down (OpenSearch check disabled)
-    if db_status == "error":
-        response.status_code = 503
-        return {
-            "status": "error",
-            "db": db_status,
-            "opensearch": opensearch_status
-        }
-
+    # Always return HTTP 200 - dependency status is informational only
     return {
         "status": "ok",
         "db": db_status,

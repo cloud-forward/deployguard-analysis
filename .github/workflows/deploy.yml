@@ -1,0 +1,124 @@
+name: Build, Push, and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: deployguard-analysis
+  K8S_NAMESPACE: deployguard
+  DEPLOYMENT_NAME: deployguard-analysis
+  CONTAINER_NAME: deployguard-analysis
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-push-deploy:
+    name: Build, Push, and Deploy to Kubernetes
+    runs-on: self-hosted
+
+    steps:
+      # 1️⃣ Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::189060532132:role/deployguard-analysis-github-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3️⃣ Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4️⃣ Extract Git SHA
+      - name: Extract Git metadata
+        id: meta
+        run: |
+          echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      # 5️⃣ Build Docker image
+      - name: Build Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG_LATEST: latest
+          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+        run: |
+          docker build --pull \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA \
+            .
+
+      # 6️⃣ Push Docker image
+      - name: Push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG_LATEST: latest
+          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA
+
+      # 7️⃣ Install kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.29.0'
+
+
+      # 9️⃣ Verify cluster connectivity
+      - name: Verify cluster connectivity
+        run: |
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          kubectl version --short
+          kubectl cluster-info
+          kubectl get nodes
+
+      # 🔟 Apply manifests and update image
+      - name: Deploy to Kubernetes
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+        run: |
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          set -e
+
+          kubectl apply -f k8s/
+
+          kubectl set image deployment/$DEPLOYMENT_NAME \
+            $CONTAINER_NAME=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_SHA \
+            -n $K8S_NAMESPACE
+
+          kubectl rollout status deployment/$DEPLOYMENT_NAME -n $K8S_NAMESPACE
+
+      # 1️⃣1️⃣ Verify deployment
+      - name: Verify deployment
+        run: |
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          kubectl get pods -n $K8S_NAMESPACE
+          kubectl get deployment $DEPLOYMENT_NAME -n $K8S_NAMESPACE
+
+
+      # 1️⃣3️⃣ Output summary
+      - name: Output deployment summary
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+        run: |
+          echo "--------------------------------------"
+          echo "Deployment completed successfully"
+          echo "Repository: $ECR_REGISTRY/$ECR_REPOSITORY"
+          echo "Deployed Tag: $IMAGE_TAG_SHA"
+          echo "Namespace: $K8S_NAMESPACE"
+          echo "--------------------------------------"

@@ -1,0 +1,21 @@
+"""
+Lightweight dependency providers for application services.
+FastAPI can inject these into endpoints. API layer must not import gateways directly.
+"""
+from __future__ import annotations
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.application.services.analysis_service import AnalysisService
+from app.domain.repositories.analysis_jobs import RiskResultRepository
+from app.gateway.db import get_db
+from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
+from app.gateway.repositories.risk_results_opensearch import OpenSearchRiskResultRepository
+
+
+def get_analysis_service(
+    db: AsyncSession = Depends(get_db),
+) -> AnalysisService:
+    jobs_repo = SqlAlchemyAnalysisJobRepository(session=db)
+    risk_repo: RiskResultRepository | None = OpenSearchRiskResultRepository()  # client wired lazily
+    return AnalysisService(jobs_repo=jobs_repo, risk_repo=risk_repo)

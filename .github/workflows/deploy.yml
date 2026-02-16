@@ -80,7 +80,7 @@ jobs:
       # 9️⃣ Verify cluster connectivity
       - name: Verify cluster connectivity
         run: |
-          export KUBECONFIG=/etc/kubernetes/admin.conf
+          export KUBECONFIG=/home/ubuntu/.kube/config
           kubectl version
           kubectl cluster-info
           kubectl get nodes
@@ -91,7 +91,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
         run: |
-          export KUBECONFIG=/etc/kubernetes/admin.conf
+          export KUBECONFIG=/home/ubuntu/.kube/config
           set -e
 
           kubectl apply -f k8s/
@@ -105,7 +105,7 @@ jobs:
       # 1️⃣1️⃣ Verify deployment
       - name: Verify deployment
         run: |
-          export KUBECONFIG=/etc/kubernetes/admin.conf
+          export KUBECONFIG=/home/ubuntu/.kube/config
           kubectl get pods -n $K8S_NAMESPACE
           kubectl get deployment $DEPLOYMENT_NAME -n $K8S_NAMESPACE
 

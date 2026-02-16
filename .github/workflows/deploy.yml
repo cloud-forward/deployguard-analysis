@@ -81,7 +81,7 @@ jobs:
       - name: Verify cluster connectivity
         run: |
           export KUBECONFIG=/etc/kubernetes/admin.conf
-          kubectl version --short
+          kubectl version
           kubectl cluster-info
           kubectl get nodes
 

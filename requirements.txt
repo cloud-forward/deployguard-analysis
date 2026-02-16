@@ -4,7 +4,6 @@ pydantic[email]
 pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
-
 networkx
 httpx
 pytest

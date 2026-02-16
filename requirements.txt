@@ -4,7 +4,7 @@ pydantic[email]
 pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
-opensearch-py
+opensearch-py>=2.0.0,<3.0.0
 networkx
 httpx
 pytest

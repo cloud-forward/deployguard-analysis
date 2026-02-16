@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: deployguard-analysis
+  namespace: deployguard
+  labels:
+    app: deployguard-analysis
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - analysis.example.com
+    secretName: analysis-tls
+  rules:
+  - host: analysis.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: deployguard-analysis
+            port:
+              number: 80

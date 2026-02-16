@@ -99,7 +99,6 @@ jobs:
         run: |
           # 기본 리소스 적용
           kubectl apply -f k8s/ -n $K8S_NAMESPACE
-          kubectl apply -f k8s/hpa.yaml
 
           # SHA 태그로 이미지 강제 업데이트
           kubectl set image deployment/$DEPLOYMENT_NAME \

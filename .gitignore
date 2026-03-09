@@ -18,6 +18,9 @@ venv/
 .idea/
 .vscode/
 
+# claude
+.claude
+
 # macOS
 .DS_Store
 

@@ -13,14 +13,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "deployguard-analysis"
     DEBUG: bool = False
     
-    # Database
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/deployguard"
 
-    # OpenSearch (optional)
-    OPENSEARCH_HOST: str | None = None
-    OPENSEARCH_PORT: int = 9200
-    OPENSEARCH_USER: str = "admin"
-    OPENSEARCH_PASSWORD: str = "admin"
+    S3_BUCKET_NAME: str = "dg-raw-scans"
+    AWS_REGION: str = "ap-northeast-2"
 
 
 settings = Settings()

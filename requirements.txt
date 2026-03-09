@@ -8,4 +8,6 @@ networkx
 httpx
 pytest
 pytest-asyncio
+aiosqlite
 python-dotenv
+boto3

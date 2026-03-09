@@ -1,5 +1,5 @@
 """
-Analysis endpoint.
+분석 엔드포인트.
 """
 from fastapi import APIRouter, Depends
 from app.domain.entities.analysis import AnalysisRequest, AnalysisResponse
@@ -12,8 +12,7 @@ router = APIRouter()
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest, service: AnalysisService = Depends(get_analysis_service)):
     """
-    Trigger a new analysis job.
-    Stub implementation.
+    새로운 분석 작업을 시작합니다.
+    스텀 구현체.
     """
-    # Delegate to application service
     return await service.analyze(request)

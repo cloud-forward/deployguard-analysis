@@ -1,6 +1,6 @@
 """
 Domain repository interfaces (protocols) for analysis jobs and results.
-These are implemented by gateway adapters (e.g., SQLAlchemy, OpenSearch).
+These are implemented by gateway adapters (e.g., SQLAlchemy).
 """
 from __future__ import annotations
 from typing import Protocol, runtime_checkable, Any, Dict, Optional
@@ -22,8 +22,3 @@ class AnalysisJobRepository(Protocol):
         ...
 
 
-@runtime_checkable
-class RiskResultRepository(Protocol):
-    async def persist_score(self, target_id: str, score: float) -> None:
-        """Persist calculated risk score for a target."""
-        ...

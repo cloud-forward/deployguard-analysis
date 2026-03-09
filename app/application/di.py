@@ -7,18 +7,24 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.analysis_service import AnalysisService
-from app.domain.repositories.analysis_jobs import RiskResultRepository
-from app.gateway.db import get_db
+from app.config import settings
+from app.gateway.db.session import get_db
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
-# DISABLED: OpenSearch repository import commented out to allow app startup
-# from app.gateway.repositories.risk_results_opensearch import OpenSearchRiskResultRepository
+from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
+from app.application.services.scan_service import ScanService
+from app.application.services.s3_service import S3Service
 
 
 def get_analysis_service(
     db: AsyncSession = Depends(get_db),
 ) -> AnalysisService:
     jobs_repo = SqlAlchemyAnalysisJobRepository(session=db)
-    # DISABLED: OpenSearch repository temporarily disabled
-    # risk_repo: RiskResultRepository | None = OpenSearchRiskResultRepository()  # client wired lazily
-    risk_repo: RiskResultRepository | None = None  # Temporarily disabled - OpenSearch not available
-    return AnalysisService(jobs_repo=jobs_repo, risk_repo=risk_repo)
+    return AnalysisService(jobs_repo=jobs_repo)
+
+
+def get_scan_service(
+    db: AsyncSession = Depends(get_db),
+) -> ScanService:
+    scan_repo = SQLAlchemyScanRepository(session=db)
+    s3_service = S3Service(bucket_name=settings.S3_BUCKET_NAME, region=settings.AWS_REGION)
+    return ScanService(scan_repository=scan_repo, s3_service=s3_service)

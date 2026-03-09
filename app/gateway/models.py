@@ -5,7 +5,7 @@ Moved from app/models/db_models.py to avoid domain→gateway dependency.
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, JSON, DateTime, Boolean, Integer, text
 from datetime import datetime
-from app.gateway.db import Base
+from app.gateway.db.base import Base
 
 
 class MergeState(Base):
@@ -39,11 +39,9 @@ class AlertGroup(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Identifiers/context
     pod_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attacker_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Lifecycle and scheduling
     is_open: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
@@ -51,14 +49,11 @@ class AlertGroup(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_reanalysis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Counters / signals
     merge_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     runtime_bonus_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
-    # Reanalysis flags
     reanalyze_on_next_ingest: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
     reanalyze_manual_request: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
     reanalyze_due_to_runtime_bonus: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
 
-    # Misc
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)

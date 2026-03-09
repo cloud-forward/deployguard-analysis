@@ -15,11 +15,17 @@ class SQLAlchemyScanRepository(ScanRepository):
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def create(self, scan_record: ScanRecord) -> ScanRecord:
-        self._session.add(scan_record)
+    async def create(self, scan_id: str, cluster_id: str, scanner_type: str) -> ScanRecord:
+        record = ScanRecord(
+            scan_id=scan_id,
+            cluster_id=cluster_id,
+            scanner_type=scanner_type,
+            status="created",
+        )
+        self._session.add(record)
         await self._session.commit()
-        await self._session.refresh(scan_record)
-        return scan_record
+        await self._session.refresh(record)
+        return record
 
     async def get_by_scan_id(self, scan_id: str) -> Optional[ScanRecord]:
         result = await self._session.execute(

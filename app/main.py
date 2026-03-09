@@ -40,3 +40,12 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
+
+from app.gateway.db.base import Base
+from app.gateway.db.session import engine
+from app.models import db_models as _db_models  # noqa: F401 — ensures ScanRecord is registered with Base.metadata
+
+@app.on_event("startup")
+async def create_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

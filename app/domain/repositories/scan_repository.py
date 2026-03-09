@@ -8,7 +8,7 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class ScanRepository(Protocol):
-    async def create(self, scan_record) -> object:
+    async def create(self, scan_id: str, cluster_id: str, scanner_type: str) -> object:
         """Persist a new ScanRecord. Returns the created ScanRecord."""
         ...
 

@@ -1,0 +1,118 @@
+"""
+Test configuration and fixtures for integration tests.
+"""
+from __future__ import annotations
+
+import os
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("S3_BUCKET_NAME", "test-bucket")
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.application.di import get_scan_service
+from app.application.services.scan_service import ScanService
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED
+
+
+class FakeScanRepository:
+    """In-memory scan repository that matches the calling conventions in ScanService."""
+
+    def __init__(self):
+        self._store: dict = {}
+
+    async def create(self, scan_id: str, cluster_id: str, scanner_type: str):
+        from datetime import datetime
+        record = _FakeScanRecord(
+            scan_id=scan_id,
+            cluster_id=cluster_id,
+            scanner_type=scanner_type,
+            status=SCAN_STATUS_CREATED,
+            s3_keys=[],
+            created_at=datetime.utcnow(),
+            completed_at=None,
+        )
+        self._store[scan_id] = record
+        return record
+
+    async def get_by_scan_id(self, scan_id: str):
+        return self._store.get(scan_id)
+
+    async def update_status(self, scan_id: str, status: str, **kwargs):
+        record = self._store.get(scan_id)
+        if record:
+            record.status = status
+            if "completed_at" in kwargs:
+                record.completed_at = kwargs["completed_at"]
+        return record
+
+    async def update(self, scan_id: str, status: str, s3_keys: list, completed_at=None):
+        record = self._store.get(scan_id)
+        if record:
+            record.status = status
+            record.s3_keys = s3_keys
+            record.completed_at = completed_at
+        return record
+
+    async def update_files(self, scan_id: str, s3_keys: list):
+        record = self._store.get(scan_id)
+        if record:
+            record.s3_keys = s3_keys
+        return record
+
+    async def list_by_cluster(self, cluster_id: str):
+        return [r for r in self._store.values() if r.cluster_id == cluster_id]
+
+    async def find_active_scan(self, cluster_id: str, scanner_type: str):
+        for r in self._store.values():
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
+                return r
+        return None
+
+
+class _FakeScanRecord:
+    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at):
+        self.scan_id = scan_id
+        self.cluster_id = cluster_id
+        self.scanner_type = scanner_type
+        self.status = status
+        self.s3_keys = s3_keys
+        self.created_at = created_at
+        self.completed_at = completed_at
+
+
+class FakeS3Service:
+    """Mock S3 service that returns fake presigned URLs without making real AWS calls."""
+
+    def generate_presigned_upload_url(
+        self, cluster_id: str, scan_id: str, scanner_type: str, file_name: str, expires_in: int = 600
+    ) -> tuple[str, str]:
+        s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"
+        fake_url = f"https://fake-s3.example.com/{s3_key}?X-Amz-Expires={expires_in}"
+        return fake_url, s3_key
+
+    def verify_file_exists(self, s3_key: str) -> bool:
+        return True
+
+
+@pytest.fixture
+def client():
+    """
+    FastAPI TestClient with overridden dependencies:
+    - FakeScanRepository (in-memory, no DB required)
+    - FakeS3Service (no real AWS calls)
+    """
+    fake_repo = FakeScanRepository()
+    fake_s3 = FakeS3Service()
+    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
+
+    app.dependency_overrides[get_scan_service] = lambda: fake_service
+
+    with TestClient(app) as c:
+        yield c
+
+    app.dependency_overrides.clear()

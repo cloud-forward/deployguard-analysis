@@ -15,5 +15,4 @@ async def analyze(request: AnalysisRequest, service: AnalysisService = Depends(g
     Trigger a new analysis job.
     Stub implementation.
     """
-    # Delegate to application service
     return await service.analyze(request)

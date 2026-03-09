@@ -23,4 +23,3 @@ class HealthResponse(BaseModel):
     """Response model for the /health endpoint."""
     status: str
     db: Optional[str] = None
-    opensearch: Optional[str] = None

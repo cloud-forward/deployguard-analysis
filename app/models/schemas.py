@@ -1,5 +1,5 @@
 """
-Pydantic schemas for request and response models.
+요청 및 응답 모델을 위한 Pydantic 스키마.
 """
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -13,16 +13,16 @@ from app.core.constants import (
 
 class AnalysisRequest(BaseModel):
     """
-    Request model for the /analyze endpoint.
+    /analyze 엔드포인트의 요청 모델.
     """
-    target_id: str = Field(..., description="ID of the target to analyze")
+    target_id: str = Field(..., description="분석할 대상의 ID")
     depth: int = Field(default=3, ge=1, le=10)
     parameters: Optional[Dict[str, Any]] = None
 
 
 class AnalysisResponse(BaseModel):
     """
-    Response model for the /analyze endpoint.
+    /analyze 엔드포인트의 응답 모델.
     """
     job_id: str
     status: str
@@ -31,7 +31,7 @@ class AnalysisResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     """
-    Response model for the /health endpoint.
+    /health 엔드포인트의 응답 모델.
     """
     status: str
     version: str
@@ -39,8 +39,8 @@ class HealthResponse(BaseModel):
 
 
 class ScanStartRequest(BaseModel):
-    cluster_id: str = Field(..., description="Target cluster identifier", example="prod-cluster-01")
-    scanner_type: str = Field(..., description="Type of scanner", example="k8s")
+    cluster_id: str = Field(..., description="대상 클러스터 식별자", example="prod-cluster-01")
+    scanner_type: str = Field(..., description="스캐너 유형", example="k8s")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"cluster_id": "prod-cluster-01", "scanner_type": "k8s"}
@@ -55,7 +55,7 @@ class ScanStartRequest(BaseModel):
 
 
 class UploadUrlRequest(BaseModel):
-    file_name: str = Field(..., description="Name of file to upload", example="k8s_scan_result.json")
+    file_name: str = Field(..., description="업로드할 파일 이름", example="k8s_scan_result.json")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"file_name": "k8s_scan_result.json"}
@@ -72,7 +72,7 @@ class UploadUrlRequest(BaseModel):
 class ScanCompleteRequest(BaseModel):
     files: list[str] = Field(
         ...,
-        description="List of uploaded S3 keys",
+        description="업로드된 S3 키 목록",
         example=[
             "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
             "scans/prod-cluster-01/20260309T113020-aws/aws/scan.json",
@@ -98,8 +98,8 @@ class ScanCompleteRequest(BaseModel):
 
 
 class ScanStartResponse(BaseModel):
-    scan_id: str = Field(..., description="Generated scan session ID", example="20260309T113020-k8s")
-    status: str = Field(default=SCAN_STATUS_CREATED, description="Scan session status")
+    scan_id: str = Field(..., description="생성된 스캔 세션 ID", example="20260309T113020-k8s")
+    status: str = Field(default=SCAN_STATUS_CREATED, description="스캔 세션 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"scan_id": "20260309T113020-k8s", "status": "created"}
@@ -110,10 +110,10 @@ class UploadUrlResponse(BaseModel):
     upload_url: str = Field(..., description="S3 presigned PUT URL")
     s3_key: str = Field(
         ...,
-        description="S3 object key for the file",
+        description="파일의 S3 오브젝트 키",
         example="scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
     )
-    expires_in: int = Field(default=600, description="URL expiration in seconds")
+    expires_in: int = Field(default=600, description="URL 만료 시간(초)")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
@@ -126,7 +126,7 @@ class UploadUrlResponse(BaseModel):
 
 class ScanCompleteResponse(BaseModel):
     scan_id: str
-    status: str = Field(default=SCAN_STATUS_PROCESSING, description="Processing status")
+    status: str = Field(default=SCAN_STATUS_PROCESSING, description="처리 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"scan_id": "20260309T113020-k8s", "status": "processing"}

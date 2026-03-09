@@ -6,17 +6,16 @@ from app.api import health, analyze, scan
 from app.config import settings
 
 app = FastAPI(
-    title="DeployGuard Analysis Engine",
+    title="DeployGuard 분석 엔진",
     description="""
-DeployGuard analyzes Kubernetes and AWS infrastructure security by building 
-infrastructure graphs, discovering attack paths, and recommending optimal remediations.
+DeployGuard는 인프라 그래프를 구축하고, 공격 경로를 탐색하며, 최적의 조치를 권장함으로써 Kubernetes 및 AWS 인프라 보안을 분석합니다.
 
-## Scan Data Ingestion Flow
+## 스캔 데이터 수집 흐름
 
-1. **Start scan session**: `POST /api/scans/start` → receive `scan_id`
-2. **Get upload URL**: `POST /api/scans/{scan_id}/upload-url` → receive S3 presigned URL
-3. **Upload file**: `PUT` the file directly to the presigned URL (client → S3)
-4. **Complete scan**: `POST /api/scans/{scan_id}/complete` → triggers analysis pipeline
+1. **스캔 세션 시작**: `POST /api/scans/start` → `scan_id` 수신
+2. **업로드 URL 요청**: `POST /api/scans/{scan_id}/upload-url` → S3 presigned URL 수신
+3. **파일 업로드**: presigned URL로 파일을 직접 `PUT` (클라이언트 → S3)
+4. **스캔 완료 알림**: `POST /api/scans/{scan_id}/complete` → 분석 파이프라인 트리거
 """,
     version="4.0.0",
     openapi_tags=[
@@ -24,7 +23,7 @@ infrastructure graphs, discovering attack paths, and recommending optimal remedi
         {"name": "Analysis"},
         {
             "name": "Scans",
-            "description": "Scan data ingestion — start scan sessions, get upload URLs, and notify completion"
+            "description": "스캔 데이터 수집 — 스캔 세션 시작, 업로드 URL 요청, 완료 알림"
         },
     ]
 )
@@ -35,7 +34,7 @@ app.include_router(scan.router)
 
 @app.get("/")
 async def root():
-    """Root endpoint returning basic service info."""
+    """기본 서비스 정보를 반환하는 루트 엔드포인트."""
     return {
         "service": settings.PROJECT_NAME,
         "docs": "/docs",

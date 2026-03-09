@@ -5,7 +5,7 @@ Moved from app/models/db_models.py to avoid domain→gateway dependency.
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, JSON, DateTime, Boolean, Integer, text
 from datetime import datetime
-from app.gateway.db import Base
+from app.gateway.db.base import Base
 
 
 class MergeState(Base):

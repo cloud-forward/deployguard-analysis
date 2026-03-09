@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.analysis_service import AnalysisService
 from app.config import settings
-from app.gateway.db import get_db
+from app.gateway.db.session import get_db
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
 from app.application.services.scan_service import ScanService

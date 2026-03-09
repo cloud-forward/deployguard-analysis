@@ -18,25 +18,24 @@ router = APIRouter(prefix="/api/scans", tags=["Scans"])
     "/start",
     response_model=ScanStartResponse,
     status_code=201,
-    summary="Start a new scan session",
+    summary="새로운 스캔 세션 시작",
     description="""
-Create a new scan session for a cluster. Returns a scan_id that is used 
-in subsequent upload-url and complete calls.
+클러스터에 대한 새로운 스캔 세션을 생성합니다. 이후 upload-url 및 complete 호출에 사용할 scan_id를 반환합니다.
 
-**Scanner types:**
-- `k8s` — Kubernetes cluster resources (Pods, RBAC, Secrets, Services, etc.)
-- `aws` — AWS cloud resources (IAM, S3, RDS, EC2, SecurityGroups)
-- `image` — Container image vulnerabilities (CVE, EPSS, signatures)
-- `runtime` — Runtime security events (eBPF, CloudTrail)
+**스캐너 유형:**
+- `k8s` — Kubernetes 클러스터 리소스 (Pods, RBAC, Secrets, Services 등)
+- `aws` — AWS 클라우드 리소스 (IAM, S3, RDS, EC2, SecurityGroups)
+- `image` — 컨테이너 이미지 취약점 (CVE, EPSS, 서명)
+- `runtime` — 런타임 보안 이벤트 (eBPF, CloudTrail)
 
-Each scanner type should start its own scan session.
+각 스캐너 유형은 별도의 스캔 세션을 시작해야 합니다.
 
-Only one scan per cluster and scanner_type can run at a time. If a scan is already active for the given cluster and scanner type, the API returns HTTP 409.
+클러스터와 scanner_type 조합당 하나의 스캔만 동시에 실행할 수 있습니다. 해당 클러스터와 스캐너 유형에 대해 이미 활성 스캔이 있는 경우 API는 HTTP 409를 반환합니다.
 """,
     responses={
-        201: {"description": "Scan session created successfully"},
-        409: {"description": "A scan for this cluster and scanner type is already running"},
-        422: {"description": "Invalid scanner_type or missing fields"},
+        201: {"description": "스캔 세션이 성공적으로 생성되었습니다"},
+        409: {"description": "해당 클러스터와 스캐너 유형에 대한 스캔이 이미 실행 중입니다"},
+        422: {"description": "유효하지 않은 scanner_type 또는 필드 누락"},
     },
 )
 async def start_scan(request: ScanStartRequest, service: ScanService = Depends(get_scan_service)):
@@ -47,32 +46,32 @@ async def start_scan(request: ScanStartRequest, service: ScanService = Depends(g
     "/{scan_id}/upload-url",
     response_model=UploadUrlResponse,
     status_code=200,
-    summary="Get presigned URL for file upload",
+    summary="파일 업로드용 presigned URL 발급",
     description="""
-Generate an S3 presigned PUT URL to upload scan result files.
+스캔 결과 파일을 업로드하기 위한 S3 presigned PUT URL을 생성합니다.
 
-The client should:
-1. Call this endpoint to get the presigned URL
-2. PUT the file directly to S3 using the returned URL
-3. Repeat for each file if multiple files need to be uploaded
-4. Call `/complete` when all files are uploaded
+클라이언트는 다음 순서로 진행해야 합니다:
+1. 이 엔드포인트를 호출하여 presigned URL을 발급받습니다
+2. 반환된 URL을 사용하여 파일을 S3에 직접 PUT합니다
+3. 여러 파일을 업로드해야 하는 경우 각 파일마다 반복합니다
+4. 모든 파일 업로드가 완료되면 `/complete`를 호출합니다
 
-The presigned URL expires in 600 seconds (10 minutes).
+Presigned URL은 600초(10분) 후 만료됩니다.
 
-**S3 key format:** `scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}`
+**S3 키 형식:** `scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}`
 
-The `scanner_type` is determined by the scan session (set when calling `/start`).
-Each scanner writes into its own prefix. Valid scanner types are: `k8s`, `aws`, `image`.
+`scanner_type`은 스캔 세션에 의해 결정됩니다 (`/start` 호출 시 설정).
+각 스캐너는 자체 prefix에 기록합니다. 유효한 스캐너 유형: `k8s`, `aws`, `image`.
 
-**Examples:**
+**예시:**
 - `scans/prod-cluster/scan123/k8s/resources.json`
 - `scans/prod-cluster/scan123/aws/iam.json`
 - `scans/prod-cluster/scan123/image/cve.json`
 """,
     responses={
-        200: {"description": "Presigned URL generated"},
-        404: {"description": "Scan session not found"},
-        409: {"description": "Scan session already completed"},
+        200: {"description": "Presigned URL이 생성되었습니다"},
+        404: {"description": "스캔 세션을 찾을 수 없습니다"},
+        409: {"description": "스캔 세션이 이미 완료되었습니다"},
     },
 )
 async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanService = Depends(get_scan_service)):
@@ -83,21 +82,21 @@ async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanS
     "/{scan_id}/complete",
     response_model=ScanCompleteResponse,
     status_code=202,
-    summary="Notify scan upload completion",
+    summary="스캔 업로드 완료 알림",
     description="""
-Notify the engine that all scan files have been uploaded to S3.
+모든 스캔 파일이 S3에 업로드되었음을 엔진에 알립니다.
 
-The engine will:
-1. Verify the uploaded files exist in S3
-2. Update the scan session status to "processing"
-3. Trigger the analysis pipeline (graph building → attack path discovery → risk scoring)
+엔진은 다음을 수행합니다:
+1. 업로드된 파일이 S3에 존재하는지 확인
+2. 스캔 세션 상태를 "processing"으로 업데이트
+3. 분석 파이프라인 트리거 (그래프 구축 → 공격 경로 탐색 → 위험 점수 산정)
 
-The analysis runs asynchronously. Use `GET /api/scans/{scan_id}/status` to check progress.
+분석은 비동기로 실행됩니다. `GET /api/scans/{scan_id}/status`로 진행 상황을 확인하세요.
 """,
     responses={
-        202: {"description": "Scan completion accepted, analysis triggered"},
-        400: {"description": "One or more files not found in S3"},
-        404: {"description": "Scan session not found"},
+        202: {"description": "스캔 완료가 접수되었으며 분석이 시작되었습니다"},
+        400: {"description": "S3에서 하나 이상의 파일을 찾을 수 없습니다"},
+        404: {"description": "스캔 세션을 찾을 수 없습니다"},
     },
 )
 async def complete_scan(scan_id: str, request: ScanCompleteRequest, service: ScanService = Depends(get_scan_service)):
@@ -108,20 +107,20 @@ async def complete_scan(scan_id: str, request: ScanCompleteRequest, service: Sca
     "/{scan_id}/status",
     response_model=ScanStatusResponse,
     status_code=200,
-    summary="Get scan session status",
+    summary="스캔 세션 상태 조회",
     description="""
-Check the current status of a scan session.
+스캔 세션의 현재 상태를 확인합니다.
 
-**Status values:**
-- `created` — Session started, no files uploaded yet
-- `uploading` — At least one upload URL has been requested
-- `processing` — Upload complete, analysis in progress
-- `completed` — Analysis finished, results available
-- `failed` — Analysis failed (check logs)
+**상태 값:**
+- `created` — 세션이 시작되었으며 아직 파일이 업로드되지 않음
+- `uploading` — 하나 이상의 업로드 URL이 요청됨
+- `processing` — 업로드 완료, 분석 진행 중
+- `completed` — 분석 완료, 결과 이용 가능
+- `failed` — 분석 실패 (로그 확인 필요)
 """,
     responses={
-        200: {"description": "Scan session status"},
-        404: {"description": "Scan session not found"},
+        200: {"description": "스캔 세션 상태"},
+        404: {"description": "스캔 세션을 찾을 수 없습니다"},
     },
 )
 async def get_scan_status(scan_id: str, service: ScanService = Depends(get_scan_service)):

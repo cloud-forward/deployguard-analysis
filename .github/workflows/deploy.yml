@@ -70,12 +70,19 @@ jobs:
           version: v1.29.0
 
       - name: Verify Kubernetes connection
-        run: |
-          kubectl get nodes
+        run: kubectl get nodes
 
-      - name: Apply Kubernetes manifests
+      - name: Create namespace first
         run: |
-          kubectl apply -f k8s/
+          kubectl apply -f k8s/namespace.yaml
+          kubectl wait --for=condition=Active namespace/${K8S_NAMESPACE} --timeout=60s
+
+      - name: Apply remaining manifests
+        run: |
+          kubectl apply -f k8s/secret.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/ingress.yaml
 
       - name: Update deployment image
         env:
@@ -92,3 +99,4 @@ jobs:
         run: |
           kubectl get pods -n ${K8S_NAMESPACE}
           kubectl get deployment ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}
+          kubectl rollout history deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}

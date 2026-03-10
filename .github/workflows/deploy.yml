@@ -15,7 +15,6 @@ env:
   K8S_NAMESPACE: deployguard
   DEPLOYMENT_NAME: deployguard-analysis
   CONTAINER_NAME: deployguard-analysis
-  KUBECONFIG: /home/ubuntu/.kube/config
 
 permissions:
   id-token: write
@@ -30,7 +29,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::189060532132:role/deployguard-analysis-github-role
@@ -52,13 +51,9 @@ jobs:
           IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
           IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}"
 
-          echo "Building Docker images:"
-          echo "$IMAGE_LATEST"
-          echo "$IMAGE_SHA"
-
           docker build --pull -t "$IMAGE_LATEST" -t "$IMAGE_SHA" .
 
-      - name: Push Docker images
+      - name: Push Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
@@ -73,12 +68,6 @@ jobs:
         uses: azure/setup-kubectl@v4
         with:
           version: v1.29.0
-
-      - name: Verify kubeconfig
-        run: |
-          echo "Using kubeconfig:"
-          echo "$KUBECONFIG"
-          ls -al "$KUBECONFIG"
 
       - name: Verify Kubernetes connection
         run: |
@@ -103,4 +92,3 @@ jobs:
         run: |
           kubectl get pods -n ${K8S_NAMESPACE}
           kubectl get deployment ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}
-          kubectl rollout history deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}

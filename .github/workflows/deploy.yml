@@ -27,7 +27,7 @@ jobs:
 
     steps:
 
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
@@ -45,7 +45,6 @@ jobs:
         run: echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
 
       - name: Build Docker image
-        working-directory: deployguard-analysis
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
@@ -53,13 +52,13 @@ jobs:
           IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
           IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}"
 
-          echo "Building image:"
-          echo $IMAGE_LATEST
-          echo $IMAGE_SHA
+          echo "Building Docker images:"
+          echo "$IMAGE_LATEST"
+          echo "$IMAGE_SHA"
 
           docker build --pull -t "$IMAGE_LATEST" -t "$IMAGE_SHA" .
 
-      - name: Push Docker image
+      - name: Push Docker images
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
@@ -77,15 +76,15 @@ jobs:
 
       - name: Verify kubeconfig
         run: |
-          echo "KUBECONFIG=$KUBECONFIG"
-          ls -al $KUBECONFIG
+          echo "Using kubeconfig:"
+          echo "$KUBECONFIG"
+          ls -al "$KUBECONFIG"
 
       - name: Verify Kubernetes connection
         run: |
           kubectl get nodes
 
       - name: Apply Kubernetes manifests
-        working-directory: deployguard-analysis
         run: |
           kubectl apply -f k8s/
 

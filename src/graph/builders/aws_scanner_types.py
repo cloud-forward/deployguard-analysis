@@ -1,0 +1,78 @@
+"""Data classes representing AWS Scanner output consumed by AWS Graph Builder."""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class IAMRoleScan:
+    """Represents a scanned IAM Role."""
+
+    name: str
+    arn: str
+    is_irsa: bool
+    irsa_oidc_issuer: Optional[str]
+    attached_policies: list[dict]
+    inline_policies: list[dict]
+    trust_policy: dict
+
+
+@dataclass
+class S3BucketScan:
+    """Represents a scanned S3 Bucket."""
+
+    name: str
+    arn: str
+    public_access_block: Optional[dict]
+    encryption: Optional[dict]
+    versioning: str
+    logging_enabled: bool
+
+
+@dataclass
+class RDSInstanceScan:
+    """Represents a scanned RDS Instance."""
+
+    identifier: str
+    arn: str
+    engine: str
+    storage_encrypted: bool
+    publicly_accessible: bool
+    vpc_security_groups: list[str]
+
+
+@dataclass
+class EC2InstanceScan:
+    """Represents a scanned EC2 Instance."""
+
+    instance_id: str
+    instance_type: str
+    metadata_options: dict
+    iam_instance_profile: Optional[dict]
+    security_groups: list[str]
+    tags: dict
+
+
+@dataclass
+class SecurityGroupScan:
+    """Represents a scanned Security Group."""
+
+    group_id: str
+    group_name: str
+    vpc_id: str
+    inbound_rules: list[dict]
+    outbound_rules: list[dict]
+
+
+@dataclass
+class AWSScanResult:
+    """Represents the full result of an AWS environment scan."""
+
+    scan_id: str
+    aws_account_id: str
+    scanned_at: str
+    iam_roles: list[IAMRoleScan]
+    s3_buckets: list[S3BucketScan]
+    rds_instances: list[RDSInstanceScan]
+    ec2_instances: list[EC2InstanceScan]
+    security_groups: list[SecurityGroupScan]

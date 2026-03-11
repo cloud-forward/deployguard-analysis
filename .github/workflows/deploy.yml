@@ -1,36 +1,29 @@
-name: Build, Push, and Deploy
+name: Deploy dg-analysis
 
 on:
   push:
     branches:
       - main
 
-concurrency:
-  group: deploy-main
-  cancel-in-progress: true
-
 env:
   AWS_REGION: ap-northeast-2
   ECR_REPOSITORY: deployguard-analysis
-  K8S_NAMESPACE: deployguard
-  DEPLOYMENT_NAME: deployguard-analysis
   CONTAINER_NAME: deployguard-analysis
-  KUBECONFIG: /home/ubuntu/.kube/config
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  build-push-deploy:
+  deploy:
     runs-on: self-hosted
 
     steps:
 
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::189060532132:role/deployguard-analysis-github-role
@@ -42,66 +35,47 @@ jobs:
 
       - name: Extract Git SHA
         id: meta
-        run: echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Build Docker image
-        working-directory: deployguard-analysis
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+          IMAGE_TAG: ${{ steps.meta.outputs.sha_short }}
         run: |
-          IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
-          IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}"
-
-          echo "Building image:"
-          echo $IMAGE_LATEST
-          echo $IMAGE_SHA
-
-          docker build --pull -t "$IMAGE_LATEST" -t "$IMAGE_SHA" .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
       - name: Push Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
+          IMAGE_TAG: ${{ steps.meta.outputs.sha_short }}
         run: |
-          IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
-          IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}"
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-          docker push "$IMAGE_LATEST"
-          docker push "$IMAGE_SHA"
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.29.0
-
-      - name: Verify kubeconfig
-        run: |
-          echo "KUBECONFIG=$KUBECONFIG"
-          ls -al $KUBECONFIG
-
-      - name: Verify Kubernetes connection
-        run: |
-          kubectl get nodes
-
-      - name: Apply Kubernetes manifests
-        working-directory: deployguard-analysis
-        run: |
-          kubectl apply -f k8s/
-
-      - name: Update deployment image
+      - name: Deploy container
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG_SHA: ${{ steps.meta.outputs.sha_short }}
         run: |
-          kubectl set image deployment/${DEPLOYMENT_NAME} ${CONTAINER_NAME}=${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG_SHA} -n ${K8S_NAMESPACE}
 
-      - name: Wait for rollout
-        run: |
-          kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} --timeout=180s
+          echo "Pull latest image"
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Verify deployment
-        run: |
-          kubectl get pods -n ${K8S_NAMESPACE}
-          kubectl get deployment ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}
-          kubectl rollout history deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}
+          echo "Stop old container"
+          docker stop deployguard-analysis || true
+
+          echo "Remove old container"
+          docker rm deployguard-analysis || true
+
+          echo "Run new container"
+          docker run -d \
+            --restart unless-stopped \
+            --name deployguard-analysis \
+            -p 8000:8000 \
+            -e AWS_REGION=ap-northeast-2 \
+            -e S3_BUCKET_NAME=dg-raw-scans \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "Cleanup unused images"
+          docker image prune -af

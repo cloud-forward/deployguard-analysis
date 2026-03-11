@@ -220,6 +220,19 @@ class TestStartScan:
         })
         assert new_resp.status_code == 201
 
+    def test_start_scan_invalid_scanner_type(self, client):
+        """Invalid scanner_type returns 422."""
+        response = client.post("/api/scans/start", json={
+            "cluster_id": "prod-01",
+            "scanner_type": "invalid",
+        })
+        assert response.status_code == 422
+
+    def test_start_scan_missing_fields(self, client):
+        """Missing required fields returns 422."""
+        response = client.post("/api/scans/start", json={})
+        assert response.status_code == 422
+
     def test_start_scan_different_scanner_types_allowed(self, client):
         """Same cluster with different scanner_type is allowed concurrently."""
         r1 = client.post("/api/scans/start", json={"cluster_id": "c1", "scanner_type": "k8s"})
@@ -269,6 +282,12 @@ class TestUploadUrl:
         response = client.post("/api/scans/nonexistent/upload-url", json={"file_name": "scan.json"})
         assert response.status_code == 404
 
+    def test_upload_url_non_json_file_rejected(self, client):
+        """Non-JSON file name returns 422."""
+        scan_id = self._start(client, cluster_id="c1", scanner_type="k8s")
+        response = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan.txt"})
+        assert response.status_code == 422
+
     def test_upload_url_completed_scan_returns_409(self, client_with_completed_scan):
         """Requesting upload URL for a scan in 'completed' status returns 409."""
         scan_id = client_with_completed_scan._completed_scan_id
@@ -314,6 +333,12 @@ class TestCompleteScan:
         scan_id, s3_key = self._start_and_get_key(client_missing_s3)
         response = client_missing_s3.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
         assert response.status_code == 400
+
+    def test_complete_scan_empty_files_rejected(self, client):
+        """Empty files list returns 422 (schema validation)."""
+        scan_id, s3_key = self._start_and_get_key(client)
+        response = client.post(f"/api/scans/{scan_id}/complete", json={"files": []})
+        assert response.status_code == 422
 
     def test_complete_scan_not_found_returns_404(self, client):
         """Unknown scan_id returns 404."""

@@ -3,12 +3,16 @@ import pytest
 
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
 from src.graph.builders.aws_scanner_types import (
+    AccessKeyScan,
     AWSScanResult,
     EC2InstanceScan,
+    IAMRoleScan,
+    IAMUserScan,
     RDSInstanceScan,
     S3BucketScan,
     SecurityGroupScan,
 )
+from src.graph.builders.iam_policy_types import IAMPolicyAnalysisResult, IAMUserPolicyAnalysisResult, TrustPolicyAnalysis
 
 
 def make_scan(
@@ -17,6 +21,7 @@ def make_scan(
     ec2_instances=None,
     security_groups=None,
     iam_roles=None,
+    iam_users=None,
 ) -> AWSScanResult:
     """Return an AWSScanResult populated with the provided test data."""
     return AWSScanResult(
@@ -28,16 +33,108 @@ def make_scan(
         rds_instances=rds_instances or [],
         ec2_instances=ec2_instances or [],
         security_groups=security_groups or [],
+        iam_users=iam_users or [],
     )
 
 
-def build(scan: AWSScanResult):
+def build(scan: AWSScanResult, policy_results=None, user_policy_results=None):
     """Build graph from scan and return (nodes, edges)."""
     builder = AWSGraphBuilder(
         account_id=scan.aws_account_id,
         scan_id=scan.scan_id,
     )
-    return builder.build(scan, irsa_mappings=[], credential_facts=[])
+    return builder.build(
+        scan,
+        irsa_mappings=[],
+        credential_facts=[],
+        policy_results=policy_results,
+        user_policy_results=user_policy_results,
+    )
+
+
+def make_iam_role(name="AdminRole") -> IAMRoleScan:
+    """Return a minimal IAMRoleScan for testing."""
+    return IAMRoleScan(
+        name=name,
+        arn=f"arn:aws:iam::123456789012:role/{name}",
+        is_irsa=False,
+        irsa_oidc_issuer=None,
+        attached_policies=[],
+        inline_policies=[],
+        trust_policy={},
+    )
+
+
+def make_trust_analysis(**kwargs) -> TrustPolicyAnalysis:
+    """Return a TrustPolicyAnalysis with sensible defaults, overridable via kwargs."""
+    defaults = dict(
+        is_irsa_enabled=False,
+        oidc_issuer=None,
+        allows_all_sa=False,
+        allowed_sa_patterns=[],
+        allowed_sa_explicit=[],
+        allows_ec2=False,
+        allows_lambda=False,
+        cross_account_principals=[],
+    )
+    defaults.update(kwargs)
+    return TrustPolicyAnalysis(**defaults)
+
+
+def make_iam_user(username="web-app-deployer", active_keys=1, has_mfa=False) -> IAMUserScan:
+    """Return a minimal IAMUserScan for testing."""
+    keys = [
+        AccessKeyScan(
+            access_key_id=f"AKIA000000000000{i:04d}",
+            status="Active",
+            create_date="2026-01-01T00:00:00Z",
+        )
+        for i in range(active_keys)
+    ]
+    return IAMUserScan(
+        username=username,
+        arn=f"arn:aws:iam::123456789012:user/{username}",
+        access_keys=keys,
+        attached_policies=[],
+        inline_policies=[],
+        has_mfa=has_mfa,
+        last_used=None,
+    )
+
+
+def make_iam_user_policy_analysis(username="web-app-deployer", tier=1, **kwargs) -> IAMUserPolicyAnalysisResult:
+    """Return an IAMUserPolicyAnalysisResult with sensible defaults."""
+    defaults = dict(
+        username=username,
+        user_arn=f"arn:aws:iam::123456789012:user/{username}",
+        account_id="123456789012",
+        tier=tier,
+        tier_reason=f"tier_{tier}_reason",
+        resource_access=[],
+        has_privilege_escalation=False,
+        has_data_exfiltration_risk=False,
+        has_credential_access=False,
+    )
+    defaults.update(kwargs)
+    return IAMUserPolicyAnalysisResult(**defaults)
+
+
+def make_policy_analysis(role_name="AdminRole", tier=1, **kwargs) -> IAMPolicyAnalysisResult:
+    """Return an IAMPolicyAnalysisResult with sensible defaults."""
+    defaults = dict(
+        role_name=role_name,
+        role_arn=f"arn:aws:iam::123456789012:role/{role_name}",
+        account_id="123456789012",
+        tier=tier,
+        tier_reason=f"tier_{tier}_reason",
+        trust_analysis=make_trust_analysis(),
+        resource_access=[],
+        has_privilege_escalation=False,
+        has_data_exfiltration_risk=False,
+        has_credential_access=False,
+    )
+    defaults.update(kwargs)
+    return IAMPolicyAnalysisResult(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +308,111 @@ def test_ec2_node_imdsv1_detection():
     node = next(n for n in nodes if n.type == "ec2_instance")
     assert node.metadata["imds_v1_enabled"] is True
     assert "PISM-064" in node.metadata["compliance_violations"]
+
+
+# ---------------------------------------------------------------------------
+# IAM Role tests
+# ---------------------------------------------------------------------------
+
+def test_iam_role_tier1_is_crown_jewel():
+    role = make_iam_role("AdminRole")
+    analysis = make_policy_analysis(role_name="AdminRole", tier=1)
+    scan = make_scan(iam_roles=[role])
+
+    nodes, _ = build(scan, policy_results=[analysis])
+
+    node = next(n for n in nodes if n.type == "iam_role")
+    assert node.is_crown_jewel is True
+    assert node.metadata["tier"] == 1
+    assert node.metadata["tier_reason"] is not None
+
+
+def test_iam_role_tier2_is_crown_jewel():
+    role = make_iam_role("PowerUserRole")
+    analysis = make_policy_analysis(role_name="PowerUserRole", tier=2)
+    scan = make_scan(iam_roles=[role])
+
+    nodes, _ = build(scan, policy_results=[analysis])
+
+    node = next(n for n in nodes if n.type == "iam_role")
+    assert node.is_crown_jewel is True
+
+
+def test_iam_role_tier3_not_crown_jewel():
+    role = make_iam_role("ReadOnlyRole")
+    analysis = make_policy_analysis(role_name="ReadOnlyRole", tier=3)
+    scan = make_scan(iam_roles=[role])
+
+    nodes, _ = build(scan, policy_results=[analysis])
+
+    node = next(n for n in nodes if n.type == "iam_role")
+    assert node.is_crown_jewel is False
+
+
+def test_iam_role_no_policy_analysis():
+    role = make_iam_role("SomeRole")
+    scan = make_scan(iam_roles=[role])
+
+    nodes, _ = build(scan)  # no policy_results
+
+    node = next(n for n in nodes if n.type == "iam_role")
+    assert node.is_crown_jewel is False
+    assert node.metadata["tier"] is None
+    assert node.metadata["tier_reason"] == "policy_analysis_unavailable"
+
+
+def test_iam_role_trust_metadata():
+    role = make_iam_role("IrsaRole")
+    trust = make_trust_analysis(is_irsa_enabled=True, allows_all_sa=True)
+    analysis = make_policy_analysis(role_name="IrsaRole", tier=2, trust_analysis=trust)
+    scan = make_scan(iam_roles=[role])
+
+    nodes, _ = build(scan, policy_results=[analysis])
+
+    node = next(n for n in nodes if n.type == "iam_role")
+    assert node.metadata["trust"]["is_irsa_enabled"] is True
+    assert node.metadata["trust"]["allows_all_sa"] is True
+
+
+# ---------------------------------------------------------------------------
+# IAM User tests
+# ---------------------------------------------------------------------------
+
+def test_iam_user_node_creation():
+    # Arrange: 1 active key, no MFA
+    user = make_iam_user(username="web-app-deployer", active_keys=1, has_mfa=False)
+    scan = make_scan(iam_users=[user])
+    # Act
+    nodes, _ = build(scan)
+    # Assert
+    node = next(n for n in nodes if n.type == "iam_user")
+    assert node.id == "iam_user:123456789012:web-app-deployer"
+    assert node.type == "iam_user"
+    assert node.metadata["has_active_key"] is True
+    assert "PISM-IAM-001" in node.metadata["compliance_violations"]
+
+
+def test_iam_user_multiple_active_keys():
+    # Arrange: 2 active keys
+    user = make_iam_user(username="web-app-deployer", active_keys=2, has_mfa=False)
+    scan = make_scan(iam_users=[user])
+    # Act
+    nodes, _ = build(scan)
+    # Assert
+    node = next(n for n in nodes if n.type == "iam_user")
+    assert "PISM-IAM-002" in node.metadata["compliance_violations"]
+
+
+def test_iam_user_tier1_crown_jewel():
+    # Arrange: tier=1 policy analysis
+    user = make_iam_user(username="web-app-deployer")
+    analysis = make_iam_user_policy_analysis(username="web-app-deployer", tier=1)
+    scan = make_scan(iam_users=[user])
+    # Act
+    nodes, _ = build(scan, user_policy_results=[analysis])
+    # Assert
+    node = next(n for n in nodes if n.type == "iam_user")
+    assert node.is_crown_jewel is True
 
 
 def test_ec2_node_instance_profile():

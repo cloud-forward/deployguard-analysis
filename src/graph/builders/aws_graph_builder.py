@@ -2,10 +2,11 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
-from src.graph.builders.aws_scanner_types import AWSScanResult, EC2InstanceScan, IAMRoleScan, RDSInstanceScan, S3BucketScan, SecurityGroupScan
+from src.graph.builders.aws_scanner_types import AWSScanResult, EC2InstanceScan, IAMRoleScan, IAMUserScan, RDSInstanceScan, S3BucketScan, SecurityGroupScan
 from src.graph.builders.cross_domain_types import IRSAMapping, SecretContainsCredentialsFact
+from src.graph.builders.iam_policy_types import IAMPolicyAnalysisResult, IAMUserPolicyAnalysisResult
 
 
 @dataclass
@@ -229,29 +230,104 @@ class AWSGraphBuilder:
             )
             self._add_node(node)
 
-    def _build_iam_role_nodes(self, roles: list[IAMRoleScan]) -> None:
+    def _build_iam_role_nodes(
+        self,
+        roles: list[IAMRoleScan],
+        policy_results: list[IAMPolicyAnalysisResult] | None = None,
+    ) -> None:
         """Build graph nodes for IAM Roles.
 
         Args:
             roles: List of IAMRoleScan objects to process.
+            policy_results: Optional list of IAMPolicyAnalysisResult objects for tier classification.
         """
-        # TODO: Add tier classification when IAM Policy Parser is integrated
-        # tier, tier_reason, trust_analysis will be added later
+        policy_by_role = {r.role_name: r for r in policy_results} if policy_results else {}
         for role in roles:
+            analysis = policy_by_role.get(role.name)
+            is_crown_jewel = False
+            metadata: dict[str, Any] = {
+                "arn": role.arn,
+                "is_irsa": role.is_irsa,
+                "attached_policies": [
+                    p["PolicyName"] for p in role.attached_policies if "PolicyName" in p
+                ],
+                "scan_id": self.scan_id,
+            }
+            if analysis:
+                is_crown_jewel = analysis.tier in (1, 2)
+                metadata["tier"] = analysis.tier
+                metadata["tier_reason"] = analysis.tier_reason
+                metadata["has_privilege_escalation"] = analysis.has_privilege_escalation
+                metadata["has_data_exfiltration_risk"] = analysis.has_data_exfiltration_risk
+                metadata["has_credential_access"] = analysis.has_credential_access
+                metadata["trust"] = {
+                    "is_irsa_enabled": analysis.trust_analysis.is_irsa_enabled,
+                    "allows_all_sa": analysis.trust_analysis.allows_all_sa,
+                    "allowed_sa_explicit": analysis.trust_analysis.allowed_sa_explicit,
+                    "allows_ec2": analysis.trust_analysis.allows_ec2,
+                    "allows_lambda": analysis.trust_analysis.allows_lambda,
+                }
+            else:
+                metadata["tier"] = None
+                metadata["tier_reason"] = "policy_analysis_unavailable"
             node = GraphNode(
                 id=f"iam:{self.account_id}:{role.name}",
                 type="iam_role",
                 namespace=None,
                 is_entry_point=False,
-                is_crown_jewel=False,
-                metadata={
-                    "arn": role.arn,
-                    "is_irsa": role.is_irsa,
-                    "attached_policies": [
-                        p["PolicyName"] for p in role.attached_policies if "PolicyName" in p
-                    ],
-                    "scan_id": self.scan_id,
-                },
+                is_crown_jewel=is_crown_jewel,
+                metadata=metadata,
+            )
+            self._add_node(node)
+
+    def _build_iam_user_nodes(
+        self,
+        users: list[IAMUserScan],
+        policy_results: list[IAMUserPolicyAnalysisResult] | None = None,
+    ) -> None:
+        """Build graph nodes for IAM Users.
+
+        Args:
+            users: List of IAMUserScan objects to process.
+            policy_results: Optional list of IAMUserPolicyAnalysisResult objects (Step 3).
+        """
+        policy_by_user = {r.username: r for r in policy_results} if policy_results else {}
+
+        for user in users:
+            active_key_count = sum(1 for k in user.access_keys if k.status == "Active")
+            has_active_key = active_key_count > 0
+
+            compliance_violations: list[str] = []
+            if not user.has_mfa and has_active_key:
+                compliance_violations.append("PISM-IAM-001")
+            if active_key_count > 1:
+                compliance_violations.append("PISM-IAM-002")
+
+            metadata: dict[str, Any] = {
+                "arn": user.arn,
+                "has_mfa": user.has_mfa,
+                "has_active_key": has_active_key,
+                "active_key_count": active_key_count,
+                "last_used": user.last_used,
+                "compliance_violations": compliance_violations,
+                "scan_id": self.scan_id,
+            }
+
+            analysis = policy_by_user.get(user.username)
+            is_crown_jewel = False
+            if analysis:
+                is_crown_jewel = analysis.tier in (1, 2)
+                metadata["tier"] = analysis.tier
+                metadata["tier_reason"] = analysis.tier_reason
+                metadata["has_privilege_escalation"] = analysis.has_privilege_escalation
+
+            node = GraphNode(
+                id=f"iam_user:{self.account_id}:{user.username}",
+                type="iam_user",
+                namespace=None,
+                is_entry_point=False,
+                is_crown_jewel=is_crown_jewel,
+                metadata=metadata,
             )
             self._add_node(node)
 
@@ -349,6 +425,9 @@ class AWSGraphBuilder:
             credential_facts: List of SecretContainsCredentialsFact objects to process.
         """
         for fact in credential_facts:
+            # target_type drives the node ID prefix; supported values include "rds", "s3", and
+            # "iam_user" — the last produces "iam_user:{account_id}:{target_id}" which matches
+            # the node ID format emitted by _build_iam_user_nodes, so no special-casing is needed.
             self._add_edge(GraphEdge(
                 source=f"secret:{fact.secret_namespace}:{fact.secret_name}",
                 target=f"{fact.target_type}:{self.account_id}:{fact.target_id}",
@@ -367,7 +446,8 @@ class AWSGraphBuilder:
         scan: AWSScanResult,
         irsa_mappings: list[IRSAMapping],
         credential_facts: list[SecretContainsCredentialsFact],
-        policy_results: Optional[list["IAMPolicyAnalysisResult"]] = None,
+        policy_results: list[IAMPolicyAnalysisResult] | None = None,
+        user_policy_results: list[IAMUserPolicyAnalysisResult] | None = None,
     ) -> tuple[list[GraphNode], list[GraphEdge]]:
         """
         Build AWS graph nodes and edges from scan data.
@@ -376,38 +456,140 @@ class AWSGraphBuilder:
             scan: AWS Scanner output containing all resource data
             irsa_mappings: Service Account to IAM Role mappings from K8s Scanner
             credential_facts: Secret to AWS resource credential mappings
-            policy_results: IAM Policy analysis results (Phase 3, currently not used)
+            policy_results: IAM Policy analysis results; when provided, IAM access
+                edges are created linking roles to the S3/RDS resources they can access
+            user_policy_results: IAM User Policy analysis results; when provided, IAM
+                user access edges are created linking users to the S3/RDS resources
+                they can access
 
         Returns:
             Tuple of (nodes, edges)
 
-        Phase 1 Implementation:
-            - Creates nodes: IAM Role, S3, RDS, SecurityGroup, EC2
-            - Creates edges: SG allows, Instance Profile, IRSA, Credentials
-
-        Phase 3 TODO:
-            - Implement _build_iam_access_edges() when policy_results is provided
-            - Update _build_iam_role_nodes() to use policy analysis for tier classification
+        Implementation:
+            - Creates nodes: IAM Role, IAM User, S3, RDS, SecurityGroup, EC2
+            - Creates edges: SG allows, Instance Profile, IRSA, Credentials,
+              IAM access edges (only when policy_results provided), and IAM user
+              access edges (only when user_policy_results provided)
         """
         # Nodes first
-        self._build_iam_role_nodes(scan.iam_roles)
+        self._build_iam_role_nodes(scan.iam_roles, policy_results)
+        self._build_iam_user_nodes(scan.iam_users, user_policy_results)
         self._build_s3_nodes(scan.s3_buckets)
         self._build_rds_nodes(scan.rds_instances)
         self._build_security_group_nodes(scan.security_groups)
         self._build_ec2_nodes(scan.ec2_instances)
 
         # Then edges
-        if policy_results is not None:
-            # TODO: Implement in Phase 3 when IAM Policy Parser is integrated
-            # self._build_iam_access_edges(policy_results, scan)
-            pass
-
         self._build_sg_allows_edges(scan)
         self._build_instance_profile_edges(scan.ec2_instances)
         self._build_irsa_edges(irsa_mappings)
         self._build_credential_edges(credential_facts)
+        if policy_results:
+            self._build_iam_access_edges(policy_results, scan)
+        if user_policy_results:
+            self._build_iam_user_access_edges(user_policy_results, scan)
 
         return (self.nodes, self.edges)
+
+    def _resolve_wildcard_targets(self, service: str, known_s3: set[str], known_rds: set[str]) -> list[str]:
+        if service == "s3":
+            return [f"s3:{self.account_id}:{name}" for name in known_s3]
+        elif service == "rds":
+            return [f"rds:{self.account_id}:{name}" for name in known_rds]
+        return []
+
+    def _resolve_specific_targets(self, service: str, arns: list[str], known_s3: set[str], known_rds: set[str]) -> list[str]:
+        targets = []
+        for arn in arns:
+            if service == "s3":
+                parts = arn.split(":::")
+                if len(parts) == 2:
+                    bucket_name = parts[1].split("/")[0]
+                    if bucket_name in known_s3:
+                        targets.append(f"s3:{self.account_id}:{bucket_name}")
+            elif service == "rds":
+                parts = arn.split(":")
+                if len(parts) >= 7:
+                    identifier = parts[6]
+                    if identifier in known_rds:
+                        targets.append(f"rds:{self.account_id}:{identifier}")
+        return targets
+
+    def _build_iam_access_edges(
+        self,
+        policy_results: list[IAMPolicyAnalysisResult],
+        scan: AWSScanResult,
+    ) -> None:
+        known_s3 = {b.name for b in scan.s3_buckets}
+        known_rds = {r.identifier for r in scan.rds_instances}
+
+        for analysis in policy_results:
+            source = f"iam:{self.account_id}:{analysis.role_name}"
+            for resource_access in analysis.resource_access:
+                if resource_access.effect == "Deny":
+                    continue
+                service = resource_access.service
+                if service not in ("s3", "rds"):
+                    continue
+                if resource_access.is_wildcard_resource:
+                    targets = self._resolve_wildcard_targets(service, known_s3, known_rds)
+                else:
+                    targets = self._resolve_specific_targets(service, resource_access.resource_arns, known_s3, known_rds)
+                for target in targets:
+                    self._add_edge(GraphEdge(
+                        source=source,
+                        target=target,
+                        type="iam_role_access_resource",
+                        metadata={
+                            "service": service,
+                            "actions": resource_access.actions,
+                            "is_wildcard_action": resource_access.is_wildcard_action,
+                            "is_wildcard_resource": resource_access.is_wildcard_resource,
+                            "policy_name": resource_access.policy_name,
+                            "policy_arn": resource_access.policy_arn,
+                            "scan_id": self.scan_id,
+                            "source_type": "iam_policy_analysis",
+                            "created_at": datetime.utcnow().isoformat() + "Z",
+                        },
+                    ))
+
+    def _build_iam_user_access_edges(
+        self,
+        user_policy_results: list[IAMUserPolicyAnalysisResult],
+        scan: AWSScanResult,
+    ) -> None:
+        known_s3 = {b.name for b in scan.s3_buckets}
+        known_rds = {r.identifier for r in scan.rds_instances}
+
+        for analysis in user_policy_results:
+            source = f"iam_user:{self.account_id}:{analysis.username}"
+            for resource_access in analysis.resource_access:
+                if resource_access.effect == "Deny":
+                    continue
+                service = resource_access.service
+                if service not in ("s3", "rds"):
+                    continue
+                if resource_access.is_wildcard_resource:
+                    targets = self._resolve_wildcard_targets(service, known_s3, known_rds)
+                else:
+                    targets = self._resolve_specific_targets(service, resource_access.resource_arns, known_s3, known_rds)
+                for target in targets:
+                    self._add_edge(GraphEdge(
+                        source=source,
+                        target=target,
+                        type="iam_role_access_resource",
+                        metadata={
+                            "service": service,
+                            "actions": resource_access.actions,
+                            "is_wildcard_action": resource_access.is_wildcard_action,
+                            "is_wildcard_resource": resource_access.is_wildcard_resource,
+                            "policy_name": resource_access.policy_name,
+                            "policy_arn": resource_access.policy_arn,
+                            "scan_id": self.scan_id,
+                            "source_type": "iam_user_policy_analysis",
+                            "created_at": datetime.utcnow().isoformat() + "Z",
+                        },
+                    ))
 
     def _add_edge(self, edge: GraphEdge) -> None:
         """Add an edge to the graph.

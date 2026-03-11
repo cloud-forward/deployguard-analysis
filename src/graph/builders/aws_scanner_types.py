@@ -1,6 +1,6 @@
 """Data classes representing AWS Scanner output consumed by AWS Graph Builder."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -65,6 +65,28 @@ class SecurityGroupScan:
 
 
 @dataclass
+class AccessKeyScan:
+    """Represents a scanned IAM Access Key."""
+
+    access_key_id: str
+    status: str        # "Active" | "Inactive"
+    create_date: str   # ISO 8601
+
+
+@dataclass
+class IAMUserScan:
+    """Represents a scanned IAM User."""
+
+    username: str
+    arn: str
+    access_keys: list[AccessKeyScan]
+    attached_policies: list[dict]
+    inline_policies: list[dict]
+    has_mfa: bool
+    last_used: Optional[str]        # ISO 8601 or None
+
+
+@dataclass
 class AWSScanResult:
     """Represents the full result of an AWS environment scan."""
 
@@ -76,3 +98,4 @@ class AWSScanResult:
     rds_instances: list[RDSInstanceScan]
     ec2_instances: list[EC2InstanceScan]
     security_groups: list[SecurityGroupScan]
+    iam_users: list[IAMUserScan] = field(default_factory=list)

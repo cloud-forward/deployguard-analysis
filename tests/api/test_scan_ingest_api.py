@@ -124,18 +124,18 @@ def client_missing_s3():
 
 
 def _start(client, cluster_id="cluster-1", scanner_type="k8s"):
-    return client.post("/api/scans/start", json={"cluster_id": cluster_id, "scanner_type": scanner_type})
+    return client.post("/api/v1/scans/start", json={"cluster_id": cluster_id, "scanner_type": scanner_type})
 
 
 def _upload_url(client, scan_id, file_name="scan.json"):
-    return client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": file_name})
+    return client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": file_name})
 
 
 def _complete(client, scan_id, files=None):
     if files is None:
         resp = _upload_url(client, scan_id)
         files = [resp.json()["s3_key"]]
-    return client.post(f"/api/scans/{scan_id}/complete", json={"files": files})
+    return client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": files})
 
 
 class TestScanStart:
@@ -155,11 +155,11 @@ class TestScanStart:
         assert resp.status_code == 422
 
     def test_missing_cluster_id_rejected(self, client):
-        resp = client.post("/api/scans/start", json={"scanner_type": "k8s"})
+        resp = client.post("/api/v1/scans/start", json={"scanner_type": "k8s"})
         assert resp.status_code == 422
 
     def test_missing_scanner_type_rejected(self, client):
-        resp = client.post("/api/scans/start", json={"cluster_id": "cluster-1"})
+        resp = client.post("/api/v1/scans/start", json={"cluster_id": "cluster-1"})
         assert resp.status_code == 422
 
     def test_duplicate_active_scan_rejected(self, client):
@@ -200,7 +200,7 @@ class TestUploadUrl:
     def test_updates_status_to_uploading(self, client):
         scan_id = _start(client).json()["scan_id"]
         _upload_url(client, scan_id)
-        status = client.get(f"/api/scans/{scan_id}/status").json()["status"]
+        status = client.get(f"/api/v1/scans/{scan_id}/status").json()["status"]
         assert status == SCAN_STATUS_UPLOADING
 
     def test_scan_not_found_returns_404(self, client):
@@ -230,22 +230,22 @@ class TestCompleteScan:
         url_resp = _upload_url(client, scan_id)
         s3_key = url_resp.json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
-        status_resp = client.get(f"/api/scans/{scan_id}/status").json()
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status").json()
         assert s3_key in status_resp["files"]
 
     def test_complete_scan_not_found_returns_404(self, client):
-        resp = client.post("/api/scans/ghost-scan/complete", json={"files": ["some/key.json"]})
+        resp = client.post("/api/v1/scans/ghost-scan/complete", json={"files": ["some/key.json"]})
         assert resp.status_code == 404
 
     def test_complete_empty_files_rejected(self, client):
         scan_id = _start(client).json()["scan_id"]
-        resp = client.post(f"/api/scans/{scan_id}/complete", json={"files": []})
+        resp = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": []})
         assert resp.status_code == 422
 
     def test_complete_missing_s3_file_returns_400(self, client_missing_s3):
         scan_id = _start(client_missing_s3).json()["scan_id"]
         resp = client_missing_s3.post(
-            f"/api/scans/{scan_id}/complete",
+            f"/api/v1/scans/{scan_id}/complete",
             json={"files": ["scans/cluster-1/fake-scan/k8s/scan.json"]},
         )
         assert resp.status_code == 400
@@ -254,20 +254,20 @@ class TestCompleteScan:
 class TestScanStatus:
     def test_get_status_created(self, client):
         scan_id = _start(client).json()["scan_id"]
-        resp = client.get(f"/api/scans/{scan_id}/status")
+        resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == SCAN_STATUS_CREATED
         assert data["scan_id"] == scan_id
 
     def test_get_status_not_found(self, client):
-        resp = client.get("/api/scans/ghost-id/status")
+        resp = client.get("/api/v1/scans/ghost-id/status")
         assert resp.status_code == 404
 
     def test_status_transitions_created_uploading_processing(self, client):
         scan_id = _start(client).json()["scan_id"]
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_CREATED
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_CREATED
         _upload_url(client, scan_id)
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
         _complete(client, scan_id)
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING

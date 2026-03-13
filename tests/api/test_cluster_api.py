@@ -84,13 +84,13 @@ def client():
 
 @pytest.fixture
 def created_cluster(client):
-    resp = client.post("/api/clusters", json={"name": "base-cluster", "cluster_type": "eks"})
+    resp = client.post("/api/v1/clusters", json={"name": "base-cluster", "cluster_type": "eks"})
     assert resp.status_code == 201
     return resp.json()
 
 
 def test_create_cluster(client):
-    resp = client.post("/api/clusters", json={"name": "my-cluster", "cluster_type": "eks", "description": "desc"})
+    resp = client.post("/api/v1/clusters", json={"name": "my-cluster", "cluster_type": "eks", "description": "desc"})
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "my-cluster"
@@ -100,49 +100,49 @@ def test_create_cluster(client):
 
 
 def test_create_cluster_without_description(client):
-    resp = client.post("/api/clusters", json={"name": "no-desc", "cluster_type": "self-managed"})
+    resp = client.post("/api/v1/clusters", json={"name": "no-desc", "cluster_type": "self-managed"})
     assert resp.status_code == 201
     assert resp.json()["description"] is None
 
 
 def test_create_cluster_duplicate_name_rejected(client, created_cluster):
-    resp = client.post("/api/clusters", json={"name": created_cluster["name"], "cluster_type": "eks"})
+    resp = client.post("/api/v1/clusters", json={"name": created_cluster["name"], "cluster_type": "eks"})
     assert resp.status_code == 400
     assert "already exists" in resp.json()["detail"]
 
 
 def test_create_cluster_invalid_type(client):
-    resp = client.post("/api/clusters", json={"name": "bad-type", "cluster_type": "gke"})
+    resp = client.post("/api/v1/clusters", json={"name": "bad-type", "cluster_type": "gke"})
     assert resp.status_code == 422
 
 
 def test_create_cluster_missing_name(client):
-    resp = client.post("/api/clusters", json={"cluster_type": "eks"})
+    resp = client.post("/api/v1/clusters", json={"cluster_type": "eks"})
     assert resp.status_code == 422
 
 
 def test_create_cluster_missing_type(client):
-    resp = client.post("/api/clusters", json={"name": "no-type"})
+    resp = client.post("/api/v1/clusters", json={"name": "no-type"})
     assert resp.status_code == 422
 
 
 def test_get_cluster_by_id(client, created_cluster):
-    resp = client.get(f"/api/clusters/{created_cluster['id']}")
+    resp = client.get(f"/api/v1/clusters/{created_cluster['id']}")
     assert resp.status_code == 200
     assert resp.json()["id"] == created_cluster["id"]
     assert resp.json()["name"] == created_cluster["name"]
 
 
 def test_get_cluster_not_found(client):
-    resp = client.get("/api/clusters/nonexistent-id")
+    resp = client.get("/api/v1/clusters/nonexistent-id")
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"].lower()
 
 
 def test_list_clusters(client):
-    client.post("/api/clusters", json={"name": "c1", "cluster_type": "eks"})
-    client.post("/api/clusters", json={"name": "c2", "cluster_type": "self-managed"})
-    resp = client.get("/api/clusters")
+    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"})
+    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"})
+    resp = client.get("/api/v1/clusters")
     assert resp.status_code == 200
     names = [c["name"] for c in resp.json()]
     assert "c1" in names
@@ -150,14 +150,14 @@ def test_list_clusters(client):
 
 
 def test_list_clusters_empty(client):
-    resp = client.get("/api/clusters")
+    resp = client.get("/api/v1/clusters")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 def test_update_cluster_description(client, created_cluster):
     resp = client.patch(
-        f"/api/clusters/{created_cluster['id']}",
+        f"/api/v1/clusters/{created_cluster['id']}",
         json={"description": "new desc"},
     )
     assert resp.status_code == 200
@@ -166,7 +166,7 @@ def test_update_cluster_description(client, created_cluster):
 
 def test_update_cluster_type(client, created_cluster):
     resp = client.patch(
-        f"/api/clusters/{created_cluster['id']}",
+        f"/api/v1/clusters/{created_cluster['id']}",
         json={"cluster_type": "self-managed"},
     )
     assert resp.status_code == 200
@@ -175,23 +175,23 @@ def test_update_cluster_type(client, created_cluster):
 
 def test_update_cluster_invalid_type(client, created_cluster):
     resp = client.patch(
-        f"/api/clusters/{created_cluster['id']}",
+        f"/api/v1/clusters/{created_cluster['id']}",
         json={"cluster_type": "invalid"},
     )
     assert resp.status_code == 422
 
 
 def test_update_cluster_not_found(client):
-    resp = client.patch("/api/clusters/ghost-id", json={"description": "x"})
+    resp = client.patch("/api/v1/clusters/ghost-id", json={"description": "x"})
     assert resp.status_code == 404
 
 
 def test_delete_cluster(client, created_cluster):
-    resp = client.delete(f"/api/clusters/{created_cluster['id']}")
+    resp = client.delete(f"/api/v1/clusters/{created_cluster['id']}")
     assert resp.status_code == 204
-    assert client.get(f"/api/clusters/{created_cluster['id']}").status_code == 404
+    assert client.get(f"/api/v1/clusters/{created_cluster['id']}").status_code == 404
 
 
 def test_delete_cluster_not_found(client):
-    resp = client.delete("/api/clusters/ghost-id")
+    resp = client.delete("/api/v1/clusters/ghost-id")
     assert resp.status_code == 404

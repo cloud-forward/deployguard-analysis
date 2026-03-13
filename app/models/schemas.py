@@ -11,23 +11,29 @@ from app.core.constants import (
 )
 
 
-class AnalysisRequest(BaseModel):
-    target_id: str = Field(..., description="분석할 대상의 ID", example="prod-cluster-01")
-    depth: int = Field(default=3, ge=1, le=10, description="탐색 깊이 (1~10)")
-    parameters: Optional[Dict[str, Any]] = Field(None, description="추가 분석 파라미터")
+class AnalysisJobRequest(BaseModel):
+    cluster_id: str = Field(..., description="분석 대상 클러스터 ID", example="prod-cluster-01")
+    k8s_scan_id: str = Field(..., description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
+    aws_scan_id: str = Field(..., description="AWS 스캔 세션 ID", example="20260309T113020-aws")
+    image_scan_id: str = Field(..., description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"target_id": "prod-cluster-01", "depth": 3}
+        {
+            "cluster_id": "prod-cluster-01",
+            "k8s_scan_id": "20260309T113020-k8s",
+            "aws_scan_id": "20260309T113020-aws",
+            "image_scan_id": "20260309T113020-image",
+        }
     ]})
 
 
-class AnalysisResponse(BaseModel):
+class AnalysisJobResponse(BaseModel):
     job_id: str = Field(..., description="생성된 분석 작업 ID", example="job-20260313-001")
-    status: str = Field(..., description="작업 상태", example="pending")
+    status: str = Field(..., description="작업 상태", example="accepted")
     message: str = Field(..., description="상태 메시지", example="분석 작업이 시작되었습니다")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"job_id": "job-20260313-001", "status": "pending", "message": "분석 작업이 시작되었습니다"}
+        {"job_id": "job-20260313-001", "status": "accepted", "message": "분석 작업이 시작되었습니다"}
     ]})
 
 

@@ -21,4 +21,8 @@ class AnalysisJobRepository(Protocol):
     async def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         ...
 
+    async def create_analysis_job(self, cluster_id: str, k8s_scan_id: str, aws_scan_id: str, image_scan_id: str) -> str:
+        """Create an analysis job for a cluster with all required scan IDs. Returns job_id."""
+        ...
+
 

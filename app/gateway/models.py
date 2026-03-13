@@ -4,6 +4,8 @@ Moved from app/models/db_models.py to avoid domain→gateway dependency.
 """
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, JSON, DateTime, Boolean, Integer, text
+from sqlalchemy.dialects.postgresql import UUID
+from uuid import uuid4
 from datetime import datetime
 from app.gateway.db.base import Base
 
@@ -55,5 +57,30 @@ class AlertGroup(Base):
     reanalyze_on_next_ingest: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
     reanalyze_manual_request: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
     reanalyze_due_to_runtime_bonus: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
-
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class AnalysisJob(Base):
+    __tablename__ = "analysis_jobs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    k8s_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    aws_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    image_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Cluster(Base):
+    """
+    Model representing a cluster in DeployGuard.
+    """
+    __tablename__ = "clusters"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'eks' | 'self-managed'
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

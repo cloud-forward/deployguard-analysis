@@ -11,7 +11,7 @@ from app.models.schemas import (
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 
-router = APIRouter(prefix="/api/scans", tags=["Scans"])
+router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
 
 
 @router.post(

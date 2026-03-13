@@ -20,6 +20,10 @@ class ScanRepository(Protocol):
         """Update the status (and optional fields) of a ScanRecord. Returns updated ScanRecord."""
         ...
 
+    async def update(self, scan_id: str, status: str, s3_keys: list[str], completed_at=None) -> object:
+        """Update status and s3_keys of a ScanRecord. Returns updated ScanRecord."""
+        ...
+
     async def update_files(self, scan_id: str, s3_keys: list[str]) -> object:
         """Update the s3_keys list of a ScanRecord. Returns updated ScanRecord."""
         ...

@@ -24,6 +24,9 @@ class AnalysisService:
             message=f"Analysis started for target {request.target_id}",
         )
 
+    async def maybe_trigger_analysis(self, cluster_id: str) -> None:
+        pass
+
 
 def _params_dict(request: AnalysisRequest) -> Dict[str, Any]:
     return {"depth": request.depth, **(request.parameters or {})}

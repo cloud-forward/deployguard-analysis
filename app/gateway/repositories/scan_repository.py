@@ -46,6 +46,20 @@ class SQLAlchemyScanRepository(ScanRepository):
         await self._session.refresh(record)
         return record
 
+    async def update(self, scan_id: str, status: str, s3_keys: list[str], completed_at=None) -> ScanRecord:
+        result = await self._session.execute(
+            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        )
+        record = result.scalars().first()
+        record.status = status
+        record.s3_keys = s3_keys
+        record.updated_at = datetime.utcnow()
+        if completed_at is not None:
+            record.completed_at = completed_at
+        await self._session.commit()
+        await self._session.refresh(record)
+        return record
+
     async def update_files(self, scan_id: str, s3_keys: list[str]) -> ScanRecord:
         result = await self._session.execute(
             select(ScanRecord).where(ScanRecord.scan_id == scan_id)

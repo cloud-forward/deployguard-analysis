@@ -155,3 +155,40 @@ class ScanStatusResponse(BaseModel):
             ],
         }
     ]})
+
+
+class ClusterCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    cluster_type: str = Field(..., description="'eks' | 'self-managed'")
+
+    @field_validator("cluster_type")
+    @classmethod
+    def validate_cluster_type(cls, v: str) -> str:
+        if v not in ("eks", "self-managed"):
+            raise ValueError("cluster_type must be either 'eks' or 'self-managed'")
+        return v
+
+
+class ClusterUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    cluster_type: Optional[str] = Field(None, description="'eks' | 'self-managed'")
+
+    @field_validator("cluster_type")
+    @classmethod
+    def validate_cluster_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("eks", "self-managed"):
+            raise ValueError("cluster_type must be either 'eks' or 'self-managed'")
+        return v
+
+
+class ClusterResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str]
+    cluster_type: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

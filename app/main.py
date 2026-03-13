@@ -2,7 +2,7 @@
 Main entry point for the FastAPI application.
 """
 from fastapi import FastAPI
-from app.api import health, analyze, scan
+from app.api import health, analyze, scan, clusters
 from app.config import settings
 
 app = FastAPI(
@@ -31,6 +31,7 @@ DeployGuard는 인프라 그래프를 구축하고, 공격 경로를 탐색하�
 app.include_router(health.router, tags=["General"])
 app.include_router(analyze.router, prefix="/api/v1", tags=["Analysis"])
 app.include_router(scan.router)
+app.include_router(clusters.router)
 
 @app.get("/")
 async def root():

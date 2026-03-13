@@ -108,7 +108,7 @@ def client():
     """
     fake_repo = FakeScanRepository()
     fake_s3 = FakeS3Service()
-    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
+    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)  # noqa
 
     app.dependency_overrides[get_scan_service] = lambda: fake_service
 

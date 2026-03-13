@@ -4,7 +4,7 @@ SQLAlchemy implementation of ScanRepository.
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import ACTIVE_SCAN_STATUSES
 from app.domain.repositories.scan_repository import ScanRepository
@@ -76,6 +76,22 @@ class SQLAlchemyScanRepository(ScanRepository):
             select(ScanRecord).where(ScanRecord.cluster_id == cluster_id)
         )
         return list(result.scalars().all())
+
+    async def get_latest_completed_scans(self, cluster_id: str) -> dict:
+        subq = (
+            select(ScanRecord.scanner_type, func.max(ScanRecord.created_at).label("max_created_at"))
+            .where(ScanRecord.cluster_id == cluster_id, ScanRecord.status == "completed")
+            .group_by(ScanRecord.scanner_type)
+            .subquery()
+        )
+        result = await self._session.execute(
+            select(ScanRecord).join(
+                subq,
+                (ScanRecord.scanner_type == subq.c.scanner_type) &
+                (ScanRecord.created_at == subq.c.max_created_at),
+            ).where(ScanRecord.cluster_id == cluster_id)
+        )
+        return {record.scanner_type: record for record in result.scalars().all()}
 
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> Optional[ScanRecord]:
         active_statuses = ACTIVE_SCAN_STATUSES

@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 class ScanService:
-    def __init__(self, scan_repository, s3_service):
+    def __init__(self, scan_repository, s3_service, analysis_service=None):
         self._repo = scan_repository
         self._s3 = s3_service
+        self._analysis = analysis_service
 
     async def start_scan(self, cluster_id: str, scanner_type: str) -> ScanStartResponse:
         active = await self._repo.find_active_scan(cluster_id, scanner_type)
@@ -69,6 +70,8 @@ class ScanService:
                 raise HTTPException(status_code=400, detail=f"File not found in S3: {f}")
         await self._repo.update(scan_id, status=SCAN_STATUS_PROCESSING, s3_keys=files)
         logger.info("Scan completed: scan_id=%s cluster_id=%s", scan_id, record.cluster_id)
+        if self._analysis is not None:
+            await self._analysis.maybe_trigger_analysis(record.cluster_id)
         return ScanCompleteResponse(scan_id=scan_id, status=SCAN_STATUS_PROCESSING)
 
     async def get_scan_status(self, scan_id: str) -> ScanStatusResponse:

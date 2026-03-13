@@ -60,6 +60,18 @@ class AlertGroup(Base):
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class AnalysisJob(Base):
+    __tablename__ = "analysis_jobs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    k8s_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    aws_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    image_scan_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Cluster(Base):
     """
     Model representing a cluster in DeployGuard.

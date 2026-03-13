@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
+from app.gateway.models import AnalysisJob
 
 
 class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
@@ -22,3 +23,16 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
 
     async def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         return None
+
+    async def create_analysis_job(self, cluster_id: str, k8s_scan_id: str, aws_scan_id: str, image_scan_id: str) -> str:
+        job = AnalysisJob(
+            cluster_id=cluster_id,
+            k8s_scan_id=k8s_scan_id,
+            aws_scan_id=aws_scan_id,
+            image_scan_id=image_scan_id,
+            status="pending",
+        )
+        self._session.add(job)
+        await self._session.commit()
+        await self._session.refresh(job)
+        return job.id

@@ -4,7 +4,7 @@ SQLAlchemy implementation of ScanRepository.
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import ACTIVE_SCAN_STATUSES
 from app.domain.repositories.scan_repository import ScanRepository
@@ -46,6 +46,20 @@ class SQLAlchemyScanRepository(ScanRepository):
         await self._session.refresh(record)
         return record
 
+    async def update(self, scan_id: str, status: str, s3_keys: list[str], completed_at=None) -> ScanRecord:
+        result = await self._session.execute(
+            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        )
+        record = result.scalars().first()
+        record.status = status
+        record.s3_keys = s3_keys
+        record.updated_at = datetime.utcnow()
+        if completed_at is not None:
+            record.completed_at = completed_at
+        await self._session.commit()
+        await self._session.refresh(record)
+        return record
+
     async def update_files(self, scan_id: str, s3_keys: list[str]) -> ScanRecord:
         result = await self._session.execute(
             select(ScanRecord).where(ScanRecord.scan_id == scan_id)
@@ -62,6 +76,22 @@ class SQLAlchemyScanRepository(ScanRepository):
             select(ScanRecord).where(ScanRecord.cluster_id == cluster_id)
         )
         return list(result.scalars().all())
+
+    async def get_latest_completed_scans(self, cluster_id: str) -> dict:
+        subq = (
+            select(ScanRecord.scanner_type, func.max(ScanRecord.created_at).label("max_created_at"))
+            .where(ScanRecord.cluster_id == cluster_id, ScanRecord.status == "completed")
+            .group_by(ScanRecord.scanner_type)
+            .subquery()
+        )
+        result = await self._session.execute(
+            select(ScanRecord).join(
+                subq,
+                (ScanRecord.scanner_type == subq.c.scanner_type) &
+                (ScanRecord.created_at == subq.c.max_created_at),
+            ).where(ScanRecord.cluster_id == cluster_id)
+        )
+        return {record.scanner_type: record for record in result.scalars().all()}
 
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> Optional[ScanRecord]:
         active_statuses = ACTIVE_SCAN_STATUSES

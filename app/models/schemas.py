@@ -12,21 +12,23 @@ from app.core.constants import (
 
 
 class AnalysisRequest(BaseModel):
-    """
-    /analyze 엔드포인트의 요청 모델.
-    """
-    target_id: str = Field(..., description="분석할 대상의 ID")
-    depth: int = Field(default=3, ge=1, le=10)
-    parameters: Optional[Dict[str, Any]] = None
+    target_id: str = Field(..., description="분석할 대상의 ID", example="prod-cluster-01")
+    depth: int = Field(default=3, ge=1, le=10, description="탐색 깊이 (1~10)")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="추가 분석 파라미터")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"target_id": "prod-cluster-01", "depth": 3}
+    ]})
 
 
 class AnalysisResponse(BaseModel):
-    """
-    /analyze 엔드포인트의 응답 모델.
-    """
-    job_id: str
-    status: str
-    message: str
+    job_id: str = Field(..., description="생성된 분석 작업 ID", example="job-20260313-001")
+    status: str = Field(..., description="작업 상태", example="pending")
+    message: str = Field(..., description="상태 메시지", example="분석 작업이 시작되었습니다")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"job_id": "job-20260313-001", "status": "pending", "message": "분석 작업이 시작되었습니다"}
+    ]})
 
 
 class HealthResponse(BaseModel):
@@ -158,9 +160,13 @@ class ScanStatusResponse(BaseModel):
 
 
 class ClusterCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    description: Optional[str] = Field(None, max_length=1000)
-    cluster_type: str = Field(..., description="'eks' | 'self-managed'")
+    name: str = Field(..., min_length=1, max_length=255, description="클러스터 고유 이름", example="prod-cluster-01")
+    description: Optional[str] = Field(None, max_length=1000, description="클러스터 설명", example="프로덕션 EKS 클러스터")
+    cluster_type: str = Field(..., description="클러스터 유형: 'eks' | 'self-managed'", example="eks")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"name": "prod-cluster-01", "description": "프로덕션 EKS 클러스터", "cluster_type": "eks"}
+    ]})
 
     @field_validator("cluster_type")
     @classmethod
@@ -171,9 +177,13 @@ class ClusterCreateRequest(BaseModel):
 
 
 class ClusterUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = Field(None, max_length=1000)
-    cluster_type: Optional[str] = Field(None, description="'eks' | 'self-managed'")
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="변경할 클러스터 이름", example="prod-cluster-02")
+    description: Optional[str] = Field(None, max_length=1000, description="변경할 클러스터 설명", example="업데이트된 설명")
+    cluster_type: Optional[str] = Field(None, description="변경할 클러스터 유형: 'eks' | 'self-managed'", example="self-managed")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"name": "prod-cluster-02", "cluster_type": "self-managed"}
+    ]})
 
     @field_validator("cluster_type")
     @classmethod
@@ -184,11 +194,21 @@ class ClusterUpdateRequest(BaseModel):
 
 
 class ClusterResponse(BaseModel):
-    id: str
-    name: str
-    description: Optional[str]
-    cluster_type: str
-    created_at: datetime
-    updated_at: datetime
+    id: str = Field(..., description="클러스터 고유 ID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    name: str = Field(..., description="클러스터 이름", example="prod-cluster-01")
+    description: Optional[str] = Field(None, description="클러스터 설명", example="프로덕션 EKS 클러스터")
+    cluster_type: str = Field(..., description="클러스터 유형", example="eks")
+    created_at: datetime = Field(..., description="생성 일시")
+    updated_at: datetime = Field(..., description="최종 수정 일시")
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={"examples": [{
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "name": "prod-cluster-01",
+            "description": "프로덕션 EKS 클러스터",
+            "cluster_type": "eks",
+            "created_at": "2024-01-15T10:00:00Z",
+            "updated_at": "2024-01-15T10:00:00Z",
+        }]}
+    )

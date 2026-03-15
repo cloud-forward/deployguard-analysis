@@ -123,7 +123,7 @@ def client_missing_s3():
     app.dependency_overrides.clear()
 
 
-def _start(client, cluster_id="cluster-1", scanner_type="k8s"):
+def _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s"):
     return client.post("/api/v1/scans/start", json={"cluster_id": cluster_id, "scanner_type": scanner_type})
 
 
@@ -159,27 +159,27 @@ class TestScanStart:
         assert resp.status_code == 422
 
     def test_missing_scanner_type_rejected(self, client):
-        resp = client.post("/api/v1/scans/start", json={"cluster_id": "cluster-1"})
+        resp = client.post("/api/v1/scans/start", json={"cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"})
         assert resp.status_code == 422
 
     def test_duplicate_active_scan_rejected(self, client):
-        _start(client, cluster_id="cluster-1", scanner_type="k8s")
-        resp = _start(client, cluster_id="cluster-1", scanner_type="k8s")
+        _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
+        resp = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
         assert resp.status_code == 409
 
     def test_different_scanner_types_allowed_same_cluster(self, client):
-        assert _start(client, cluster_id="cluster-1", scanner_type="k8s").status_code == 201
-        assert _start(client, cluster_id="cluster-1", scanner_type="aws").status_code == 201
+        assert _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s").status_code == 201
+        assert _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="aws").status_code == 201
 
     def test_same_scanner_type_different_clusters_allowed(self, client):
-        r1 = _start(client, cluster_id="cluster-1", scanner_type="k8s")
-        r2 = _start(client, cluster_id="cluster-2", scanner_type="aws")
+        r1 = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
+        r2 = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901", scanner_type="aws")
         assert r1.status_code == 201
         assert r2.status_code == 201
         assert r1.json()["scan_id"] != r2.json()["scan_id"]
 
     def test_scan_start_with_unknown_cluster_still_creates_record(self, client):
-        resp = _start(client, cluster_id="nonexistent-cluster")
+        resp = _start(client, cluster_id="ffffffff-ffff-ffff-ffff-ffffffffffff")
         assert resp.status_code == 201
 
 

@@ -2,6 +2,8 @@
 요청 및 응답 모델을 위한 Pydantic 스키마.
 """
 from datetime import datetime
+from enum import Enum
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any
 from app.core.constants import (
@@ -9,6 +11,13 @@ from app.core.constants import (
     SCAN_STATUS_CREATED,
     SCAN_STATUS_PROCESSING,
 )
+
+
+class ScannerType(str, Enum):
+    k8s = "k8s"
+    aws = "aws"
+    image = "image"
+    runtime = "runtime"
 
 
 class AnalysisJobRequest(BaseModel):
@@ -47,19 +56,20 @@ class HealthResponse(BaseModel):
 
 
 class ScanStartRequest(BaseModel):
-    cluster_id: str = Field(..., description="대상 클러스터 식별자", example="prod-cluster-01")
-    scanner_type: str = Field(..., description="스캐너 유형", example="k8s")
+    cluster_id: UUID = Field(
+        ...,
+        description="UUID of the Kubernetes cluster registered in DeployGuard",
+        example="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    )
+    scanner_type: ScannerType = Field(
+        ...,
+        description="Type of scanner to run. One of: k8s, aws, image",
+        example="k8s",
+    )
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"cluster_id": "prod-cluster-01", "scanner_type": "k8s"}
+        {"cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "scanner_type": "k8s"}
     ]})
-
-    @field_validator("scanner_type")
-    @classmethod
-    def validate_scanner_type(cls, v: str) -> str:
-        if v not in VALID_SCANNER_TYPES:
-            raise ValueError(f"scanner_type must be one of {sorted(VALID_SCANNER_TYPES)}")
-        return v
 
 
 class UploadUrlRequest(BaseModel):

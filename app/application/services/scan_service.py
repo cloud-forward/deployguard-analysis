@@ -5,7 +5,9 @@ Coordinates the 3-step scan flow: start → upload → complete.
 from __future__ import annotations
 import logging
 from datetime import datetime
+from uuid import UUID
 from fastapi import HTTPException
+from app.models.schemas import ScannerType
 from app.core.constants import (
     SCAN_STATUS_CREATED,
     SCAN_STATUS_UPLOADING,
@@ -28,17 +30,19 @@ class ScanService:
         self._s3 = s3_service
         self._analysis = analysis_service
 
-    async def start_scan(self, cluster_id: str, scanner_type: str) -> ScanStartResponse:
-        active = await self._repo.find_active_scan(cluster_id, scanner_type)
+    async def start_scan(self, cluster_id: UUID, scanner_type: ScannerType) -> ScanStartResponse:
+        cluster_id_str = str(cluster_id)
+        scanner_type_str = scanner_type.value
+        active = await self._repo.find_active_scan(cluster_id_str, scanner_type_str)
         if active is not None:
             raise HTTPException(
                 status_code=409,
                 detail="A scan for this cluster and scanner type is already running",
             )
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-        scan_id = f"{timestamp}-{scanner_type}"
-        await self._repo.create(scan_id=scan_id, cluster_id=cluster_id, scanner_type=scanner_type)
-        logger.info("Scan session created: scan_id=%s cluster_id=%s scanner_type=%s", scan_id, cluster_id, scanner_type)
+        scan_id = f"{timestamp}-{scanner_type_str}"
+        await self._repo.create(scan_id=scan_id, cluster_id=cluster_id_str, scanner_type=scanner_type_str)
+        logger.info("Scan session created: scan_id=%s cluster_id=%s scanner_type=%s", scan_id, cluster_id_str, scanner_type_str)
         return ScanStartResponse(scan_id=scan_id, status=SCAN_STATUS_CREATED)
 
     async def get_upload_url(self, scan_id: str, file_name: str) -> UploadUrlResponse:

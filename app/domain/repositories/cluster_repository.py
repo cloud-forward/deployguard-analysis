@@ -7,7 +7,13 @@ from typing import Protocol, runtime_checkable, Optional, List
 
 @runtime_checkable
 class ClusterRepository(Protocol):
-    async def create(self, name: str, cluster_type: str, description: Optional[str] = None) -> object:
+    async def create(
+        self,
+        name: str,
+        cluster_type: str,
+        description: Optional[str] = None,
+        api_token: Optional[str] = None,
+    ) -> object:
         """Create a new cluster."""
         ...
 

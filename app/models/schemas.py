@@ -248,3 +248,26 @@ class ClusterResponse(BaseModel):
             "updated_at": "2024-01-15T10:00:00Z",
         }]}
     )
+
+
+class ClusterCreateResponse(BaseModel):
+    id: str = Field(..., description="클러스터 고유 ID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    name: str = Field(..., description="클러스터 이름", example="prod-cluster-01")
+    description: Optional[str] = Field(None, description="클러스터 설명", example="프로덕션 EKS 클러스터")
+    cluster_type: str = Field(..., description="클러스터 유형", example="eks")
+    api_token: str = Field(..., description="스캐너 인증용 API 토큰", example="dg_scanner_xxxxxxxxxxxxxxxxxxxxx")
+    created_at: datetime = Field(..., description="생성 일시")
+    updated_at: datetime = Field(..., description="최종 수정 일시")
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={"examples": [{
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "name": "prod-cluster-01",
+            "description": "프로덕션 EKS 클러스터",
+            "cluster_type": "eks",
+            "api_token": "dg_scanner_xxxxxxxxxxxxxxxxxxxxx",
+            "created_at": "2024-01-15T10:00:00Z",
+            "updated_at": "2024-01-15T10:00:00Z",
+        }]}
+    )

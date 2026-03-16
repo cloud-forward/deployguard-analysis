@@ -13,11 +13,12 @@ from app.main import app
 
 
 class _FakeClusterRecord:
-    def __init__(self, id, name, cluster_type, description, created_at, updated_at):
+    def __init__(self, id, name, cluster_type, description, api_token, created_at, updated_at):
         self.id = id
         self.name = name
         self.cluster_type = cluster_type
         self.description = description
+        self.api_token = api_token
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -31,12 +32,13 @@ class FakeClusterRepository:
         self._counter += 1
         return f"cluster-{self._counter}"
 
-    async def create(self, name: str, cluster_type: str, description: Optional[str] = None):
+    async def create(self, name: str, cluster_type: str, description: Optional[str] = None, api_token: Optional[str] = None):
         record = _FakeClusterRecord(
             id=self._make_id(),
             name=name,
             cluster_type=cluster_type,
             description=description,
+            api_token=api_token,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -97,6 +99,8 @@ def test_create_cluster(client):
     assert data["cluster_type"] == "eks"
     assert data["description"] == "desc"
     assert "id" in data
+    assert "api_token" in data
+    assert data["api_token"]
 
 
 def test_create_cluster_without_description(client):
@@ -131,6 +135,7 @@ def test_get_cluster_by_id(client, created_cluster):
     assert resp.status_code == 200
     assert resp.json()["id"] == created_cluster["id"]
     assert resp.json()["name"] == created_cluster["name"]
+    assert "api_token" not in resp.json()
 
 
 def test_get_cluster_not_found(client):
@@ -147,6 +152,7 @@ def test_list_clusters(client):
     names = [c["name"] for c in resp.json()]
     assert "c1" in names
     assert "c2" in names
+    assert all("api_token" not in c for c in resp.json())
 
 
 def test_list_clusters_empty(client):
@@ -195,3 +201,31 @@ def test_delete_cluster(client, created_cluster):
 def test_delete_cluster_not_found(client):
     resp = client.delete("/api/v1/clusters/ghost-id")
     assert resp.status_code == 404
+
+
+def test_openapi_cluster_create_documents_token_issuance(client):
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    spec = resp.json()
+
+    post_clusters = spec["paths"]["/api/v1/clusters"]["post"]
+    description = post_clusters["description"]
+    assert "클러스터 등록 시 스캐너 인증용 API 토큰이 함께 발급" in description
+    assert "Helm 설치" in description
+    assert "1회 반환" in description
+
+    create_schema_name = post_clusters["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1]
+    create_props = spec["components"]["schemas"][create_schema_name]["properties"]
+    assert "api_token" in create_props
+
+    list_schema_name = (
+        spec["paths"]["/api/v1/clusters"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["items"]["$ref"].split("/")[-1]
+    )
+    list_props = spec["components"]["schemas"][list_schema_name]["properties"]
+    assert "api_token" not in list_props
+
+    detail_schema_name = (
+        spec["paths"]["/api/v1/clusters/{id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1]
+    )
+    detail_props = spec["components"]["schemas"][detail_schema_name]["properties"]
+    assert "api_token" not in detail_props

@@ -9,17 +9,15 @@ from app.config import settings
 app = FastAPI(
     title="DeployGuard 분석 엔진",
     description="""
-DeployGuard는 인프라 그래프를 구축하고, 공격 경로를 탐색하며, 최적의 조치를 권장함으로써 Kubernetes 및 AWS 인프라 보안을 분석합니다.
+DeployGuard는 Kubernetes 및 AWS 인프라의 공격 경로를 분석하고 최적의 보안 조치를 권장합니다.
 
-## Scanner Orchestration Lifecycle
+## Scanner Lifecycle
 
-1. **Cluster registration**: `POST /api/v1/clusters`
-2. **API token issuance**: scanner API token is managed in the cluster onboarding flow (not exposed by a dedicated public endpoint in this service)
-3. **Scanner Helm installation**: scanner is installed with the issued token
-4. **Scanner polling**: `GET /api/v1/scans/pending` with `Authorization: Bearer <api_token>`
-5. **Scan execution + upload**: scanner uploads files via `POST /api/v1/scans/{scan_id}/upload-url`
-6. **Completion notification**: scanner calls `POST /api/v1/scans/{scan_id}/complete`
-7. **Analysis pipeline stage**: service transitions scan to `processing` and triggers only the implemented orchestration check (`maybe_trigger_analysis`)
+1. **클러스터 등록**: `POST /api/v1/clusters` → API 토큰 발급
+2. **Scanner 설치**: 발급된 토큰으로 Helm 차트 배포
+3. **Polling**: `GET /api/v1/scans/pending` (Bearer 인증)
+4. **업로드**: `POST /api/v1/scans/{scan_id}/upload-url`
+5. **완료**: `POST /api/v1/scans/{scan_id}/complete` → Analysis 파이프라인 트리거
 """,
     version="4.0.0",
     openapi_tags=[

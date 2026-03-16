@@ -21,7 +21,7 @@ class SQLAlchemyScanRepository(ScanRepository):
         cluster_id: str,
         scanner_type: str,
         status: str = "queued",
-        request_source: str = "unknown",
+        request_source: str = "manual",
         requested_at: datetime | None = None,
     ) -> ScanRecord:
         requested_at = requested_at or datetime.utcnow()

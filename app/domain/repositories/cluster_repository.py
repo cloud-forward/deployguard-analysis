@@ -19,6 +19,10 @@ class ClusterRepository(Protocol):
         """Get a cluster by its name."""
         ...
 
+    async def get_by_api_token(self, api_token: str) -> Optional[object]:
+        """Get a cluster by its scanner API token."""
+        ...
+
     async def list_all(self) -> List[object]:
         """List all clusters."""
         ...

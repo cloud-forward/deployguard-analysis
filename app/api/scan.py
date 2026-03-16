@@ -1,7 +1,6 @@
 """
 Scan data ingestion endpoints.
 """
-from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response
 from app.models.schemas import (
     ScanStartRequest, ScanStartResponse,
@@ -10,9 +9,11 @@ from app.models.schemas import (
     ScanStatusResponse,
     PendingScanClaimResponse,
     ScannerType,
+    ClusterResponse,
 )
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
+from app.api.auth import get_authenticated_cluster
 
 router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
 
@@ -57,23 +58,27 @@ async def start_scan(request: ScanStartRequest, service: ScanService = Depends(g
     summary="폴링 기반 대기 작업 클레임",
     description="""
 스캐너 워커가 폴링하여 자신이 처리할 작업 1건을 claim합니다.
-지정된 `cluster_id` + `scanner_type`에 대해 `queued` 작업만 대상으로 하며, 클레임은 원자적으로 수행됩니다.
+`Authorization: Bearer <api_token>` 인증이 필요합니다.
+클러스터는 요청 파라미터가 아니라 인증 토큰으로 식별됩니다.
+토큰 클러스터 + `scanner_type`에 대해 `queued` 작업만 대상으로 하며, 클레임은 원자적으로 수행됩니다.
 성공 시 상태는 `running`으로 전이되고 `claimed_at`, `claimed_by`, `started_at`, `lease_expires_at`이 설정됩니다.
 """,
     responses={
         200: {"description": "클레임된 스캔 작업 반환"},
         204: {"description": "클레임 가능한 queued 스캔이 없음"},
+        401: {"description": "Authorization 헤더 누락/형식 오류"},
+        403: {"description": "유효하지 않은 scanner API token"},
     },
 )
 async def claim_pending_scan(
-    cluster_id: UUID,
     scanner_type: ScannerType,
-    claimed_by: str = Query(..., min_length=1),
+    claimed_by: str | None = Query(default=None, min_length=1),
     lease_seconds: int = Query(default=300, ge=1),
     service: ScanService = Depends(get_scan_service),
+    authenticated_cluster: ClusterResponse = Depends(get_authenticated_cluster),
 ):
     record = await service.claim_pending_scan(
-        cluster_id=cluster_id,
+        cluster_id=authenticated_cluster.id,
         scanner_type=scanner_type,
         claimed_by=claimed_by,
         lease_seconds=lease_seconds,
@@ -100,6 +105,7 @@ async def claim_pending_scan(
     summary="파일 업로드용 presigned URL 발급",
     description="""
 스캔 결과 파일을 업로드하기 위한 S3 presigned PUT URL을 생성합니다.
+`Authorization: Bearer <api_token>` 인증이 필요합니다.
 
 클라이언트는 다음 순서로 진행해야 합니다:
 1. `/pending`으로 queued 작업을 claim하여 running 상태로 전이합니다
@@ -124,9 +130,16 @@ Presigned URL은 600초(10분) 후 만료됩니다.
         200: {"description": "Presigned URL이 생성되었습니다"},
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
         409: {"description": "스캔 세션 상태에서 업로드를 허용하지 않습니다"},
+        401: {"description": "Authorization 헤더 누락/형식 오류"},
+        403: {"description": "유효하지 않은 scanner API token"},
     },
 )
-async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanService = Depends(get_scan_service)):
+async def get_upload_url(
+    scan_id: str,
+    request: UploadUrlRequest,
+    service: ScanService = Depends(get_scan_service),
+    _: ClusterResponse = Depends(get_authenticated_cluster),
+):
     return await service.get_upload_url(scan_id=scan_id, file_name=request.file_name)
 
 
@@ -137,22 +150,35 @@ async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanS
     summary="스캐너 완료(업로드 완료) 알림",
     description="""
 스캐너가 파일 업로드를 마친 뒤 호출하는 완료 알림 엔드포인트입니다.
+`Authorization: Bearer <api_token>` 인증이 필요합니다.
+요청한 스캔이 인증된 클러스터 소유인지 검증하며, 불일치 시 거부합니다.
 동작은 다음과 같습니다:
 1. 업로드된 S3 파일 존재 여부 검증
 2. 상태를 `running` 또는 `uploading`에서 `processing`으로 전이
 3. 현재 구현된 분석 오케스트레이션 체크(`maybe_trigger_analysis`)만 호출
 
-이 엔드포인트는 분석 파이프라인 실행 자체를 수행하지 않습니다.
+즉, complete는 다음 오케스트레이션 단계로 넘기는 역할이며 분석 파이프라인 실행 자체를 수행하지 않습니다.
 """,
     responses={
         202: {"description": "스캔 완료가 접수되었으며 processing 상태로 전이되었습니다"},
         400: {"description": "S3에서 하나 이상의 파일을 찾을 수 없습니다"},
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
         409: {"description": "현재 상태에서는 complete 처리할 수 없습니다"},
+        401: {"description": "Authorization 헤더 누락/형식 오류"},
+        403: {"description": "유효하지 않은 scanner API token 또는 스캔 소유권 불일치"},
     },
 )
-async def complete_scan(scan_id: str, request: ScanCompleteRequest, service: ScanService = Depends(get_scan_service)):
-    return await service.complete_scan(scan_id=scan_id, files=request.files)
+async def complete_scan(
+    scan_id: str,
+    request: ScanCompleteRequest,
+    service: ScanService = Depends(get_scan_service),
+    authenticated_cluster: ClusterResponse = Depends(get_authenticated_cluster),
+):
+    return await service.complete_scan(
+        scan_id=scan_id,
+        files=request.files,
+        authenticated_cluster_id=authenticated_cluster.id,
+    )
 
 
 @router.get(

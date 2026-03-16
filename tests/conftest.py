@@ -4,6 +4,7 @@ Test configuration and fixtures for integration tests.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
@@ -13,10 +14,12 @@ os.environ.setdefault("S3_BUCKET_NAME", "test-bucket")
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.auth import get_authenticated_cluster
 from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED
+from app.models.schemas import ClusterResponse
 
 
 class FakeScanRepository:
@@ -139,6 +142,16 @@ def client():
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)  # noqa
 
     app.dependency_overrides[get_scan_service] = lambda: fake_service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
 
     with TestClient(app) as c:
         yield c

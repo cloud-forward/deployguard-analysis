@@ -30,6 +30,12 @@ class ClusterService:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
         return ClusterResponse.model_validate(cluster)
 
+    async def get_cluster_by_api_token(self, api_token: str) -> Optional[ClusterResponse]:
+        cluster = await self._repo.get_by_api_token(api_token)
+        if not cluster:
+            return None
+        return ClusterResponse.model_validate(cluster)
+
     async def list_clusters(self) -> List[ClusterResponse]:
         clusters = await self._repo.list_all()
         return [ClusterResponse.model_validate(c) for c in clusters]

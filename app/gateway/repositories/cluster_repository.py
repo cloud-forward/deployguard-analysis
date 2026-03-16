@@ -37,6 +37,12 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         )
         return result.scalars().first()
 
+    async def get_by_api_token(self, api_token: str) -> Optional[Cluster]:
+        result = await self._session.execute(
+            select(Cluster).where(Cluster.api_token == api_token)
+        )
+        return result.scalars().first()
+
     async def list_all(self) -> List[Cluster]:
         result = await self._session.execute(select(Cluster))
         return list(result.scalars().all())

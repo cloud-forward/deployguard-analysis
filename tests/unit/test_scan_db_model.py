@@ -9,7 +9,7 @@ class TestScanRecordModel:
             scan_id="test-scan-001",
             cluster_id="prod-01",
             scanner_type="k8s",
-            request_source="test",
+            request_source="manual",
             status="queued"
         )
         assert record.scan_id == "test-scan-001"
@@ -22,7 +22,7 @@ class TestScanRecordModel:
             scan_id="test-002",
             cluster_id="prod-01",
             scanner_type="aws",
-            request_source="test",
+            request_source="manual",
         )
         assert record.status == "queued"
 

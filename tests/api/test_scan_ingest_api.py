@@ -45,7 +45,7 @@ class FakeScanRepository:
         cluster_id: str,
         scanner_type: str,
         status: str = SCAN_STATUS_QUEUED,
-        request_source: str = "unknown",
+        request_source: str = "manual",
         requested_at=None,
     ):
         if scan_id in self._store:
@@ -178,7 +178,7 @@ def _start(
     client,
     cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     scanner_type="k8s",
-    request_source="scanner-orchestrator",
+    request_source="manual",
 ):
     return client.post(
         "/api/v1/scans/start",
@@ -229,6 +229,28 @@ class TestScanStart:
 
     def test_invalid_scanner_type_rejected(self, client):
         resp = _start(client, scanner_type="unknown-scanner")
+        assert resp.status_code == 422
+
+    def test_manual_request_source_accepted(self, client):
+        resp = _start(client, request_source="manual")
+        assert resp.status_code == 201
+
+    def test_scheduled_request_source_accepted(self, client):
+        resp = _start(client, request_source="scheduled")
+        assert resp.status_code == 201
+
+    def test_omitted_request_source_uses_valid_default(self, client):
+        resp = client.post(
+            "/api/v1/scans/start",
+            json={
+                "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "scanner_type": "k8s",
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_invalid_request_source_rejected(self, client):
+        resp = _start(client, request_source="api")
         assert resp.status_code == 422
 
     def test_missing_cluster_id_rejected(self, client):

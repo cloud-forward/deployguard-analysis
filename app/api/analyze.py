@@ -17,7 +17,7 @@ router = APIRouter()
     summary="분석 작업 수동 실행",
     description="""스캔 세션 ID를 지정하여 분석 작업을 수동으로 시작합니다.
 
-일반적으로 분석은 `POST /api/v1/scans/{scan_id}/complete` 호출 시 자동으로 트리거됩니다.
+일반적으로 `POST /api/v1/scans/{scan_id}/complete` 호출 시 분석 오케스트레이션 체크가 자동으로 수행됩니다.
 이 엔드포인트는 재분석 또는 수동 오케스트레이션이 필요한 경우에 사용합니다.
 
 분석 파이프라인: 그래프 구축 → 공격 경로 탐색 → 위험 점수 산정""",

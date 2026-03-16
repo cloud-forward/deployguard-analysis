@@ -7,8 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any
 from app.core.constants import (
-    VALID_SCANNER_TYPES,
-    SCAN_STATUS_CREATED,
+    SCAN_STATUS_QUEUED,
     SCAN_STATUS_PROCESSING,
 )
 
@@ -66,9 +65,18 @@ class ScanStartRequest(BaseModel):
         description="Type of scanner to run. One of: k8s, aws, image",
         example="k8s",
     )
+    request_source: str = Field(
+        default="api",
+        description="Source of the scan request (e.g. scanner-orchestrator, manual-api)",
+        example="scanner-orchestrator",
+    )
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "scanner_type": "k8s"}
+        {
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "scanner_type": "k8s",
+            "request_source": "scanner-orchestrator",
+        }
     ]})
 
 
@@ -117,10 +125,10 @@ class ScanCompleteRequest(BaseModel):
 
 class ScanStartResponse(BaseModel):
     scan_id: str = Field(..., description="생성된 스캔 세션 ID", example="20260309T113020-k8s")
-    status: str = Field(default=SCAN_STATUS_CREATED, description="스캔 세션 상태")
+    status: str = Field(default=SCAN_STATUS_QUEUED, description="스캔 세션 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"scan_id": "20260309T113020-k8s", "status": "created"}
+        {"scan_id": "20260309T113020-k8s", "status": "queued"}
     ]})
 
 
@@ -155,7 +163,7 @@ class ScanStatusResponse(BaseModel):
     scan_id: str
     cluster_id: str
     scanner_type: str
-    status: str = Field(..., description="created | uploading | processing | completed | failed")
+    status: str = Field(..., description="queued | running | uploading | processing | completed | failed")
     created_at: datetime
     completed_at: datetime | None = None
     files: list[str] = Field(default_factory=list)
@@ -165,7 +173,7 @@ class ScanStatusResponse(BaseModel):
             "scan_id": "20260309T113020-k8s",
             "cluster_id": "prod-cluster-01",
             "scanner_type": "k8s",
-            "status": "processing",
+            "status": "queued",
             "created_at": "2024-01-15T10:00:00Z",
             "completed_at": None,
             "files": [
@@ -173,6 +181,18 @@ class ScanStatusResponse(BaseModel):
             ],
         }
     ]})
+
+
+class PendingScanClaimResponse(BaseModel):
+    scan_id: str
+    cluster_id: str
+    scanner_type: str
+    status: str = Field(..., description="running")
+    claimed_by: str
+    claimed_at: datetime
+    started_at: datetime
+    lease_expires_at: datetime
+    files: list[str] = Field(default_factory=list)
 
 
 class ClusterCreateRequest(BaseModel):

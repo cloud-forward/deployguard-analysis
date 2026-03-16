@@ -22,7 +22,7 @@ from app.core.constants import ACTIVE_SCAN_STATUSES
 # ---------------------------------------------------------------------------
 
 class _FakeScanRecord:
-    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at):
+    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at, request_source, requested_at):
         self.scan_id = scan_id
         self.cluster_id = cluster_id
         self.scanner_type = scanner_type
@@ -30,6 +30,8 @@ class _FakeScanRecord:
         self.s3_keys = s3_keys
         self.created_at = created_at
         self.completed_at = completed_at
+        self.request_source = request_source
+        self.requested_at = requested_at
 
 
 class FakeScanRepository:
@@ -38,16 +40,26 @@ class FakeScanRepository:
     def __init__(self):
         self._store: dict = {}
 
-    async def create(self, scan_id: str, cluster_id: str, scanner_type: str):
+    async def create(
+        self,
+        scan_id: str,
+        cluster_id: str,
+        scanner_type: str,
+        status: str = "queued",
+        request_source: str = "unknown",
+        requested_at=None,
+    ):
         from datetime import datetime
         record = _FakeScanRecord(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
-            status="created",
+            status=status,
             s3_keys=[],
             created_at=datetime.utcnow(),
             completed_at=None,
+            request_source=request_source,
+            requested_at=requested_at or datetime.utcnow(),
         )
         self._store[scan_id] = record
         return record
@@ -85,6 +97,22 @@ class FakeScanRepository:
             if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
                 return r
         return None
+
+    async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
+        queued = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "queued"
+        ]
+        if not queued:
+            return None
+        queued.sort(key=lambda r: r.requested_at)
+        record = queued[0]
+        record.status = "running"
+        record.claimed_by = claimed_by
+        record.claimed_at = started_at
+        record.started_at = started_at
+        record.lease_expires_at = lease_expires_at
+        return record
 
 
 class FakeS3Service:
@@ -150,6 +178,8 @@ def client_with_completed_scan():
         s3_keys=[],
         created_at=datetime(2026, 3, 9, 12, 0, 0),
         completed_at=datetime(2026, 3, 9, 12, 5, 0),
+        request_source="test",
+        requested_at=datetime(2026, 3, 9, 11, 59, 0),
     )
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
     app.dependency_overrides[get_scan_service] = lambda: fake_service
@@ -166,7 +196,7 @@ def client_with_completed_scan():
 class TestStartScan:
 
     def test_start_scan_success(self, client):
-        """Returns 201 with scan_id and status=created."""
+        """Returns 201 with scan_id and status=queued."""
         response = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-01",
             "scanner_type": "k8s",
@@ -174,7 +204,7 @@ class TestStartScan:
         assert response.status_code == 201
         data = response.json()
         assert "scan_id" in data
-        assert data["status"] == "created"
+        assert data["status"] == "queued"
 
     def test_start_scan_id_format(self, client):
         """scan_id must match YYYYMMDDTHHmmSS-{scanner_type}."""
@@ -365,7 +395,7 @@ class TestScanStatus:
         assert data["scan_id"] == scan_id
         assert data["cluster_id"] == "prod-01"
         assert data["scanner_type"] == "k8s"
-        assert data["status"] == "created"
+        assert data["status"] == "queued"
         assert "created_at" in data
 
     def test_get_status_not_found(self, client):
@@ -373,15 +403,15 @@ class TestScanStatus:
         response = client.get("/api/v1/scans/nonexistent/status")
         assert response.status_code == 404
 
-    def test_status_transitions_created_uploading_processing(self, client):
-        """Validates full status transition: created → uploading → processing."""
+    def test_status_transitions_queued_uploading_processing(self, client):
+        """Validates full status transition: queued → uploading → processing."""
         start_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": "flow-cluster", "scanner_type": "image"
         })
         scan_id = start_resp.json()["scan_id"]
 
-        # created
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "created"
+        # queued
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "queued"
 
         # uploading
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})

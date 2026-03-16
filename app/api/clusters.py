@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
     summary="클러스터 생성",
     description="""DeployGuard 분석 대상 Kubernetes 클러스터를 등록합니다.
 클러스터 이름은 고유해야 하며 이후 스캔 데이터와 연결됩니다.
+스캐너용 API token은 클러스터 온보딩 과정에서 발급/연결되며, 스캐너 폴링 API는 이 토큰(Bearer)을 사용합니다.
 
 **cluster_type 값:**
 - `eks` — AWS EKS 관리형 클러스터

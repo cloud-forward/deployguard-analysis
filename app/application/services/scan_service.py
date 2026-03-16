@@ -73,10 +73,12 @@ class ScanService:
             logger.info("Scan status updated to uploading: scan_id=%s", scan_id)
         return UploadUrlResponse(upload_url=upload_url, s3_key=s3_key)
 
-    async def complete_scan(self, scan_id: str, files: list[str]) -> ScanCompleteResponse:
+    async def complete_scan(self, scan_id: str, files: list[str], authenticated_cluster_id: str | None = None) -> ScanCompleteResponse:
         record = await self._repo.get_by_scan_id(scan_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
+        if authenticated_cluster_id is not None and record.cluster_id != authenticated_cluster_id:
+            raise HTTPException(status_code=403, detail="Scan does not belong to authenticated cluster")
         if record.status not in (SCAN_STATUS_RUNNING, SCAN_STATUS_UPLOADING):
             raise HTTPException(
                 status_code=409,
@@ -107,9 +109,9 @@ class ScanService:
 
     async def claim_pending_scan(
         self,
-        cluster_id: UUID,
+        cluster_id: str,
         scanner_type: ScannerType,
-        claimed_by: str,
+        claimed_by: str | None,
         lease_seconds: int,
     ):
         cluster_id_str = str(cluster_id)
@@ -119,7 +121,7 @@ class ScanService:
         return await self._repo.claim_next_queued_scan(
             cluster_id=cluster_id_str,
             scanner_type=scanner_type_str,
-            claimed_by=claimed_by,
+            claimed_by=claimed_by or "unknown-worker",
             lease_expires_at=lease_expires_at,
             started_at=started_at,
         )

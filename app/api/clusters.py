@@ -7,7 +7,7 @@ from app.application.di import get_cluster_service
 from app.application.services.cluster_service import ClusterService
 from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse
 
-router = APIRouter(prefix="/api/clusters", tags=["Clusters"])
+router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
 
 
 @router.post(

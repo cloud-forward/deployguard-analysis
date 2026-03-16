@@ -1,26 +1,31 @@
 """
 Scan data ingestion endpoints.
 """
-from fastapi import APIRouter, Depends
+from uuid import UUID
+from fastapi import APIRouter, Depends, Query, Response
 from app.models.schemas import (
     ScanStartRequest, ScanStartResponse,
     UploadUrlRequest, UploadUrlResponse,
     ScanCompleteRequest, ScanCompleteResponse,
     ScanStatusResponse,
+    PendingScanClaimResponse,
+    ScannerType,
 )
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 
-router = APIRouter(prefix="/api/scans", tags=["Scans"])
+router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
 
 
 @router.post(
     "/start",
     response_model=ScanStartResponse,
     status_code=201,
-    summary="새로운 스캔 세션 시작",
+    summary="스캔 요청 큐 등록",
     description="""
-클러스터에 대한 새로운 스캔 세션을 생성합니다. 이후 upload-url 및 complete 호출에 사용할 scan_id를 반환합니다.
+대시보드/수동 요청 또는 스케줄러 요청을 `queued` 상태의 스캔 작업으로 등록합니다.
+이 엔드포인트는 실행을 시작하지 않고, 워커가 `/pending` 폴링으로 claim할 작업을 생성합니다.
+응답의 `scan_id`는 이후 `upload-url` 및 `complete` 호출에 사용됩니다.
 
 **스캐너 유형:**
 - `k8s` — Kubernetes 클러스터 리소스 (Pods, RBAC, Secrets, Services 등)
@@ -28,9 +33,8 @@ router = APIRouter(prefix="/api/scans", tags=["Scans"])
 - `image` — 컨테이너 이미지 취약점 (CVE, EPSS, 서명)
 - `runtime` — 런타임 보안 이벤트 (eBPF, CloudTrail)
 
-각 스캐너 유형은 별도의 스캔 세션을 시작해야 합니다.
-
-클러스터와 scanner_type 조합당 하나의 스캔만 동시에 실행할 수 있습니다. 해당 클러스터와 스캐너 유형에 대해 이미 활성 스캔이 있는 경우 API는 HTTP 409를 반환합니다.
+클러스터와 scanner_type 조합당 하나의 활성 스캔만 허용합니다.
+활성 상태(`queued`, `running`, `uploading`, `processing`)가 이미 있으면 409를 반환합니다.
 """,
     responses={
         201: {"description": "스캔 세션이 성공적으로 생성되었습니다"},
@@ -39,7 +43,54 @@ router = APIRouter(prefix="/api/scans", tags=["Scans"])
     },
 )
 async def start_scan(request: ScanStartRequest, service: ScanService = Depends(get_scan_service)):
-    return await service.start_scan(cluster_id=request.cluster_id, scanner_type=request.scanner_type)
+    return await service.start_scan(
+        cluster_id=request.cluster_id,
+        scanner_type=request.scanner_type,
+        request_source=request.request_source,
+    )
+
+
+@router.get(
+    "/pending",
+    response_model=PendingScanClaimResponse,
+    status_code=200,
+    summary="폴링 기반 대기 작업 클레임",
+    description="""
+스캐너 워커가 폴링하여 자신이 처리할 작업 1건을 claim합니다.
+지정된 `cluster_id` + `scanner_type`에 대해 `queued` 작업만 대상으로 하며, 클레임은 원자적으로 수행됩니다.
+성공 시 상태는 `running`으로 전이되고 `claimed_at`, `claimed_by`, `started_at`, `lease_expires_at`이 설정됩니다.
+""",
+    responses={
+        200: {"description": "클레임된 스캔 작업 반환"},
+        204: {"description": "클레임 가능한 queued 스캔이 없음"},
+    },
+)
+async def claim_pending_scan(
+    cluster_id: UUID,
+    scanner_type: ScannerType,
+    claimed_by: str = Query(..., min_length=1),
+    lease_seconds: int = Query(default=300, ge=1),
+    service: ScanService = Depends(get_scan_service),
+):
+    record = await service.claim_pending_scan(
+        cluster_id=cluster_id,
+        scanner_type=scanner_type,
+        claimed_by=claimed_by,
+        lease_seconds=lease_seconds,
+    )
+    if record is None:
+        return Response(status_code=204)
+    return PendingScanClaimResponse(
+        scan_id=record.scan_id,
+        cluster_id=record.cluster_id,
+        scanner_type=record.scanner_type,
+        status=record.status,
+        claimed_by=record.claimed_by,
+        claimed_at=record.claimed_at,
+        started_at=record.started_at,
+        lease_expires_at=record.lease_expires_at,
+        files=record.s3_keys or [],
+    )
 
 
 @router.post(
@@ -51,10 +102,11 @@ async def start_scan(request: ScanStartRequest, service: ScanService = Depends(g
 스캔 결과 파일을 업로드하기 위한 S3 presigned PUT URL을 생성합니다.
 
 클라이언트는 다음 순서로 진행해야 합니다:
-1. 이 엔드포인트를 호출하여 presigned URL을 발급받습니다
-2. 반환된 URL을 사용하여 파일을 S3에 직접 PUT합니다
-3. 여러 파일을 업로드해야 하는 경우 각 파일마다 반복합니다
-4. 모든 파일 업로드가 완료되면 `/complete`를 호출합니다
+1. `/pending`으로 queued 작업을 claim하여 running 상태로 전이합니다
+2. 이 엔드포인트를 호출하여 presigned URL을 발급받습니다
+3. 반환된 URL을 사용하여 파일을 S3에 직접 PUT합니다
+4. 여러 파일을 업로드해야 하는 경우 각 파일마다 반복합니다
+5. 모든 파일 업로드가 완료되면 `/complete`를 호출합니다
 
 Presigned URL은 600초(10분) 후 만료됩니다.
 
@@ -71,7 +123,7 @@ Presigned URL은 600초(10분) 후 만료됩니다.
     responses={
         200: {"description": "Presigned URL이 생성되었습니다"},
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
-        409: {"description": "스캔 세션이 이미 완료되었습니다"},
+        409: {"description": "스캔 세션 상태에서 업로드를 허용하지 않습니다"},
     },
 )
 async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanService = Depends(get_scan_service)):
@@ -82,21 +134,21 @@ async def get_upload_url(scan_id: str, request: UploadUrlRequest, service: ScanS
     "/{scan_id}/complete",
     response_model=ScanCompleteResponse,
     status_code=202,
-    summary="스캔 업로드 완료 알림",
+    summary="스캐너 완료(업로드 완료) 알림",
     description="""
-모든 스캔 파일이 S3에 업로드되었음을 엔진에 알립니다.
+스캐너가 파일 업로드를 마친 뒤 호출하는 완료 알림 엔드포인트입니다.
+동작은 다음과 같습니다:
+1. 업로드된 S3 파일 존재 여부 검증
+2. 상태를 `running` 또는 `uploading`에서 `processing`으로 전이
+3. 현재 구현된 분석 오케스트레이션 체크(`maybe_trigger_analysis`)만 호출
 
-엔진은 다음을 수행합니다:
-1. 업로드된 파일이 S3에 존재하는지 확인
-2. 스캔 세션 상태를 "processing"으로 업데이트
-3. 분석 파이프라인 트리거 (그래프 구축 → 공격 경로 탐색 → 위험 점수 산정)
-
-분석은 비동기로 실행됩니다. `GET /api/scans/{scan_id}/status`로 진행 상황을 확인하세요.
+이 엔드포인트는 분석 파이프라인 실행 자체를 수행하지 않습니다.
 """,
     responses={
-        202: {"description": "스캔 완료가 접수되었으며 분석이 시작되었습니다"},
+        202: {"description": "스캔 완료가 접수되었으며 processing 상태로 전이되었습니다"},
         400: {"description": "S3에서 하나 이상의 파일을 찾을 수 없습니다"},
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
+        409: {"description": "현재 상태에서는 complete 처리할 수 없습니다"},
     },
 )
 async def complete_scan(scan_id: str, request: ScanCompleteRequest, service: ScanService = Depends(get_scan_service)):
@@ -112,7 +164,8 @@ async def complete_scan(scan_id: str, request: ScanCompleteRequest, service: Sca
 스캔 세션의 현재 상태를 확인합니다.
 
 **상태 값:**
-- `created` — 세션이 시작되었으며 아직 파일이 업로드되지 않음
+- `queued` — 스캔 요청이 큐에 등록됨
+- `running` — 워커가 스캔을 실행 중
 - `uploading` — 하나 이상의 업로드 URL이 요청됨
 - `processing` — 업로드 완료, 분석 진행 중
 - `completed` — 분석 완료, 결과 이용 가능

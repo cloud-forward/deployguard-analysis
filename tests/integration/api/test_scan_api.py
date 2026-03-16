@@ -22,7 +22,7 @@ from app.core.constants import ACTIVE_SCAN_STATUSES
 # ---------------------------------------------------------------------------
 
 class _FakeScanRecord:
-    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at):
+    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at, request_source, requested_at):
         self.scan_id = scan_id
         self.cluster_id = cluster_id
         self.scanner_type = scanner_type
@@ -30,6 +30,8 @@ class _FakeScanRecord:
         self.s3_keys = s3_keys
         self.created_at = created_at
         self.completed_at = completed_at
+        self.request_source = request_source
+        self.requested_at = requested_at
 
 
 class FakeScanRepository:
@@ -38,16 +40,26 @@ class FakeScanRepository:
     def __init__(self):
         self._store: dict = {}
 
-    async def create(self, scan_id: str, cluster_id: str, scanner_type: str):
+    async def create(
+        self,
+        scan_id: str,
+        cluster_id: str,
+        scanner_type: str,
+        status: str = "queued",
+        request_source: str = "unknown",
+        requested_at=None,
+    ):
         from datetime import datetime
         record = _FakeScanRecord(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
-            status="created",
+            status=status,
             s3_keys=[],
             created_at=datetime.utcnow(),
             completed_at=None,
+            request_source=request_source,
+            requested_at=requested_at or datetime.utcnow(),
         )
         self._store[scan_id] = record
         return record
@@ -85,6 +97,22 @@ class FakeScanRepository:
             if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
                 return r
         return None
+
+    async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
+        queued = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "queued"
+        ]
+        if not queued:
+            return None
+        queued.sort(key=lambda r: r.requested_at)
+        record = queued[0]
+        record.status = "running"
+        record.claimed_by = claimed_by
+        record.claimed_at = started_at
+        record.started_at = started_at
+        record.lease_expires_at = lease_expires_at
+        return record
 
 
 class FakeS3Service:
@@ -150,6 +178,8 @@ def client_with_completed_scan():
         s3_keys=[],
         created_at=datetime(2026, 3, 9, 12, 0, 0),
         completed_at=datetime(2026, 3, 9, 12, 5, 0),
+        request_source="test",
+        requested_at=datetime(2026, 3, 9, 11, 59, 0),
     )
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
     app.dependency_overrides[get_scan_service] = lambda: fake_service
@@ -166,19 +196,19 @@ def client_with_completed_scan():
 class TestStartScan:
 
     def test_start_scan_success(self, client):
-        """Returns 201 with scan_id and status=created."""
-        response = client.post("/api/scans/start", json={
+        """Returns 201 with scan_id and status=queued."""
+        response = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-01",
             "scanner_type": "k8s",
         })
         assert response.status_code == 201
         data = response.json()
         assert "scan_id" in data
-        assert data["status"] == "created"
+        assert data["status"] == "queued"
 
     def test_start_scan_id_format(self, client):
         """scan_id must match YYYYMMDDTHHmmSS-{scanner_type}."""
-        response = client.post("/api/scans/start", json={
+        response = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-01",
             "scanner_type": "k8s",
         })
@@ -190,39 +220,39 @@ class TestStartScan:
     def test_start_scan_duplicate_returns_409(self, client):
         """Second start for same cluster+scanner_type returns 409."""
         payload = {"cluster_id": "prod-01", "scanner_type": "k8s"}
-        first = client.post("/api/scans/start", json=payload)
+        first = client.post("/api/v1/scans/start", json=payload)
         assert first.status_code == 201
 
-        second = client.post("/api/scans/start", json=payload)
+        second = client.post("/api/v1/scans/start", json=payload)
         assert second.status_code == 409
 
     def test_start_scan_allows_new_after_completed(self, client):
         """A new scan is allowed once the previous one is completed."""
         payload = {"cluster_id": "prod-02", "scanner_type": "aws"}
-        start_resp = client.post("/api/scans/start", json=payload)
+        start_resp = client.post("/api/v1/scans/start", json=payload)
         scan_id = start_resp.json()["scan_id"]
 
         # Drive the scan to completed state via the API
-        url_resp = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "aws.json"})
+        url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "aws.json"})
         s3_key = url_resp.json()["s3_key"]
-        client.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
+        client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
 
         # Mark as completed by updating status directly through the repo
         # (simulate analysis pipeline finishing)
         # We verify the service allows a new scan when no active scan exists
         # by checking the completed scan is no longer "active"
-        status_resp = client.get(f"/api/scans/{scan_id}/status")
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert status_resp.json()["status"] == "processing"
 
         # A new scan for a different cluster should always succeed
-        new_resp = client.post("/api/scans/start", json={
+        new_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-02-new", "scanner_type": "aws"
         })
         assert new_resp.status_code == 201
 
     def test_start_scan_invalid_scanner_type(self, client):
         """Invalid scanner_type returns 422."""
-        response = client.post("/api/scans/start", json={
+        response = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-01",
             "scanner_type": "invalid",
         })
@@ -230,13 +260,13 @@ class TestStartScan:
 
     def test_start_scan_missing_fields(self, client):
         """Missing required fields returns 422."""
-        response = client.post("/api/scans/start", json={})
+        response = client.post("/api/v1/scans/start", json={})
         assert response.status_code == 422
 
     def test_start_scan_different_scanner_types_allowed(self, client):
         """Same cluster with different scanner_type is allowed concurrently."""
-        r1 = client.post("/api/scans/start", json={"cluster_id": "c1", "scanner_type": "k8s"})
-        r2 = client.post("/api/scans/start", json={"cluster_id": "c1", "scanner_type": "aws"})
+        r1 = client.post("/api/v1/scans/start", json={"cluster_id": "c1", "scanner_type": "k8s"})
+        r2 = client.post("/api/v1/scans/start", json={"cluster_id": "c1", "scanner_type": "aws"})
         assert r1.status_code == 201
         assert r2.status_code == 201
 
@@ -248,7 +278,7 @@ class TestStartScan:
 class TestUploadUrl:
 
     def _start(self, client, cluster_id="c1", scanner_type="k8s") -> str:
-        resp = client.post("/api/scans/start", json={
+        resp = client.post("/api/v1/scans/start", json={
             "cluster_id": cluster_id, "scanner_type": scanner_type
         })
         return resp.json()["scan_id"]
@@ -256,7 +286,7 @@ class TestUploadUrl:
     def test_upload_url_success(self, client):
         """Returns 200 with upload_url, s3_key, and expires_in."""
         scan_id = self._start(client)
-        response = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
+        response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
         assert response.status_code == 200
         data = response.json()
         assert "upload_url" in data
@@ -266,33 +296,33 @@ class TestUploadUrl:
     def test_upload_url_s3_key_format(self, client):
         """s3_key must follow scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}."""
         scan_id = self._start(client, cluster_id="mycluster", scanner_type="k8s")
-        response = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "data.json"})
+        response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "data.json"})
         s3_key = response.json()["s3_key"]
         assert s3_key == f"scans/mycluster/{scan_id}/k8s/data.json"
 
     def test_upload_url_transitions_status_to_uploading(self, client):
         """After calling upload-url, scan status becomes 'uploading'."""
         scan_id = self._start(client)
-        client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
-        status_resp = client.get(f"/api/scans/{scan_id}/status")
+        client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert status_resp.json()["status"] == "uploading"
 
     def test_upload_url_scan_not_found(self, client):
         """Unknown scan_id returns 404."""
-        response = client.post("/api/scans/nonexistent/upload-url", json={"file_name": "scan.json"})
+        response = client.post("/api/v1/scans/nonexistent/upload-url", json={"file_name": "scan.json"})
         assert response.status_code == 404
 
     def test_upload_url_non_json_file_rejected(self, client):
         """Non-JSON file name returns 422."""
         scan_id = self._start(client, cluster_id="c1", scanner_type="k8s")
-        response = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan.txt"})
+        response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.txt"})
         assert response.status_code == 422
 
     def test_upload_url_completed_scan_returns_409(self, client_with_completed_scan):
         """Requesting upload URL for a scan in 'completed' status returns 409."""
         scan_id = client_with_completed_scan._completed_scan_id
         response = client_with_completed_scan.post(
-            f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan2.json"}
+            f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan2.json"}
         )
         assert response.status_code == 409
 
@@ -304,18 +334,18 @@ class TestUploadUrl:
 class TestCompleteScan:
 
     def _start_and_get_key(self, client, cluster_id="c1", scanner_type="k8s") -> tuple[str, str]:
-        start = client.post("/api/scans/start", json={
+        start = client.post("/api/v1/scans/start", json={
             "cluster_id": cluster_id, "scanner_type": scanner_type
         })
         scan_id = start.json()["scan_id"]
-        url_resp = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
+        url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
         s3_key = url_resp.json()["s3_key"]
         return scan_id, s3_key
 
     def test_complete_scan_success(self, client):
         """Returns 202 with status=accepted."""
         scan_id, s3_key = self._start_and_get_key(client)
-        response = client.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
+        response = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
         assert response.status_code == 202
         data = response.json()
         assert data["status"] == "processing"
@@ -324,25 +354,25 @@ class TestCompleteScan:
     def test_complete_scan_transitions_to_processing(self, client):
         """After complete, scan status becomes 'processing'."""
         scan_id, s3_key = self._start_and_get_key(client)
-        client.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
-        status_resp = client.get(f"/api/scans/{scan_id}/status")
+        client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert status_resp.json()["status"] == "processing"
 
     def test_complete_scan_missing_file_returns_400(self, client_missing_s3):
         """Returns 400 when a file is not found in S3."""
         scan_id, s3_key = self._start_and_get_key(client_missing_s3)
-        response = client_missing_s3.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
+        response = client_missing_s3.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
         assert response.status_code == 400
 
     def test_complete_scan_empty_files_rejected(self, client):
         """Empty files list returns 422 (schema validation)."""
         scan_id, s3_key = self._start_and_get_key(client)
-        response = client.post(f"/api/scans/{scan_id}/complete", json={"files": []})
+        response = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": []})
         assert response.status_code == 422
 
     def test_complete_scan_not_found_returns_404(self, client):
         """Unknown scan_id returns 404."""
-        response = client.post("/api/scans/nonexistent/complete", json={"files": ["some/file.json"]})
+        response = client.post("/api/v1/scans/nonexistent/complete", json={"files": ["some/file.json"]})
         assert response.status_code == 404
 
 
@@ -354,40 +384,40 @@ class TestScanStatus:
 
     def test_get_status_success(self, client):
         """Returns 200 with full scan metadata."""
-        start_resp = client.post("/api/scans/start", json={
+        start_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": "prod-01", "scanner_type": "k8s"
         })
         scan_id = start_resp.json()["scan_id"]
 
-        response = client.get(f"/api/scans/{scan_id}/status")
+        response = client.get(f"/api/v1/scans/{scan_id}/status")
         assert response.status_code == 200
         data = response.json()
         assert data["scan_id"] == scan_id
         assert data["cluster_id"] == "prod-01"
         assert data["scanner_type"] == "k8s"
-        assert data["status"] == "created"
+        assert data["status"] == "queued"
         assert "created_at" in data
 
     def test_get_status_not_found(self, client):
         """Unknown scan_id returns 404."""
-        response = client.get("/api/scans/nonexistent/status")
+        response = client.get("/api/v1/scans/nonexistent/status")
         assert response.status_code == 404
 
-    def test_status_transitions_created_uploading_processing(self, client):
-        """Validates full status transition: created → uploading → processing."""
-        start_resp = client.post("/api/scans/start", json={
+    def test_status_transitions_queued_uploading_processing(self, client):
+        """Validates full status transition: queued → uploading → processing."""
+        start_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": "flow-cluster", "scanner_type": "image"
         })
         scan_id = start_resp.json()["scan_id"]
 
-        # created
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == "created"
+        # queued
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "queued"
 
         # uploading
-        url_resp = client.post(f"/api/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == "uploading"
+        url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "uploading"
 
         # processing
         s3_key = url_resp.json()["s3_key"]
-        client.post(f"/api/scans/{scan_id}/complete", json={"files": [s3_key]})
-        assert client.get(f"/api/scans/{scan_id}/status").json()["status"] == "processing"
+        client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "processing"

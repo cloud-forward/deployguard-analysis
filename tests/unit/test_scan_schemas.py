@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 from app.models.schemas import (
     ScanStartRequest,
+    ScannerType,
     UploadUrlRequest,
     ScanCompleteRequest,
     ScanStatusResponse,
@@ -15,25 +16,31 @@ class TestScanStartRequest:
 
     def test_valid_request(self):
         """Valid request with all fields"""
-        req = ScanStartRequest(cluster_id="prod-01", scanner_type="k8s")
-        assert req.cluster_id == "prod-01"
-        assert req.scanner_type == "k8s"
+        from uuid import UUID
+        req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
+        assert req.cluster_id == UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        assert req.scanner_type == ScannerType.k8s
 
     def test_valid_scanner_types(self):
         """All 4 scanner types are accepted"""
-        for st in ["k8s", "aws", "image", "runtime"]:
-            req = ScanStartRequest(cluster_id="c1", scanner_type=st)
-            assert req.scanner_type == st
+        for st, expected in [("k8s", ScannerType.k8s), ("aws", ScannerType.aws), ("image", ScannerType.image), ("runtime", ScannerType.runtime)]:
+            req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type=st)
+            assert req.scanner_type == expected
 
     def test_invalid_scanner_type(self):
         """Invalid scanner_type raises ValidationError"""
         with pytest.raises(ValidationError):
-            ScanStartRequest(cluster_id="c1", scanner_type="invalid")
+            ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="invalid")
 
     def test_missing_cluster_id(self):
         """Missing cluster_id raises ValidationError"""
         with pytest.raises(ValidationError):
             ScanStartRequest(scanner_type="k8s")
+
+    def test_invalid_cluster_id_format_rejected(self):
+        """Non-UUID cluster_id raises ValidationError"""
+        with pytest.raises(ValidationError):
+            ScanStartRequest(cluster_id="not-a-uuid", scanner_type="k8s")
 
 
 class TestUploadUrlRequest:

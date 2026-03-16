@@ -1,8 +1,8 @@
 """
-분석 엔드포인트.
+분석 작업 엔드포인트.
 """
 from fastapi import APIRouter, Depends
-from app.models.schemas import AnalysisRequest, AnalysisResponse
+from app.models.schemas import AnalysisJobRequest, AnalysisJobResponse
 from app.application.di import get_analysis_service
 from app.application.services.analysis_service import AnalysisService
 
@@ -10,23 +10,34 @@ router = APIRouter()
 
 
 @router.post(
-    "/analyze",
-    response_model=AnalysisResponse,
+    "/analysis/jobs",
+    response_model=AnalysisJobResponse,
+    status_code=202,
     tags=["Analysis"],
-    summary="분석 작업 시작",
-    description="""새로운 분석 작업을 시작합니다.
+    summary="분석 작업 수동 실행",
+    description="""스캔 세션 ID를 지정하여 분석 작업을 수동으로 시작합니다.
 
-대상 리소스에 대해 그래프 구축 → 공격 경로 탐색 → 위험 점수 산정 파이프라인을 실행합니다.
-분석은 비동기로 실행되며, 반환된 `job_id`로 진행 상황을 추적할 수 있습니다.
+일반적으로 `POST /api/v1/scans/{scan_id}/complete` 호출 시 분석 오케스트레이션 체크가 자동으로 수행됩니다.
+이 엔드포인트는 재분석 또는 수동 오케스트레이션이 필요한 경우에 사용합니다.
 
-**depth 값:**
-- 최솟값: `1` (얕은 분석)
-- 기본값: `3`
-- 최댓값: `10` (전체 경로 탐색)""",
+분석 파이프라인: 그래프 구축 → 공격 경로 탐색 → 위험 점수 산정""",
     responses={
-        200: {"description": "분석 작업이 성공적으로 시작되었습니다"},
+        202: {"description": "분석 작업이 성공적으로 접수되었습니다"},
         422: {"description": "유효하지 않은 요청 파라미터"},
     },
 )
-async def analyze(request: AnalysisRequest, service: AnalysisService = Depends(get_analysis_service)):
-    return await service.analyze(request)
+async def create_analysis_job(
+    request: AnalysisJobRequest,
+    service: AnalysisService = Depends(get_analysis_service),
+):
+    job_id = await service._jobs.create_analysis_job(
+        cluster_id=request.cluster_id,
+        k8s_scan_id=request.k8s_scan_id,
+        aws_scan_id=request.aws_scan_id,
+        image_scan_id=request.image_scan_id,
+    )
+    return AnalysisJobResponse(
+        job_id=job_id,
+        status="accepted",
+        message=f"분석 작업이 시작되었습니다 (cluster_id={request.cluster_id})",
+    )

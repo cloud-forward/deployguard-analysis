@@ -3,12 +3,21 @@ Domain repository interface (protocol) for ScanRecord persistence.
 Implemented by gateway adapters (e.g., SQLAlchemy).
 """
 from __future__ import annotations
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
 class ScanRepository(Protocol):
-    async def create(self, scan_id: str, cluster_id: str, scanner_type: str) -> object:
+    async def create(
+        self,
+        scan_id: str,
+        cluster_id: str,
+        scanner_type: str,
+        status: str = "queued",
+        request_source: str = "unknown",
+        requested_at: datetime | None = None,
+    ) -> object:
         """Persist a new ScanRecord. Returns the created ScanRecord."""
         ...
 
@@ -32,8 +41,19 @@ class ScanRepository(Protocol):
         """Return all ScanRecords for a given cluster_id."""
         ...
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> object | None:
-        """Return an active ScanRecord (status in created/uploading/processing) for the given cluster and scanner_type, or None."""
+        """Return an active ScanRecord (status in queued/running/uploading/processing) for the given cluster and scanner_type, or None."""
         ...
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
         """Return a dict mapping scanner_type -> latest completed ScanRecord for the given cluster."""
+        ...
+
+    async def claim_next_queued_scan(
+        self,
+        cluster_id: str,
+        scanner_type: str,
+        claimed_by: str,
+        lease_expires_at: datetime,
+        started_at: datetime,
+    ) -> object | None:
+        """Atomically claim one queued scan for a worker. Returns claimed ScanRecord or None."""
         ...

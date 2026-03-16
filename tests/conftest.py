@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
-from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED
 
 
 class FakeScanRepository:
@@ -25,16 +25,26 @@ class FakeScanRepository:
     def __init__(self):
         self._store: dict = {}
 
-    async def create(self, scan_id: str, cluster_id: str, scanner_type: str):
+    async def create(
+        self,
+        scan_id: str,
+        cluster_id: str,
+        scanner_type: str,
+        status: str = SCAN_STATUS_QUEUED,
+        request_source: str = "unknown",
+        requested_at=None,
+    ):
         from datetime import datetime
         record = _FakeScanRecord(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
-            status=SCAN_STATUS_CREATED,
+            status=status,
             s3_keys=[],
             created_at=datetime.utcnow(),
             completed_at=None,
+            request_source=request_source,
+            requested_at=requested_at or datetime.utcnow(),
         )
         self._store[scan_id] = record
         return record
@@ -73,9 +83,25 @@ class FakeScanRepository:
                 return r
         return None
 
+    async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
+        queued = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "queued"
+        ]
+        if not queued:
+            return None
+        queued.sort(key=lambda r: r.requested_at)
+        record = queued[0]
+        record.status = "running"
+        record.claimed_by = claimed_by
+        record.claimed_at = started_at
+        record.started_at = started_at
+        record.lease_expires_at = lease_expires_at
+        return record
+
 
 class _FakeScanRecord:
-    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at):
+    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at, request_source, requested_at):
         self.scan_id = scan_id
         self.cluster_id = cluster_id
         self.scanner_type = scanner_type
@@ -83,6 +109,8 @@ class _FakeScanRecord:
         self.s3_keys = s3_keys
         self.created_at = created_at
         self.completed_at = completed_at
+        self.request_source = request_source
+        self.requested_at = requested_at
 
 
 class FakeS3Service:

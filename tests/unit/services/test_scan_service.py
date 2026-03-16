@@ -19,14 +19,14 @@ class TestScanServiceStartScan:
 
     @pytest.mark.asyncio
     async def test_start_scan_returns_scan_id(self):
-        """start_scan returns a scan_id and status=created"""
+        """start_scan returns a scan_id and status=queued"""
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s")
+        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="test")
 
         assert result.scan_id is not None
-        assert result.status == "created"
+        assert result.status == "queued"
 
     @pytest.mark.asyncio
     async def test_scan_id_format(self):
@@ -34,7 +34,7 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s")
+        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="test")
 
         assert re.match(r"^\d{8}T\d{6}-k8s$", result.scan_id), (
             f"scan_id '{result.scan_id}' does not match expected format"
@@ -46,19 +46,23 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        await svc.start_scan("prod-01", "k8s")
+        await svc.start_scan("prod-01", "k8s", "test")
 
         repo.create.assert_called_once()
+        _, kwargs = repo.create.call_args
+        assert kwargs["status"] == "queued"
+        assert kwargs["request_source"] == "test"
+        assert kwargs["scanner_type"] == "k8s"
 
     @pytest.mark.asyncio
     async def test_start_scan_duplicate_raises_409(self):
         """start_scan raises 409 if an active scan already exists"""
         from fastapi import HTTPException
         svc, repo, _ = make_service()
-        repo.find_active_scan.return_value = MagicMock(status="created")
+        repo.find_active_scan.return_value = MagicMock(status="queued")
 
         with pytest.raises(HTTPException) as exc_info:
-            await svc.start_scan("prod-01", "k8s")
+            await svc.start_scan("prod-01", "k8s", "test")
 
         assert exc_info.value.status_code == 409
         assert "already running" in exc_info.value.detail
@@ -69,9 +73,9 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None  # completed scans are not active
 
-        result = await svc.start_scan("prod-01", "k8s")
+        result = await svc.start_scan("prod-01", "k8s", "test")
 
-        assert result.status == "created"
+        assert result.status == "queued"
         repo.create.assert_called_once()
 
     @pytest.mark.asyncio
@@ -80,9 +84,9 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None  # failed scans are not active
 
-        result = await svc.start_scan("prod-01", "aws")
+        result = await svc.start_scan("prod-01", "aws", "test")
 
-        assert result.status == "created"
+        assert result.status == "queued"
         repo.create.assert_called_once()
 
 
@@ -93,7 +97,7 @@ class TestScanServiceUploadUrl:
         """get_upload_url returns S3 presigned URL and s3_key"""
         svc, repo, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
-            scan_id="s1", cluster_id="c1", scanner_type="k8s", status="created"
+            scan_id="s1", cluster_id="c1", scanner_type="k8s", status="running"
         )
 
         result = await svc.get_upload_url("s1", "k8s_scan.json")
@@ -138,11 +142,22 @@ class TestScanServiceUploadUrl:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
+    async def test_upload_url_queued_scan_raises_409(self):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="queued")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.get_upload_url("s1", "f.json")
+
+        assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
     async def test_upload_url_transitions_status_to_uploading(self):
-        """get_upload_url updates status to 'uploading' when scan is still 'created'"""
+        """get_upload_url updates status to 'uploading' when scan is 'running'"""
         svc, repo, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
-            scan_id="s1", cluster_id="c1", scanner_type="k8s", status="created"
+            scan_id="s1", cluster_id="c1", scanner_type="k8s", status="running"
         )
 
         await svc.get_upload_url("s1", "f.json")
@@ -200,6 +215,17 @@ class TestScanServiceComplete:
 
         assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_complete_scan_invalid_state_raises_409(self):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="queued")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+
+        assert exc_info.value.status_code == 409
+
 
 class TestScanServiceGetStatus:
 
@@ -231,3 +257,21 @@ class TestScanServiceGetStatus:
             await svc.get_scan_status("nonexistent")
 
         assert exc_info.value.status_code == 404
+
+
+class TestScanServiceClaimPending:
+
+    @pytest.mark.asyncio
+    async def test_claim_pending_scan_calls_repo(self):
+        svc, repo, _ = make_service()
+        repo.claim_next_queued_scan.return_value = MagicMock(scan_id="s1")
+
+        result = await svc.claim_pending_scan(
+            cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            scanner_type="k8s",
+            claimed_by="worker-1",
+            lease_seconds=300,
+        )
+
+        assert result.scan_id == "s1"
+        repo.claim_next_queued_scan.assert_called_once()

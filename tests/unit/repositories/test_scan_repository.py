@@ -121,3 +121,32 @@ class TestSQLAlchemyScanRepository:
         found = await repo.get_by_scan_id("test-004")
         assert found.status == "completed"
         assert found.completed_at == completed
+
+    @pytest.mark.asyncio
+    async def test_claim_next_queued_scan(self, repo):
+        from datetime import datetime, timedelta
+        await repo.create(scan_id="q-001", cluster_id="c1", scanner_type="k8s", status="queued", request_source="test")
+        now = datetime(2026, 3, 9, 12, 0, 0)
+        claimed = await repo.claim_next_queued_scan(
+            cluster_id="c1",
+            scanner_type="k8s",
+            claimed_by="worker-1",
+            lease_expires_at=now + timedelta(seconds=300),
+            started_at=now,
+        )
+        assert claimed is not None
+        assert claimed.status == "running"
+        assert claimed.claimed_by == "worker-1"
+
+    @pytest.mark.asyncio
+    async def test_claim_next_queued_scan_none_when_empty(self, repo):
+        from datetime import datetime, timedelta
+        now = datetime(2026, 3, 9, 12, 0, 0)
+        claimed = await repo.claim_next_queued_scan(
+            cluster_id="c1",
+            scanner_type="k8s",
+            claimed_by="worker-1",
+            lease_expires_at=now + timedelta(seconds=300),
+            started_at=now,
+        )
+        assert claimed is None

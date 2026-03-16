@@ -125,7 +125,7 @@ class TestSQLAlchemyScanRepository:
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):
         from datetime import datetime, timedelta
-        await repo.create(scan_id="q-001", cluster_id="c1", scanner_type="k8s", status="queued", request_source="test")
+        await repo.create(scan_id="q-001", cluster_id="c1", scanner_type="k8s", status="queued", request_source="manual")
         now = datetime(2026, 3, 9, 12, 0, 0)
         claimed = await repo.claim_next_queued_scan(
             cluster_id="c1",

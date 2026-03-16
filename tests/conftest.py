@@ -34,7 +34,7 @@ class FakeScanRepository:
         cluster_id: str,
         scanner_type: str,
         status: str = SCAN_STATUS_QUEUED,
-        request_source: str = "unknown",
+        request_source: str = "manual",
         requested_at=None,
     ):
         from datetime import datetime

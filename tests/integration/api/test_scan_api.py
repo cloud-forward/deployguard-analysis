@@ -49,7 +49,7 @@ class FakeScanRepository:
         cluster_id: str,
         scanner_type: str,
         status: str = "queued",
-        request_source: str = "unknown",
+        request_source: str = "manual",
         requested_at=None,
     ):
         from datetime import datetime
@@ -191,7 +191,7 @@ def client_with_completed_scan():
         s3_keys=[],
         created_at=datetime(2026, 3, 9, 12, 0, 0),
         completed_at=datetime(2026, 3, 9, 12, 5, 0),
-        request_source="test",
+        request_source="manual",
         requested_at=datetime(2026, 3, 9, 11, 59, 0),
     )
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)

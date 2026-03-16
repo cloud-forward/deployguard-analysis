@@ -15,7 +15,7 @@ class ScanRepository(Protocol):
         cluster_id: str,
         scanner_type: str,
         status: str = "queued",
-        request_source: str = "unknown",
+        request_source: str = "manual",
         requested_at: datetime | None = None,
     ) -> object:
         """Persist a new ScanRecord. Returns the created ScanRecord."""

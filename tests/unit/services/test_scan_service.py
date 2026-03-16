@@ -226,6 +226,17 @@ class TestScanServiceComplete:
 
         assert exc_info.value.status_code == 409
 
+    @pytest.mark.asyncio
+    async def test_complete_scan_ownership_mismatch_raises_403(self):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", cluster_id="c1", status="uploading")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"], authenticated_cluster_id="c2")
+
+        assert exc_info.value.status_code == 403
+
 
 class TestScanServiceGetStatus:
 

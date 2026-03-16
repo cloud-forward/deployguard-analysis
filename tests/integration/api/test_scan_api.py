@@ -8,13 +8,16 @@ Uses FastAPI TestClient with:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.auth import get_authenticated_cluster
 from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 from app.core.constants import ACTIVE_SCAN_STATUSES
+from app.models.schemas import ClusterResponse
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +145,16 @@ def make_client(file_exists: bool = True) -> TestClient:
     fake_s3 = FakeS3Service(file_exists=file_exists)
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
     app.dependency_overrides[get_scan_service] = lambda: fake_service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     return TestClient(app)
 
 
@@ -183,6 +196,16 @@ def client_with_completed_scan():
     )
     fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)
     app.dependency_overrides[get_scan_service] = lambda: fake_service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     with TestClient(app) as c:
         c._completed_scan_id = scan_id
         yield c

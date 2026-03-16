@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.auth import get_authenticated_cluster
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 from app.core.constants import (
@@ -18,6 +19,7 @@ from app.core.constants import (
     SCAN_STATUS_UPLOADING,
 )
 from app.main import app
+from app.models.schemas import ClusterResponse
 
 
 class _FakeScanRecord:
@@ -136,6 +138,16 @@ def client():
     s3 = FakeS3Service()
     service = ScanService(scan_repository=repo, s3_service=s3)
     app.dependency_overrides[get_scan_service] = lambda: service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -147,6 +159,16 @@ def client_missing_s3():
     s3 = FakeS3ServiceMissingFile()
     service = ScanService(scan_repository=repo, s3_service=s3)
     app.dependency_overrides[get_scan_service] = lambda: service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -170,19 +192,19 @@ def _upload_url(client, scan_id, file_name="scan.json"):
 
 def _claim(
     client,
-    cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     scanner_type="k8s",
-    claimed_by="worker-1",
+    claimed_by=None,
     lease_seconds=300,
 ):
+    params = {
+        "scanner_type": scanner_type,
+        "lease_seconds": lease_seconds,
+    }
+    if claimed_by is not None:
+        params["claimed_by"] = claimed_by
     return client.get(
         "/api/v1/scans/pending",
-        params={
-            "cluster_id": cluster_id,
-            "scanner_type": scanner_type,
-            "claimed_by": claimed_by,
-            "lease_seconds": lease_seconds,
-        },
+        params=params,
     )
 
 
@@ -317,6 +339,14 @@ class TestCompleteScan:
         )
         assert resp.status_code == 409
 
+    def test_complete_rejects_other_cluster_scan(self, client):
+        scan_id = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901").json()["scan_id"]
+        resp = client.post(
+            f"/api/v1/scans/{scan_id}/complete",
+            json={"files": [f"scans/other/{scan_id}/k8s/scan.json"]},
+        )
+        assert resp.status_code == 403
+
     def test_complete_empty_files_rejected(self, client):
         scan_id = _start(client).json()["scan_id"]
         resp = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": []})
@@ -359,7 +389,6 @@ class TestClaimPendingScan:
         resp = client.get(
             "/api/v1/scans/pending",
             params={
-                "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                 "scanner_type": "k8s",
                 "claimed_by": "worker-1",
                 "lease_seconds": 120,
@@ -375,26 +404,31 @@ class TestClaimPendingScan:
         assert data["lease_expires_at"] is not None
 
     def test_claim_returns_only_matching_cluster_and_scanner(self, client):
-        target_cluster = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        auth_cluster = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         other_cluster = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
-        target = _start(client, cluster_id=target_cluster, scanner_type="k8s").json()["scan_id"]
-        _start(client, cluster_id=target_cluster, scanner_type="aws")
+        target = _start(client, cluster_id=auth_cluster, scanner_type="k8s").json()["scan_id"]
+        _start(client, cluster_id=auth_cluster, scanner_type="aws")
         _start(client, cluster_id=other_cluster, scanner_type="image")
 
-        resp = _claim(client, cluster_id=target_cluster, scanner_type="k8s", claimed_by="worker-1")
+        resp = _claim(client, scanner_type="k8s", claimed_by="worker-1")
         assert resp.status_code == 200
         assert resp.json()["scan_id"] == target
 
-        no_more_target = _claim(client, cluster_id=target_cluster, scanner_type="k8s", claimed_by="worker-2")
+        no_more_target = _claim(client, scanner_type="k8s", claimed_by="worker-2")
         assert no_more_target.status_code == 204
 
     def test_returns_204_when_no_queued(self, client):
         resp = client.get(
             "/api/v1/scans/pending",
             params={
-                "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                 "scanner_type": "k8s",
                 "claimed_by": "worker-1",
             },
         )
         assert resp.status_code == 204
+
+    def test_claimed_by_defaults_when_missing(self, client):
+        _start(client)
+        resp = _claim(client, scanner_type="k8s")
+        assert resp.status_code == 200
+        assert resp.json()["claimed_by"] == "unknown-worker"

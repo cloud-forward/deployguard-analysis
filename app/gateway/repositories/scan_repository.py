@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.constants import ACTIVE_SCAN_STATUSES
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED, SCAN_STATUS_RUNNING
 from app.domain.repositories.scan_repository import ScanRepository
 from app.models.db_models import ScanRecord
 
@@ -15,12 +15,23 @@ class SQLAlchemyScanRepository(ScanRepository):
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def create(self, scan_id: str, cluster_id: str, scanner_type: str) -> ScanRecord:
+    async def create(
+        self,
+        scan_id: str,
+        cluster_id: str,
+        scanner_type: str,
+        status: str = "queued",
+        request_source: str = "unknown",
+        requested_at: datetime | None = None,
+    ) -> ScanRecord:
+        requested_at = requested_at or datetime.utcnow()
         record = ScanRecord(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
-            status="created",
+            status=status,
+            request_source=request_source,
+            requested_at=requested_at,
         )
         self._session.add(record)
         await self._session.commit()
@@ -103,3 +114,35 @@ class SQLAlchemyScanRepository(ScanRepository):
             )
         )
         return result.scalars().first()
+
+    async def claim_next_queued_scan(
+        self,
+        cluster_id: str,
+        scanner_type: str,
+        claimed_by: str,
+        lease_expires_at: datetime,
+        started_at: datetime,
+    ) -> Optional[ScanRecord]:
+        result = await self._session.execute(
+            select(ScanRecord)
+            .where(
+                ScanRecord.cluster_id == cluster_id,
+                ScanRecord.scanner_type == scanner_type,
+                ScanRecord.status == SCAN_STATUS_QUEUED,
+            )
+            .order_by(ScanRecord.requested_at.asc(), ScanRecord.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        record = result.scalars().first()
+        if record is None:
+            return None
+        record.status = SCAN_STATUS_RUNNING
+        record.claimed_by = claimed_by
+        record.claimed_at = started_at
+        record.started_at = started_at
+        record.lease_expires_at = lease_expires_at
+        record.updated_at = started_at
+        await self._session.commit()
+        await self._session.refresh(record)
+        return record

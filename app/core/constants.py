@@ -40,14 +40,16 @@ VALID_SCANNER_TYPES: frozenset[str] = frozenset({
 # Scan statuses
 # ---------------------------------------------------------------------------
 
-SCAN_STATUS_CREATED: str = "created"
+SCAN_STATUS_QUEUED: str = "queued"
+SCAN_STATUS_RUNNING: str = "running"
 SCAN_STATUS_UPLOADING: str = "uploading"
 SCAN_STATUS_PROCESSING: str = "processing"
 SCAN_STATUS_COMPLETED: str = "completed"
 SCAN_STATUS_FAILED: str = "failed"
 
 VALID_SCAN_STATUSES: frozenset[str] = frozenset({
-    SCAN_STATUS_CREATED,
+    SCAN_STATUS_QUEUED,
+    SCAN_STATUS_RUNNING,
     SCAN_STATUS_UPLOADING,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_COMPLETED,
@@ -56,7 +58,8 @@ VALID_SCAN_STATUSES: frozenset[str] = frozenset({
 
 # Statuses that indicate a scan session is still active (not terminal)
 ACTIVE_SCAN_STATUSES: tuple[str, ...] = (
-    SCAN_STATUS_CREATED,
+    SCAN_STATUS_QUEUED,
+    SCAN_STATUS_RUNNING,
     SCAN_STATUS_UPLOADING,
     SCAN_STATUS_PROCESSING,
 )

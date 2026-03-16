@@ -14,11 +14,18 @@ class SQLAlchemyClusterRepository(ClusterRepository):
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def create(self, name: str, cluster_type: str, description: Optional[str] = None) -> Cluster:
+    async def create(
+        self,
+        name: str,
+        cluster_type: str,
+        description: Optional[str] = None,
+        api_token: Optional[str] = None,
+    ) -> Cluster:
         cluster = Cluster(
             name=name,
             cluster_type=cluster_type,
             description=description,
+            api_token=api_token,
         )
         self._session.add(cluster)
         await self._session.commit()

@@ -5,19 +5,19 @@ from typing import List
 from fastapi import APIRouter, Depends, Response, status
 from app.application.di import get_cluster_service
 from app.application.services.cluster_service import ClusterService
-from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse
+from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse, ClusterCreateResponse
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
 
 
 @router.post(
     "",
-    response_model=ClusterResponse,
+    response_model=ClusterCreateResponse,
     status_code=status.HTTP_201_CREATED,
     summary="클러스터 생성",
     description="""DeployGuard 분석 대상 Kubernetes 클러스터를 등록합니다.
-클러스터 이름은 고유해야 하며 이후 스캔 데이터와 연결됩니다.
-스캐너용 API token은 클러스터 온보딩 과정에서 발급/연결되며, 스캐너 폴링 API는 이 토큰(Bearer)을 사용합니다.
+클러스터 등록 시 스캐너 인증용 API 토큰이 함께 발급되며 응답 본문으로 1회 반환됩니다.
+발급된 토큰은 스캐너 Helm 설치 시 설정값으로 사용해야 하며, 이후 일반 조회 API에서는 노출되지 않습니다.
 
 **cluster_type 값:**
 - `eks` — AWS EKS 관리형 클러스터

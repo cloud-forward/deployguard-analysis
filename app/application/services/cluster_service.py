@@ -2,27 +2,30 @@
 Application service for Cluster management.
 """
 from __future__ import annotations
+import secrets
 from typing import List, Optional
 from fastapi import HTTPException
 from app.domain.repositories.cluster_repository import ClusterRepository
-from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse
+from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse, ClusterCreateResponse
 
 
 class ClusterService:
     def __init__(self, cluster_repository: ClusterRepository):
         self._repo = cluster_repository
 
-    async def create_cluster(self, request: ClusterCreateRequest) -> ClusterResponse:
+    async def create_cluster(self, request: ClusterCreateRequest) -> ClusterCreateResponse:
         existing = await self._repo.get_by_name(request.name)
         if existing:
             raise HTTPException(status_code=400, detail=f"Cluster with name '{request.name}' already exists")
-        
+
+        api_token = f"dg_scanner_{secrets.token_urlsafe(24)}"
         cluster = await self._repo.create(
             name=request.name,
             cluster_type=request.cluster_type,
-            description=request.description
+            description=request.description,
+            api_token=api_token,
         )
-        return ClusterResponse.model_validate(cluster)
+        return ClusterCreateResponse.model_validate(cluster)
 
     async def get_cluster(self, cluster_id: str) -> ClusterResponse:
         cluster = await self._repo.get_by_id(cluster_id)

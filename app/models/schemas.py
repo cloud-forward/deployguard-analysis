@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any
@@ -65,17 +66,17 @@ class ScanStartRequest(BaseModel):
         description="Type of scanner to run. One of: k8s, aws, image",
         example="k8s",
     )
-    request_source: str = Field(
-        default="api",
-        description="Source of the scan request (e.g. scanner-orchestrator, manual-api)",
-        example="scanner-orchestrator",
+    request_source: Literal["manual", "scheduled"] = Field(
+        default="manual",
+        description="Source of the scan request",
+        example="manual",
     )
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
             "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "scanner_type": "k8s",
-            "request_source": "scanner-orchestrator",
+            "request_source": "manual",
         }
     ]})
 

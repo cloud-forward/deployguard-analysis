@@ -23,7 +23,7 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="test")
+        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="manual")
 
         assert result.scan_id is not None
         assert result.status == "queued"
@@ -34,7 +34,7 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="test")
+        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="manual")
 
         assert re.match(r"^\d{8}T\d{6}-k8s$", result.scan_id), (
             f"scan_id '{result.scan_id}' does not match expected format"
@@ -46,12 +46,12 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        await svc.start_scan("prod-01", "k8s", "test")
+        await svc.start_scan("prod-01", "k8s", "manual")
 
         repo.create.assert_called_once()
         _, kwargs = repo.create.call_args
         assert kwargs["status"] == "queued"
-        assert kwargs["request_source"] == "test"
+        assert kwargs["request_source"] == "manual"
         assert kwargs["scanner_type"] == "k8s"
 
     @pytest.mark.asyncio
@@ -62,7 +62,7 @@ class TestScanServiceStartScan:
         repo.find_active_scan.return_value = MagicMock(status="queued")
 
         with pytest.raises(HTTPException) as exc_info:
-            await svc.start_scan("prod-01", "k8s", "test")
+            await svc.start_scan("prod-01", "k8s", "manual")
 
         assert exc_info.value.status_code == 409
         assert "already running" in exc_info.value.detail
@@ -73,7 +73,7 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None  # completed scans are not active
 
-        result = await svc.start_scan("prod-01", "k8s", "test")
+        result = await svc.start_scan("prod-01", "k8s", "manual")
 
         assert result.status == "queued"
         repo.create.assert_called_once()
@@ -84,7 +84,7 @@ class TestScanServiceStartScan:
         svc, repo, _ = make_service()
         repo.find_active_scan.return_value = None  # failed scans are not active
 
-        result = await svc.start_scan("prod-01", "aws", "test")
+        result = await svc.start_scan("prod-01", "aws", "manual")
 
         assert result.status == "queued"
         repo.create.assert_called_once()

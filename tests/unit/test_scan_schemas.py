@@ -20,6 +20,7 @@ class TestScanStartRequest:
         req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
         assert req.cluster_id == UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         assert req.scanner_type == ScannerType.k8s
+        assert req.request_source == "manual"
 
     def test_valid_scanner_types(self):
         """All 4 scanner types are accepted"""
@@ -41,6 +42,23 @@ class TestScanStartRequest:
         """Non-UUID cluster_id raises ValidationError"""
         with pytest.raises(ValidationError):
             ScanStartRequest(cluster_id="not-a-uuid", scanner_type="k8s")
+
+    def test_valid_request_sources(self):
+        for request_source in ("manual", "scheduled"):
+            req = ScanStartRequest(
+                cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                scanner_type="k8s",
+                request_source=request_source,
+            )
+            assert req.request_source == request_source
+
+    def test_invalid_request_source(self):
+        with pytest.raises(ValidationError):
+            ScanStartRequest(
+                cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                scanner_type="k8s",
+                request_source="api",
+            )
 
 
 class TestUploadUrlRequest:

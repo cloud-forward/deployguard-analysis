@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED, SCAN_STATUS_RUNNING
 from app.domain.repositories.scan_repository import ScanRepository
 from app.models.db_models import ScanRecord
+from app.models.schemas import RequestSource
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ class SQLAlchemyScanRepository(ScanRepository):
         cluster_id: str,
         scanner_type: str,
         status: str = "queued",
-        request_source: str = "manual",
+        request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
     ) -> ScanRecord:
         requested_at = requested_at or datetime.utcnow()

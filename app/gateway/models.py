@@ -82,6 +82,6 @@ class Cluster(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     api_token: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'eks' | 'self-managed'
+    cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'eks' | 'self-managed' | 'aws'
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

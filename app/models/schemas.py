@@ -20,6 +20,9 @@ class ScannerType(str, Enum):
     runtime = "runtime"
 
 
+RequestSource = Literal["manual", "scheduled"]
+
+
 class AnalysisJobRequest(BaseModel):
     cluster_id: str = Field(..., description="분석 대상 클러스터 ID", example="prod-cluster-01")
     k8s_scan_id: str = Field(..., description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
@@ -66,7 +69,7 @@ class ScanStartRequest(BaseModel):
         description="Type of scanner to run. One of: k8s, aws, image",
         example="k8s",
     )
-    request_source: Literal["manual", "scheduled"] = Field(
+    request_source: RequestSource = Field(
         default="manual",
         description="Source of the scan request",
         example="manual",
@@ -196,10 +199,13 @@ class PendingScanClaimResponse(BaseModel):
     files: list[str] = Field(default_factory=list)
 
 
+ALLOWED_CLUSTER_TYPES = ("eks", "self-managed", "aws")
+
+
 class ClusterCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="클러스터 고유 이름", example="prod-cluster-01")
     description: Optional[str] = Field(None, max_length=1000, description="클러스터 설명", example="프로덕션 EKS 클러스터")
-    cluster_type: str = Field(..., description="클러스터 유형: 'eks' | 'self-managed'", example="eks")
+    cluster_type: str = Field(..., description="클러스터 유형: 'eks' | 'self-managed' | 'aws'", example="eks")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"name": "prod-cluster-01", "description": "프로덕션 EKS 클러스터", "cluster_type": "eks"}
@@ -208,15 +214,15 @@ class ClusterCreateRequest(BaseModel):
     @field_validator("cluster_type")
     @classmethod
     def validate_cluster_type(cls, v: str) -> str:
-        if v not in ("eks", "self-managed"):
-            raise ValueError("cluster_type must be either 'eks' or 'self-managed'")
+        if v not in ALLOWED_CLUSTER_TYPES:
+            raise ValueError("cluster_type must be one of 'eks', 'self-managed', or 'aws'")
         return v
 
 
 class ClusterUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255, description="변경할 클러스터 이름", example="prod-cluster-02")
     description: Optional[str] = Field(None, max_length=1000, description="변경할 클러스터 설명", example="업데이트된 설명")
-    cluster_type: Optional[str] = Field(None, description="변경할 클러스터 유형: 'eks' | 'self-managed'", example="self-managed")
+    cluster_type: Optional[str] = Field(None, description="변경할 클러스터 유형: 'eks' | 'self-managed' | 'aws'", example="self-managed")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"name": "prod-cluster-02", "cluster_type": "self-managed"}
@@ -225,8 +231,8 @@ class ClusterUpdateRequest(BaseModel):
     @field_validator("cluster_type")
     @classmethod
     def validate_cluster_type(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ("eks", "self-managed"):
-            raise ValueError("cluster_type must be either 'eks' or 'self-managed'")
+        if v is not None and v not in ALLOWED_CLUSTER_TYPES:
+            raise ValueError("cluster_type must be one of 'eks', 'self-managed', or 'aws'")
         return v
 
 
@@ -251,12 +257,21 @@ class ClusterResponse(BaseModel):
     )
 
 
+class ClusterOnboardingResponse(BaseModel):
+    installation_method: str = Field(..., description="설치 방식", example="helm")
+    install_command: str = Field(..., description="설치 명령", example="helm upgrade --install deployguard-scanner deployguard/scanner")
+    required_values: dict[str, str] = Field(default_factory=dict, description="설치에 필요한 값")
+    required_environment_variables: list[str] = Field(default_factory=list, description="필수 환경 변수 이름 목록")
+    guidance: list[str] = Field(default_factory=list, description="추가 설치 가이드")
+
+
 class ClusterCreateResponse(BaseModel):
     id: str = Field(..., description="클러스터 고유 ID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     name: str = Field(..., description="클러스터 이름", example="prod-cluster-01")
     description: Optional[str] = Field(None, description="클러스터 설명", example="프로덕션 EKS 클러스터")
     cluster_type: str = Field(..., description="클러스터 유형", example="eks")
     api_token: str = Field(..., description="스캐너 인증용 API 토큰", example="dg_scanner_xxxxxxxxxxxxxxxxxxxxx")
+    onboarding: ClusterOnboardingResponse = Field(..., description="클러스터 유형별 설치 가이드")
     created_at: datetime = Field(..., description="생성 일시")
     updated_at: datetime = Field(..., description="최종 수정 일시")
 
@@ -268,6 +283,20 @@ class ClusterCreateResponse(BaseModel):
             "description": "프로덕션 EKS 클러스터",
             "cluster_type": "eks",
             "api_token": "dg_scanner_xxxxxxxxxxxxxxxxxxxxx",
+            "onboarding": {
+                "installation_method": "helm",
+                "install_command": "helm upgrade --install deployguard-scanner deployguard/scanner",
+                "required_values": {
+                    "clusterId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "apiToken": "dg_scanner_xxxxxxxxxxxxxxxxxxxxx",
+                    "imagePullSecret": "deployguard-registry"
+                },
+                "required_environment_variables": [],
+                "guidance": [
+                    "Set clusterId and apiToken in the Helm values.",
+                    "Configure imagePullSecret so the scanner image can be pulled."
+                ]
+            },
             "created_at": "2024-01-15T10:00:00Z",
             "updated_at": "2024-01-15T10:00:00Z",
         }]}

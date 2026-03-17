@@ -8,7 +8,7 @@ from datetime import datetime
 from datetime import timedelta
 from uuid import UUID
 from fastapi import HTTPException
-from app.models.schemas import ScannerType
+from app.models.schemas import ScannerType, RequestSource
 from app.core.constants import (
     SCAN_STATUS_QUEUED,
     SCAN_STATUS_RUNNING,
@@ -42,7 +42,7 @@ class ScanService:
         self,
         cluster_id: UUID,
         scanner_type: ScannerType,
-        request_source: str,
+        request_source: RequestSource,
         request_id: str | None = None,
         endpoint_path: str | None = None,
     ) -> ScanStartResponse:

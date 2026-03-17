@@ -78,6 +78,13 @@ docker run -p 8000:8000 deployguard-analysis
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
+### 스캔 작업 흐름
+
+- `POST /api/v1/scans/start`: 대시보드 또는 스케줄러가 호출하여 `queued` 스캔 작업을 생성합니다. 이 API는 스캔을 직접 실행하지 않습니다.
+- `GET /api/v1/scans/pending`: 스캐너 워커가 폴링하여 자신이 처리할 queued 작업을 claim합니다.
+- 워커는 claim 이후 실제 스캔을 수행하고, `POST /api/v1/scans/{scan_id}/upload-url`로 업로드 URL을 받은 뒤 결과를 업로드합니다.
+- 업로드가 끝나면 워커가 `POST /api/v1/scans/{scan_id}/complete`를 호출하여 후속 처리로 넘깁니다.
+
 ---
 
 ## 테스트

@@ -21,7 +21,8 @@ router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
 
 **cluster_type 값:**
 - `eks` — AWS EKS 관리형 클러스터
-- `self-managed` — 자체 관리 Kubernetes 클러스터""",
+- `self-managed` — 자체 관리 Kubernetes 클러스터
+- `aws` — AWS 클러스터""",
     responses={
         201: {"description": "클러스터가 성공적으로 생성되었습니다"},
         422: {"description": "유효하지 않은 cluster_type 또는 필드 누락"},

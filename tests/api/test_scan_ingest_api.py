@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from typing import Optional
 from unittest.mock import AsyncMock
 
@@ -8,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.auth import get_authenticated_cluster
+from app.application.services.analysis_service import AnalysisService
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 from app.core.constants import (
@@ -132,6 +134,14 @@ class FakeS3ServiceMissingFile(FakeS3Service):
         return False
 
 
+class FakeAnalysisJobRepository:
+    async def create_job(self, target_id: str, params: dict) -> str:
+        return "job_stub"
+
+    async def create_analysis_job(self, cluster_id: str, k8s_scan_id: str, aws_scan_id: str, image_scan_id: str) -> str:
+        return "analysis-job"
+
+
 @pytest.fixture
 def client():
     repo = FakeScanRepository()
@@ -215,6 +225,15 @@ def _complete(client, scan_id, files=None):
     return client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": files})
 
 
+def _scan_log_records(caplog):
+    logger_names = {
+        "app.api.scan",
+        "app.application.services.scan_service",
+        "app.application.services.analysis_service",
+    }
+    return [record for record in caplog.records if record.name in logger_names and record.getMessage().startswith("scan.")]
+
+
 class TestScanStart:
     def test_creates_scan_record(self, client):
         resp = _start(client)
@@ -280,6 +299,38 @@ class TestScanStart:
     def test_scan_start_with_unknown_cluster_still_creates_record(self, client):
         resp = _start(client, cluster_id="ffffffff-ffff-ffff-ffff-ffffffffffff")
         assert resp.status_code == 201
+
+    def test_start_emits_lifecycle_logs(self, client, caplog):
+        with caplog.at_level(logging.INFO):
+            resp = client.post(
+                "/api/v1/scans/start",
+                headers={"X-Request-ID": "req-start-1"},
+                json={
+                    "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "scanner_type": "k8s",
+                    "request_source": "manual",
+                },
+            )
+
+        assert resp.status_code == 201
+        records = _scan_log_records(caplog)
+        events = [record.getMessage() for record in records]
+        assert "scan.start.request_received" in events
+        assert "scan.start.record_created" in events
+
+        request_received = next(record for record in records if record.getMessage() == "scan.start.request_received")
+        assert request_received.request_id == "req-start-1"
+        assert request_received.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert request_received.scanner_type == "k8s"
+        assert request_received.request_source == "manual"
+
+        record_created = next(record for record in records if record.getMessage() == "scan.start.record_created")
+        assert record_created.request_id == "req-start-1"
+        assert record_created.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert record_created.scanner_type == "k8s"
+        assert record_created.request_source == "manual"
+        assert record_created.status_after == SCAN_STATUS_QUEUED
+        assert record_created.scan_id == resp.json()["scan_id"]
 
 
 class TestUploadUrl:
@@ -380,6 +431,62 @@ class TestCompleteScan:
         resp = _complete(client_missing_s3, scan_id)
         assert resp.status_code == 400
 
+    def test_complete_emits_lifecycle_logs(self, caplog):
+        repo = FakeScanRepository()
+        s3 = FakeS3Service()
+        analysis = AnalysisService(jobs_repo=FakeAnalysisJobRepository(), scan_repo=repo)
+        service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis)
+        app.dependency_overrides[get_scan_service] = lambda: service
+
+        async def _fake_auth_cluster():
+            return ClusterResponse(
+                id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                name="test-cluster",
+                description=None,
+                cluster_type="eks",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+
+        app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
+        try:
+            with caplog.at_level(logging.INFO):
+                with TestClient(app) as client:
+                    scan_id = _start(client).json()["scan_id"]
+                    _claim(client)
+                    s3_key = _upload_url(client, scan_id).json()["s3_key"]
+                    complete_resp = client.post(
+                        f"/api/v1/scans/{scan_id}/complete",
+                        headers={"X-Request-ID": "req-complete-1"},
+                        json={"files": [s3_key]},
+                    )
+
+            assert complete_resp.status_code == 202
+            records = _scan_log_records(caplog)
+            events = [record.getMessage() for record in records]
+            assert "scan.complete.request_received" in events
+            assert "scan.complete.accepted" in events
+            assert "scan.analysis.trigger_check_invoked" in events
+
+            request_received = next(record for record in records if record.getMessage() == "scan.complete.request_received")
+            assert request_received.request_id == "req-complete-1"
+            assert request_received.scan_id == scan_id
+            assert request_received.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+            accepted = next(record for record in records if record.getMessage() == "scan.complete.accepted")
+            assert accepted.request_id == "req-complete-1"
+            assert accepted.scan_id == scan_id
+            assert accepted.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            assert accepted.scanner_type == "k8s"
+            assert accepted.status_before == SCAN_STATUS_UPLOADING
+            assert accepted.status_after == SCAN_STATUS_PROCESSING
+
+            trigger_check = next(record for record in records if record.getMessage() == "scan.analysis.trigger_check_invoked")
+            assert trigger_check.request_id == "req-complete-1"
+            assert trigger_check.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestScanStatus:
     def test_get_status_created(self, client):
@@ -454,3 +561,31 @@ class TestClaimPendingScan:
         resp = _claim(client, scanner_type="k8s")
         assert resp.status_code == 200
         assert resp.json()["claimed_by"] == "unknown-worker"
+
+    def test_pending_logs_distinguish_no_work_and_claimed(self, client, caplog):
+        with caplog.at_level(logging.INFO):
+            no_work = _claim(client, scanner_type="k8s", claimed_by="worker-a")
+            _start(client, scanner_type="k8s")
+            claimed = _claim(client, scanner_type="k8s", claimed_by="worker-b")
+
+        assert no_work.status_code == 204
+        assert claimed.status_code == 200
+
+        records = _scan_log_records(caplog)
+        events = [record.getMessage() for record in records]
+        assert "scan.pending.poll_received" in events
+        assert "scan.pending.no_work_found" in events
+        assert "scan.pending.claimed" in events
+
+        no_work_record = next(record for record in records if record.getMessage() == "scan.pending.no_work_found")
+        assert no_work_record.claimed_by == "worker-a"
+        assert no_work_record.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert no_work_record.scanner_type == "k8s"
+
+        claimed_record = next(record for record in records if record.getMessage() == "scan.pending.claimed")
+        assert claimed_record.claimed_by == "worker-b"
+        assert claimed_record.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert claimed_record.scanner_type == "k8s"
+        assert claimed_record.status_before == SCAN_STATUS_QUEUED
+        assert claimed_record.status_after == SCAN_STATUS_RUNNING
+        assert claimed_record.scan_id == claimed.json()["scan_id"]

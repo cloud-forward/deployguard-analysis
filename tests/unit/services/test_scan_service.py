@@ -1,4 +1,5 @@
 import re
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from app.application.services.scan_service import ScanService
@@ -66,6 +67,30 @@ class TestScanServiceStartScan:
 
         assert exc_info.value.status_code == 409
         assert "already running" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_start_scan_duplicate_logs_failure_context(self, caplog):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.find_active_scan.return_value = MagicMock(status="queued")
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(HTTPException):
+                await svc.start_scan(
+                    "prod-01",
+                    "k8s",
+                    "manual",
+                    request_id="req-dup-1",
+                    endpoint_path="/api/v1/scans/start",
+                )
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.start.rejected_active_scan")
+        assert record.request_id == "req-dup-1"
+        assert record.cluster_id == "prod-01"
+        assert record.scanner_type == "k8s"
+        assert record.request_source == "manual"
+        assert record.endpoint_path == "/api/v1/scans/start"
+        assert record.error_type == "HTTPException"
 
     @pytest.mark.asyncio
     async def test_allow_new_scan_if_previous_completed(self):
@@ -142,6 +167,35 @@ class TestScanServiceUploadUrl:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
+    async def test_upload_url_invalid_state_logs_failure_context(self, caplog):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="queued",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(HTTPException):
+                await svc.get_upload_url(
+                    "s1",
+                    "f.json",
+                    request_id="req-upload-1",
+                    endpoint_path="/api/v1/scans/s1/upload-url",
+                )
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.upload_url.invalid_state")
+        assert record.request_id == "req-upload-1"
+        assert record.scan_id == "s1"
+        assert record.cluster_id == "c1"
+        assert record.scanner_type == "k8s"
+        assert record.status_before == "queued"
+        assert record.endpoint_path == "/api/v1/scans/s1/upload-url"
+        assert record.error_type == "HTTPException"
+
+    @pytest.mark.asyncio
     async def test_upload_url_queued_scan_raises_409(self):
         from fastapi import HTTPException
         svc, repo, _ = make_service()
@@ -216,6 +270,36 @@ class TestScanServiceComplete:
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_complete_scan_missing_file_logs_failure_context(self, caplog):
+        from fastapi import HTTPException
+        svc, repo, s3 = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="uploading",
+        )
+        s3.verify_file_exists.return_value = False
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(HTTPException):
+                await svc.complete_scan(
+                    "s1",
+                    ["scans/c1/s1/k8s/missing.json"],
+                    authenticated_cluster_id="c1",
+                    request_id="req-complete-1",
+                    endpoint_path="/api/v1/scans/s1/complete",
+                )
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.complete.missing_s3_key")
+        assert record.request_id == "req-complete-1"
+        assert record.scan_id == "s1"
+        assert record.cluster_id == "c1"
+        assert record.scanner_type == "k8s"
+        assert record.endpoint_path == "/api/v1/scans/s1/complete"
+        assert record.error_type == "HTTPException"
+
+    @pytest.mark.asyncio
     async def test_complete_scan_invalid_state_raises_409(self):
         from fastapi import HTTPException
         svc, repo, _ = make_service()
@@ -236,6 +320,35 @@ class TestScanServiceComplete:
             await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"], authenticated_cluster_id="c2")
 
         assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_complete_scan_ownership_mismatch_logs_failure_context(self, caplog):
+        from fastapi import HTTPException
+        svc, repo, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="uploading",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(HTTPException):
+                await svc.complete_scan(
+                    "s1",
+                    ["scans/c1/s1/k8s/f.json"],
+                    authenticated_cluster_id="c2",
+                    request_id="req-owner-1",
+                    endpoint_path="/api/v1/scans/s1/complete",
+                )
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.complete.ownership_mismatch")
+        assert record.request_id == "req-owner-1"
+        assert record.scan_id == "s1"
+        assert record.cluster_id == "c1"
+        assert record.scanner_type == "k8s"
+        assert record.endpoint_path == "/api/v1/scans/s1/complete"
+        assert record.error_type == "HTTPException"
 
 
 class TestScanServiceGetStatus:

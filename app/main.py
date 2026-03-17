@@ -1,10 +1,17 @@
 """
 Main entry point for the FastAPI application.
 """
-from fastapi import FastAPI
+import logging
+from time import perf_counter
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import health, analyze, scan, clusters
 from app.config import settings
+
+logger = logging.getLogger("deployguard.request")
+_SKIP_LOG_PATHS = {"/docs", "/redoc", "/openapi.json"}
 
 app = FastAPI(
     title="DeployGuard 분석 엔진",
@@ -49,6 +56,45 @@ app.include_router(health.router, tags=["General"])
 app.include_router(analyze.router, prefix="/api/v1", tags=["Analysis"])
 app.include_router(scan.router)
 app.include_router(clusters.router)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    request.state.request_id = request_id
+    start = perf_counter()
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((perf_counter() - start) * 1000, 2)
+        if request.url.path not in _SKIP_LOG_PATHS:
+            logger.exception(
+                "Request failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": 500,
+                    "duration_ms": duration_ms,
+                    "request_id": request_id,
+                },
+            )
+        raise
+
+    response.headers["X-Request-ID"] = request_id
+    duration_ms = round((perf_counter() - start) * 1000, 2)
+    if request.url.path not in _SKIP_LOG_PATHS:
+        logger.info(
+            "Request completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+                "request_id": request_id,
+            },
+        )
+    return response
 
 @app.get("/")
 async def root():

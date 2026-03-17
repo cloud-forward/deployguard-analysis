@@ -1,7 +1,9 @@
 """
 Scan data ingestion endpoints.
 """
-from fastapi import APIRouter, Depends, Query, Response
+import logging
+
+from fastapi import APIRouter, Depends, Query, Request, Response
 from app.models.schemas import (
     ScanStartRequest, ScanStartResponse,
     UploadUrlRequest, UploadUrlResponse,
@@ -14,6 +16,8 @@ from app.models.schemas import (
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
 from app.api.auth import get_authenticated_cluster
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
 
@@ -43,11 +47,27 @@ router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
         422: {"description": "유효하지 않은 scanner_type 또는 필드 누락"},
     },
 )
-async def start_scan(request: ScanStartRequest, service: ScanService = Depends(get_scan_service)):
+async def start_scan(
+    request: ScanStartRequest,
+    http_request: Request,
+    service: ScanService = Depends(get_scan_service),
+):
+    request_id = getattr(http_request.state, "request_id", None)
+    logger.info(
+        "scan.start.request_received",
+        extra={
+            "request_id": request_id,
+            "cluster_id": str(request.cluster_id),
+            "scanner_type": request.scanner_type.value,
+            "request_source": request.request_source,
+        },
+    )
     return await service.start_scan(
         cluster_id=request.cluster_id,
         scanner_type=request.scanner_type,
         request_source=request.request_source,
+        request_id=request_id,
+        endpoint_path=http_request.url.path,
     )
 
 
@@ -71,17 +91,29 @@ async def start_scan(request: ScanStartRequest, service: ScanService = Depends(g
     },
 )
 async def claim_pending_scan(
+    request: Request,
     scanner_type: ScannerType,
     claimed_by: str | None = Query(default=None, min_length=1),
     lease_seconds: int = Query(default=300, ge=1),
     service: ScanService = Depends(get_scan_service),
     authenticated_cluster: ClusterResponse = Depends(get_authenticated_cluster),
 ):
+    request_id = getattr(request.state, "request_id", None)
+    logger.info(
+        "scan.pending.poll_received",
+        extra={
+            "request_id": request_id,
+            "cluster_id": authenticated_cluster.id,
+            "scanner_type": scanner_type.value,
+            "claimed_by": claimed_by or "unknown-worker",
+        },
+    )
     record = await service.claim_pending_scan(
         cluster_id=authenticated_cluster.id,
         scanner_type=scanner_type,
         claimed_by=claimed_by,
         lease_seconds=lease_seconds,
+        request_id=request_id,
     )
     if record is None:
         return Response(status_code=204)
@@ -135,12 +167,18 @@ Presigned URL은 600초(10분) 후 만료됩니다.
     },
 )
 async def get_upload_url(
+    request_context: Request,
     scan_id: str,
     request: UploadUrlRequest,
     service: ScanService = Depends(get_scan_service),
     _: ClusterResponse = Depends(get_authenticated_cluster),
 ):
-    return await service.get_upload_url(scan_id=scan_id, file_name=request.file_name)
+    return await service.get_upload_url(
+        scan_id=scan_id,
+        file_name=request.file_name,
+        request_id=getattr(request_context.state, "request_id", None),
+        endpoint_path=request_context.url.path,
+    )
 
 
 @router.post(
@@ -169,15 +207,27 @@ async def get_upload_url(
     },
 )
 async def complete_scan(
+    request_context: Request,
     scan_id: str,
     request: ScanCompleteRequest,
     service: ScanService = Depends(get_scan_service),
     authenticated_cluster: ClusterResponse = Depends(get_authenticated_cluster),
 ):
+    request_id = getattr(request_context.state, "request_id", None)
+    logger.info(
+        "scan.complete.request_received",
+        extra={
+            "request_id": request_id,
+            "scan_id": scan_id,
+            "cluster_id": authenticated_cluster.id,
+        },
+    )
     return await service.complete_scan(
         scan_id=scan_id,
         files=request.files,
         authenticated_cluster_id=authenticated_cluster.id,
+        request_id=request_id,
+        endpoint_path=request_context.url.path,
     )
 
 

@@ -1,7 +1,9 @@
 """
 Integration tests for SQLAlchemyScanRepository using SQLite in-memory database.
 """
+import logging
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
@@ -150,3 +152,19 @@ class TestSQLAlchemyScanRepository:
             started_at=now,
         )
         assert claimed is None
+
+    @pytest.mark.asyncio
+    async def test_create_duplicate_scan_id_logs_integrity_error(self, repo, caplog):
+        await repo.create(scan_id="dup-001", cluster_id="c1", scanner_type="k8s")
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(IntegrityError):
+                await repo.create(scan_id="dup-001", cluster_id="c1", scanner_type="k8s")
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.repository.integrity_error")
+        assert record.operation == "create"
+        assert record.scan_id == "dup-001"
+        assert record.cluster_id == "c1"
+        assert record.scanner_type == "k8s"
+        assert record.error_type == "IntegrityError"
+        assert record.exc_info is not None

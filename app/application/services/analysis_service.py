@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 REQUIRED_SCAN_TYPES = {SCANNER_TYPE_K8S, SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE}
 
 
+def _context(**kwargs):
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
 class AnalysisService:
     def __init__(
         self,
@@ -33,7 +37,11 @@ class AnalysisService:
             message=f"Analysis started for target {request.target_id}",
         )
 
-    async def maybe_trigger_analysis(self, cluster_id: str) -> None:
+    async def maybe_trigger_analysis(self, cluster_id: str, request_id: str | None = None) -> None:
+        logger.info(
+            "scan.analysis.trigger_check_invoked",
+            extra=_context(request_id=request_id, cluster_id=cluster_id),
+        )
         latest = await self._scans.get_latest_completed_scans(cluster_id)
         if not REQUIRED_SCAN_TYPES.issubset(latest.keys()):
             return

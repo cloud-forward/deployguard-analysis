@@ -19,6 +19,9 @@ from app.application.services.scan_service import ScanService
 from app.core.constants import ACTIVE_SCAN_STATUSES
 from app.models.schemas import ClusterResponse
 
+AUTH_CLUSTER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+OTHER_CLUSTER_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -135,6 +138,17 @@ class FakeS3Service:
         return self.file_exists
 
 
+def _claim(client, scanner_type="k8s", claimed_by="worker-1", lease_seconds=300):
+    return client.get(
+        "/api/v1/scans/pending",
+        params={
+            "scanner_type": scanner_type,
+            "claimed_by": claimed_by,
+            "lease_seconds": lease_seconds,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -147,7 +161,7 @@ def make_client(file_exists: bool = True) -> TestClient:
     app.dependency_overrides[get_scan_service] = lambda: fake_service
     async def _fake_auth_cluster():
         return ClusterResponse(
-            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            id=AUTH_CLUSTER_ID,
             name="test-cluster",
             description=None,
             cluster_type="eks",
@@ -198,7 +212,7 @@ def client_with_completed_scan():
     app.dependency_overrides[get_scan_service] = lambda: fake_service
     async def _fake_auth_cluster():
         return ClusterResponse(
-            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            id=AUTH_CLUSTER_ID,
             name="test-cluster",
             description=None,
             cluster_type="eks",
@@ -221,7 +235,7 @@ class TestStartScan:
     def test_start_scan_success(self, client):
         """Returns 201 with scan_id and status=queued."""
         response = client.post("/api/v1/scans/start", json={
-            "cluster_id": "prod-01",
+            "cluster_id": AUTH_CLUSTER_ID,
             "scanner_type": "k8s",
         })
         assert response.status_code == 201
@@ -232,7 +246,7 @@ class TestStartScan:
     def test_start_scan_id_format(self, client):
         """scan_id must match YYYYMMDDTHHmmSS-{scanner_type}."""
         response = client.post("/api/v1/scans/start", json={
-            "cluster_id": "prod-01",
+            "cluster_id": AUTH_CLUSTER_ID,
             "scanner_type": "k8s",
         })
         scan_id = response.json()["scan_id"]
@@ -242,7 +256,7 @@ class TestStartScan:
 
     def test_start_scan_duplicate_returns_409(self, client):
         """Second start for same cluster+scanner_type returns 409."""
-        payload = {"cluster_id": "prod-01", "scanner_type": "k8s"}
+        payload = {"cluster_id": AUTH_CLUSTER_ID, "scanner_type": "k8s"}
         first = client.post("/api/v1/scans/start", json=payload)
         assert first.status_code == 201
 
@@ -251,11 +265,13 @@ class TestStartScan:
 
     def test_start_scan_allows_new_after_completed(self, client):
         """A new scan is allowed once the previous one is completed."""
-        payload = {"cluster_id": "prod-02", "scanner_type": "aws"}
+        payload = {"cluster_id": AUTH_CLUSTER_ID, "scanner_type": "aws"}
         start_resp = client.post("/api/v1/scans/start", json=payload)
         scan_id = start_resp.json()["scan_id"]
 
         # Drive the scan to completed state via the API
+        claim_resp = _claim(client, scanner_type="aws")
+        assert claim_resp.status_code == 200
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "aws.json"})
         s3_key = url_resp.json()["s3_key"]
         client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
@@ -269,14 +285,14 @@ class TestStartScan:
 
         # A new scan for a different cluster should always succeed
         new_resp = client.post("/api/v1/scans/start", json={
-            "cluster_id": "prod-02-new", "scanner_type": "aws"
+            "cluster_id": OTHER_CLUSTER_ID, "scanner_type": "aws"
         })
         assert new_resp.status_code == 201
 
     def test_start_scan_invalid_scanner_type(self, client):
         """Invalid scanner_type returns 422."""
         response = client.post("/api/v1/scans/start", json={
-            "cluster_id": "prod-01",
+            "cluster_id": AUTH_CLUSTER_ID,
             "scanner_type": "invalid",
         })
         assert response.status_code == 422
@@ -288,8 +304,8 @@ class TestStartScan:
 
     def test_start_scan_different_scanner_types_allowed(self, client):
         """Same cluster with different scanner_type is allowed concurrently."""
-        r1 = client.post("/api/v1/scans/start", json={"cluster_id": "c1", "scanner_type": "k8s"})
-        r2 = client.post("/api/v1/scans/start", json={"cluster_id": "c1", "scanner_type": "aws"})
+        r1 = client.post("/api/v1/scans/start", json={"cluster_id": AUTH_CLUSTER_ID, "scanner_type": "k8s"})
+        r2 = client.post("/api/v1/scans/start", json={"cluster_id": AUTH_CLUSTER_ID, "scanner_type": "aws"})
         assert r1.status_code == 201
         assert r2.status_code == 201
 
@@ -300,7 +316,7 @@ class TestStartScan:
 
 class TestUploadUrl:
 
-    def _start(self, client, cluster_id="c1", scanner_type="k8s") -> str:
+    def _start(self, client, cluster_id=AUTH_CLUSTER_ID, scanner_type="k8s") -> str:
         resp = client.post("/api/v1/scans/start", json={
             "cluster_id": cluster_id, "scanner_type": scanner_type
         })
@@ -309,6 +325,8 @@ class TestUploadUrl:
     def test_upload_url_success(self, client):
         """Returns 200 with upload_url, s3_key, and expires_in."""
         scan_id = self._start(client)
+        claim_resp = _claim(client)
+        assert claim_resp.status_code == 200
         response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
         assert response.status_code == 200
         data = response.json()
@@ -318,14 +336,18 @@ class TestUploadUrl:
 
     def test_upload_url_s3_key_format(self, client):
         """s3_key must follow scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}."""
-        scan_id = self._start(client, cluster_id="mycluster", scanner_type="k8s")
+        scan_id = self._start(client, cluster_id=AUTH_CLUSTER_ID, scanner_type="k8s")
+        claim_resp = _claim(client)
+        assert claim_resp.status_code == 200
         response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "data.json"})
         s3_key = response.json()["s3_key"]
-        assert s3_key == f"scans/mycluster/{scan_id}/k8s/data.json"
+        assert s3_key == f"scans/{AUTH_CLUSTER_ID}/{scan_id}/k8s/data.json"
 
     def test_upload_url_transitions_status_to_uploading(self, client):
         """After calling upload-url, scan status becomes 'uploading'."""
         scan_id = self._start(client)
+        claim_resp = _claim(client)
+        assert claim_resp.status_code == 200
         client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
         status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert status_resp.json()["status"] == "uploading"
@@ -337,7 +359,9 @@ class TestUploadUrl:
 
     def test_upload_url_non_json_file_rejected(self, client):
         """Non-JSON file name returns 422."""
-        scan_id = self._start(client, cluster_id="c1", scanner_type="k8s")
+        scan_id = self._start(client, cluster_id=AUTH_CLUSTER_ID, scanner_type="k8s")
+        claim_resp = _claim(client)
+        assert claim_resp.status_code == 200
         response = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.txt"})
         assert response.status_code == 422
 
@@ -356,11 +380,13 @@ class TestUploadUrl:
 
 class TestCompleteScan:
 
-    def _start_and_get_key(self, client, cluster_id="c1", scanner_type="k8s") -> tuple[str, str]:
+    def _start_and_get_key(self, client, cluster_id=AUTH_CLUSTER_ID, scanner_type="k8s") -> tuple[str, str]:
         start = client.post("/api/v1/scans/start", json={
             "cluster_id": cluster_id, "scanner_type": scanner_type
         })
         scan_id = start.json()["scan_id"]
+        claim_resp = _claim(client, scanner_type=scanner_type)
+        assert claim_resp.status_code == 200
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
         s3_key = url_resp.json()["s3_key"]
         return scan_id, s3_key
@@ -408,7 +434,7 @@ class TestScanStatus:
     def test_get_status_success(self, client):
         """Returns 200 with full scan metadata."""
         start_resp = client.post("/api/v1/scans/start", json={
-            "cluster_id": "prod-01", "scanner_type": "k8s"
+            "cluster_id": AUTH_CLUSTER_ID, "scanner_type": "k8s"
         })
         scan_id = start_resp.json()["scan_id"]
 
@@ -416,7 +442,7 @@ class TestScanStatus:
         assert response.status_code == 200
         data = response.json()
         assert data["scan_id"] == scan_id
-        assert data["cluster_id"] == "prod-01"
+        assert data["cluster_id"] == AUTH_CLUSTER_ID
         assert data["scanner_type"] == "k8s"
         assert data["status"] == "queued"
         assert "created_at" in data
@@ -429,12 +455,15 @@ class TestScanStatus:
     def test_status_transitions_queued_uploading_processing(self, client):
         """Validates full status transition: queued → uploading → processing."""
         start_resp = client.post("/api/v1/scans/start", json={
-            "cluster_id": "flow-cluster", "scanner_type": "image"
+            "cluster_id": AUTH_CLUSTER_ID, "scanner_type": "image"
         })
         scan_id = start_resp.json()["scan_id"]
 
         # queued
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "queued"
+
+        claim_resp = _claim(client, scanner_type="image")
+        assert claim_resp.status_code == 200
 
         # uploading
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})

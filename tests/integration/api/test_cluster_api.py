@@ -20,6 +20,51 @@ def test_create_cluster(client):
     assert "id" in data
     assert "api_token" in data
     assert data["api_token"]
+    assert data["onboarding"]["installation_method"] == "helm"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_values"]["imagePullSecret"] == "deployguard-registry"
+
+
+def test_create_cluster_with_aws_type(client):
+    response = client.post(
+        "/api/v1/clusters",
+        json={
+            "name": "aws-test-cluster",
+            "cluster_type": "aws",
+        }
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["cluster_type"] == "aws"
+    assert data["onboarding"]["installation_method"] == "docker-compose"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_environment_variables"] == [
+        "DEPLOYGUARD_CLUSTER_ID",
+        "DEPLOYGUARD_API_TOKEN",
+        "AWS_REGION",
+        "AWS_ROLE_ARN",
+    ]
+    assert any("IAM role" in item for item in data["onboarding"]["guidance"])
+
+
+def test_create_cluster_with_self_managed_type(client):
+    response = client.post(
+        "/api/v1/clusters",
+        json={
+            "name": "self-managed-test-cluster",
+            "cluster_type": "self-managed",
+        }
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["cluster_type"] == "self-managed"
+    assert data["onboarding"]["installation_method"] == "helm"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_values"]["imagePullSecret"] == "deployguard-registry"
+
 
 def test_create_cluster_invalid_type(client):
     response = client.post(

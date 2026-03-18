@@ -31,6 +31,7 @@ class SecretContainsCredentialsFact:
         secret_namespace: The Kubernetes namespace of the secret.
         secret_name: The name of the Kubernetes secret.
         target_type: The type of AWS resource the credentials belong to (e.g., "rds", "s3", "iam_user").
+        For iam_user targets, the graph emits a distinct secret_contains_aws_credentials edge.
         target_id: The identifier of the target AWS resource.
         matched_keys: List of secret keys that matched credential patterns.
         confidence: Confidence level of the credential match (e.g., "high", "medium", "low").

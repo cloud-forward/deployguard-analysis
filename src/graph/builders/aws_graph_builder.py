@@ -57,19 +57,6 @@ class GraphMetadata:
     generated_at: str
 
 
-@dataclass
-class GraphBuildResult:
-    """Build result that preserves tuple-style unpacking for callers."""
-
-    nodes: list[GraphNode]
-    edges: list[GraphEdge]
-    metadata: GraphMetadata
-
-    def __iter__(self):
-        yield self.nodes
-        yield self.edges
-
-
 class AWSGraphBuilder:
     """Builds a graph of AWS resources and their relationships.
 
@@ -96,6 +83,7 @@ class AWSGraphBuilder:
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
         self._node_ids: set[str] = set()
+        self.graph_metadata: Optional[GraphMetadata] = None
 
     def _add_node(self, node: GraphNode) -> None:
         """Add a node to the graph, preventing duplicates.
@@ -119,7 +107,7 @@ class AWSGraphBuilder:
     def _graph_metadata(self) -> GraphMetadata:
         generated_at = self._timestamp()
         return GraphMetadata(
-            graph_id=f"aws_graph:{self.account_id}:{self.scan_id}",
+            graph_id=f"{self.scan_id}-graph",
             scan_id=self.scan_id,
             account_id=self.account_id,
             generated_at=generated_at,
@@ -484,13 +472,11 @@ class AWSGraphBuilder:
             credential_facts: List of SecretContainsCredentialsFact objects to process.
         """
         for fact in credential_facts:
-            # target_type drives the node ID prefix; supported values include "rds", "s3", and
-            # "iam_user" — the last produces "iam_user:{account_id}:{target_id}" which matches
-            # the node ID format emitted by _build_iam_user_nodes, so no special-casing is needed.
+            edge_type = "secret_contains_aws_credentials" if fact.target_type == "iam_user" else "secret_contains_credentials"
             self._add_edge(GraphEdge(
                 source=f"secret:{fact.secret_namespace}:{fact.secret_name}",
                 target=f"{fact.target_type}:{self.account_id}:{fact.target_id}",
-                type="secret_contains_credentials",
+                type=edge_type,
                 metadata={
                     "matched_keys": fact.matched_keys,
                     "confidence": fact.confidence,
@@ -507,7 +493,7 @@ class AWSGraphBuilder:
         credential_facts: list[SecretContainsCredentialsFact],
         policy_results: list[IAMPolicyAnalysisResult] | None = None,
         user_policy_results: list[IAMUserPolicyAnalysisResult] | None = None,
-    ) -> GraphBuildResult:
+    ) -> tuple[list[GraphNode], list[GraphEdge]]:
         """
         Build AWS graph nodes and edges from scan data.
 
@@ -522,7 +508,7 @@ class AWSGraphBuilder:
                 they can access
 
         Returns:
-            GraphBuildResult, which preserves tuple-style unpacking as (nodes, edges)
+            Tuple of (nodes, edges).
 
         Implementation:
             - Creates nodes: IAM Role, IAM User, S3, RDS, SecurityGroup, EC2
@@ -548,11 +534,8 @@ class AWSGraphBuilder:
         if user_policy_results:
             self._build_iam_user_access_edges(user_policy_results, scan)
 
-        return GraphBuildResult(
-            nodes=self.nodes,
-            edges=self.edges,
-            metadata=self._graph_metadata(),
-        )
+        self.graph_metadata = self._graph_metadata()
+        return (self.nodes, self.edges)
 
     def _resolve_wildcard_targets(self, service: str, known_s3: set[str], known_rds: set[str]) -> list[str]:
         if service == "s3":

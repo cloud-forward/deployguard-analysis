@@ -251,19 +251,39 @@ class IAMPolicyParser:
 
         # Tier 2 — Effective Admin (privilege escalation possible)
         iam_actions = set()
+        lambda_actions = set()
+        ec2_actions = set()
+        all_allow_actions: set[str] = set()
         for ra in resource_access:
-            if ra.effect == "Allow" and ra.service == "iam":
-                for action in ra.actions:
-                    iam_actions.add(action.lower())
+            if ra.effect != "Allow":
+                continue
+            action_set = {action.lower() for action in ra.actions}
+            if ra.is_wildcard_action:
+                action_set.add(f"{ra.service}:*")
+            all_allow_actions |= action_set
+            if ra.service == "iam":
+                iam_actions |= action_set
+            elif ra.service == "lambda":
+                lambda_actions |= action_set
+            elif ra.service == "ec2":
+                ec2_actions |= action_set
 
         def has_iam_action(action: str) -> bool:
             return "iam:*" in iam_actions or action.lower() in iam_actions
 
+        def has_action(action_set: set[str], action: str) -> bool:
+            service = action.split(":")[0]
+            return f"{service}:*" in action_set or action.lower() in action_set
+
         if has_iam_action("iam:createrole") and has_iam_action("iam:attachrolepolicy"):
             return 2, "iam:CreateRole + iam:AttachRolePolicy"
 
-        if has_iam_action("iam:passrole"):
-            return 2, "iam:PassRole detected"
+        if has_iam_action("iam:passrole") and (
+            has_action(lambda_actions, "lambda:CreateFunction")
+            or has_action(ec2_actions, "ec2:RunInstances")
+            or has_action(all_allow_actions, "glue:CreateJob")
+        ):
+            return 2, "iam:PassRole + compute creation detected"
 
         if has_iam_action("iam:updateassumerolepolicy"):
             return 2, "iam:UpdateAssumeRolePolicy detected"

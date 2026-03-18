@@ -1,7 +1,7 @@
 """Data classes representing AWS Scanner output consumed by AWS Graph Builder."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -12,9 +12,9 @@ class IAMRoleScan:
     arn: str
     is_irsa: bool
     irsa_oidc_issuer: Optional[str]
-    attached_policies: list[dict]
-    inline_policies: list[dict]
-    trust_policy: dict
+    attached_policies: list[dict[str, Any]]
+    inline_policies: list[dict[str, Any]]
+    trust_policy: dict[str, Any]
 
 
 @dataclass
@@ -23,8 +23,8 @@ class S3BucketScan:
 
     name: str
     arn: str
-    public_access_block: Optional[dict]
-    encryption: Optional[dict]
+    public_access_block: Optional[dict[str, Any]]
+    encryption: Optional[dict[str, Any]]
     versioning: str
     logging_enabled: bool
 
@@ -47,10 +47,10 @@ class EC2InstanceScan:
 
     instance_id: str
     instance_type: str
-    metadata_options: dict
-    iam_instance_profile: Optional[dict]
+    metadata_options: dict[str, Any]
+    iam_instance_profile: Optional[dict[str, Any]]
     security_groups: list[str]
-    tags: dict
+    tags: dict[str, Any]
 
 
 @dataclass
@@ -60,8 +60,8 @@ class SecurityGroupScan:
     group_id: str
     group_name: str
     vpc_id: str
-    inbound_rules: list[dict]
-    outbound_rules: list[dict]
+    inbound_rules: list[dict[str, Any]]
+    outbound_rules: list[dict[str, Any]]
 
 
 @dataclass
@@ -80,8 +80,8 @@ class IAMUserScan:
     username: str
     arn: str
     access_keys: list[AccessKeyScan]
-    attached_policies: list[dict]
-    inline_policies: list[dict]
+    attached_policies: list[dict[str, Any]]
+    inline_policies: list[dict[str, Any]]
     has_mfa: bool
     last_used: Optional[str]        # ISO 8601 or None
 

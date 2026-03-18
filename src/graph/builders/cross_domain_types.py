@@ -1,6 +1,7 @@
 """Cross-domain data classes for IRSA mappings and secret credential facts."""
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -37,7 +38,7 @@ class SecretContainsCredentialsFact:
 
     secret_namespace: str
     secret_name: str
-    target_type: str
+    target_type: Literal["rds", "s3", "iam_user"]
     target_id: str
     matched_keys: list[str] = field(default_factory=list)
     confidence: str = "medium"

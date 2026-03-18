@@ -76,6 +76,9 @@ def test_sg_allows_rds_edge():
     assert edge.source == "sg:account:sg-id"
     assert edge.target == "rds:account:db-id"
     assert edge.metadata["resource_type"] == "rds"
+    assert edge.metadata["rules"] == []
+    assert edge.metadata["is_public"] is False
+    assert edge.metadata["open_ports"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +127,8 @@ def test_instance_profile_edge():
     assert edge.source == "ec2:account:instance-id"
     assert edge.target == "iam:account:role-name"
     assert edge.metadata["via"] == "instance_profile"
+    assert edge.metadata["profile_arn"] == "arn:aws:iam::account:instance-profile/role-name"
+    assert edge.metadata["role_name"] == "role-name"
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +153,9 @@ def test_irsa_edge():
     assert edge.source == "sa:namespace:name"
     assert edge.target == "iam:account:role"
     assert edge.metadata["via"] == "irsa"
+    assert edge.metadata["annotation_key"] == "eks.amazonaws.com/role-arn"
+    assert edge.metadata["annotation_value"] == "arn:aws:iam::account:role/role"
+    assert edge.metadata["source_type"] == "irsa_mapper"
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +181,7 @@ def test_credential_edge():
     assert edge.source == "secret:namespace:name"
     assert edge.target == "rds:account:db-id"
     assert "matched_keys" in edge.metadata
+    assert edge.metadata["source_type"] == "credential_matcher"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +228,21 @@ def test_edge_metadata_completeness():
     created_at = edge.metadata["created_at"]
     # Validate ISO 8601 format by parsing it (strip trailing Z for fromisoformat)
     datetime.fromisoformat(created_at.rstrip("Z"))
+
+
+def test_build_result_includes_graph_metadata():
+    scan = make_scan()
+    builder = AWSGraphBuilder(
+        account_id=scan.aws_account_id,
+        scan_id=scan.scan_id,
+    )
+
+    result = builder.build(scan, [], [])
+
+    assert result.metadata.graph_id == f"aws_graph:{scan.aws_account_id}:{scan.scan_id}"
+    assert result.metadata.scan_id == scan.scan_id
+    assert result.metadata.account_id == scan.aws_account_id
+    datetime.fromisoformat(result.metadata.generated_at.rstrip("Z"))
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +353,7 @@ def test_iam_to_s3_wildcard_edge():
     assert edge.type == "iam_role_access_resource"
     assert edge.metadata["is_wildcard_resource"] is True
     assert edge.metadata["policy_name"] == "TestPolicy"
+    assert edge.metadata["source_type"] == "iam_policy_parser"
 
 
 def test_iam_to_s3_specific_arn_edge():
@@ -448,10 +473,10 @@ def test_iam_user_to_s3_edge():
     # Act
     _, edges = build(scan, user_policy_results=[user_policy_result])
     # Assert
-    iam_user_edges = [e for e in edges if e.type == "iam_role_access_resource"]
+    iam_user_edges = [e for e in edges if e.type == "iam_user_access_resource"]
     assert len(iam_user_edges) == 1
     edge = iam_user_edges[0]
     assert edge.source == "iam_user:account:web-app-deployer"
     assert edge.target == "s3:account:sensitive-data-bucket"
-    assert edge.type == "iam_role_access_resource"
-    assert edge.metadata["source_type"] == "iam_user_policy_analysis"
+    assert edge.type == "iam_user_access_resource"
+    assert edge.metadata["source_type"] == "iam_policy_parser"

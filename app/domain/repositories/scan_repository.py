@@ -5,6 +5,7 @@ Implemented by gateway adapters (e.g., SQLAlchemy).
 from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
+from app.models.schemas import RequestSource
 
 
 @runtime_checkable
@@ -15,7 +16,7 @@ class ScanRepository(Protocol):
         cluster_id: str,
         scanner_type: str,
         status: str = "queued",
-        request_source: str = "manual",
+        request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
     ) -> object:
         """Persist a new ScanRecord. Returns the created ScanRecord."""

@@ -164,6 +164,27 @@ def client():
 
 
 @pytest.fixture
+def client_with_repo():
+    repo = FakeScanRepository()
+    s3 = FakeS3Service()
+    service = ScanService(scan_repository=repo, s3_service=s3)
+    app.dependency_overrides[get_scan_service] = lambda: service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
+    with TestClient(app) as c:
+        yield c, repo
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
 def client_missing_s3():
     repo = FakeScanRepository()
     s3 = FakeS3ServiceMissingFile()
@@ -271,6 +292,12 @@ class TestScanStart:
     def test_invalid_request_source_rejected(self, client):
         resp = _start(client, request_source="api")
         assert resp.status_code == 422
+
+    def test_invalid_request_source_does_not_create_record(self, client_with_repo):
+        client, repo = client_with_repo
+        resp = _start(client, request_source="api")
+        assert resp.status_code == 422
+        assert repo._store == {}
 
     def test_missing_cluster_id_rejected(self, client):
         resp = client.post("/api/v1/scans/start", json={"scanner_type": "k8s"})
@@ -589,3 +616,24 @@ class TestClaimPendingScan:
         assert claimed_record.status_before == SCAN_STATUS_QUEUED
         assert claimed_record.status_after == SCAN_STATUS_RUNNING
         assert claimed_record.scan_id == claimed.json()["scan_id"]
+
+
+def test_openapi_scan_flow_documents_producer_worker_model(client):
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    spec = resp.json()
+
+    start_op = spec["paths"]["/api/v1/scans/start"]["post"]
+    pending_op = spec["paths"]["/api/v1/scans/pending"]["get"]
+    scans_tag = next(tag for tag in spec["tags"] if tag["name"] == "Scans")
+
+    assert start_op["summary"] == "스캔 작업 큐 생성"
+    assert "작업 등록 API" in start_op["description"]
+    assert "스캔을 직접 실행하지 않으며" in start_op["description"]
+    assert "대시보드 또는 스케줄러가 `/start`를 호출" in start_op["description"]
+
+    assert pending_op["summary"] == "워커용 queued 작업 클레임"
+    assert "워커 클레임 API" in pending_op["description"]
+    assert "`/start`가 생성한 작업만" in pending_op["description"]
+    assert "실제로 실행할 queued 작업" in pending_op["description"]
+    assert "작업 생성" in scans_tag["description"]

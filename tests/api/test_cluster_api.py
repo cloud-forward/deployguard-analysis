@@ -101,12 +101,44 @@ def test_create_cluster(client):
     assert "id" in data
     assert "api_token" in data
     assert data["api_token"]
+    assert data["onboarding"]["installation_method"] == "helm"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_values"]["imagePullSecret"] == "deployguard-registry"
 
 
 def test_create_cluster_without_description(client):
     resp = client.post("/api/v1/clusters", json={"name": "no-desc", "cluster_type": "self-managed"})
     assert resp.status_code == 201
     assert resp.json()["description"] is None
+
+
+def test_create_cluster_with_aws_type(client):
+    resp = client.post("/api/v1/clusters", json={"name": "aws-cluster", "cluster_type": "aws"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["cluster_type"] == "aws"
+    assert data["onboarding"]["installation_method"] == "docker-compose"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_environment_variables"] == [
+        "DEPLOYGUARD_CLUSTER_ID",
+        "DEPLOYGUARD_API_TOKEN",
+        "AWS_REGION",
+        "AWS_ROLE_ARN",
+    ]
+    assert any("IAM role" in item for item in data["onboarding"]["guidance"])
+
+
+def test_create_cluster_with_self_managed_type_uses_helm_onboarding(client):
+    resp = client.post("/api/v1/clusters", json={"name": "self-managed-cluster", "cluster_type": "self-managed"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["cluster_type"] == "self-managed"
+    assert data["onboarding"]["installation_method"] == "helm"
+    assert data["onboarding"]["required_values"]["clusterId"] == data["id"]
+    assert data["onboarding"]["required_values"]["apiToken"] == data["api_token"]
+    assert data["onboarding"]["required_values"]["imagePullSecret"] == "deployguard-registry"
 
 
 def test_create_cluster_duplicate_name_rejected(client, created_cluster):
@@ -179,6 +211,15 @@ def test_update_cluster_type(client, created_cluster):
     assert resp.json()["cluster_type"] == "self-managed"
 
 
+def test_update_cluster_type_to_aws(client, created_cluster):
+    resp = client.patch(
+        f"/api/v1/clusters/{created_cluster['id']}",
+        json={"cluster_type": "aws"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["cluster_type"] == "aws"
+
+
 def test_update_cluster_invalid_type(client, created_cluster):
     resp = client.patch(
         f"/api/v1/clusters/{created_cluster['id']}",
@@ -213,10 +254,12 @@ def test_openapi_cluster_create_documents_token_issuance(client):
     assert "클러스터 등록 시 스캐너 인증용 API 토큰이 함께 발급" in description
     assert "Helm 설치" in description
     assert "1회 반환" in description
+    assert "`aws`" in description
 
     create_schema_name = post_clusters["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1]
     create_props = spec["components"]["schemas"][create_schema_name]["properties"]
     assert "api_token" in create_props
+    assert "onboarding" in create_props
 
     list_schema_name = (
         spec["paths"]["/api/v1/clusters"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["items"]["$ref"].split("/")[-1]

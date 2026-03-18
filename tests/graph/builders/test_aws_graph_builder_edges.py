@@ -237,12 +237,15 @@ def test_build_result_includes_graph_metadata():
         scan_id=scan.scan_id,
     )
 
-    result = builder.build(scan, [], [])
+    nodes, edges = builder.build(scan, [], [])
 
-    assert result.metadata.graph_id == f"aws_graph:{scan.aws_account_id}:{scan.scan_id}"
-    assert result.metadata.scan_id == scan.scan_id
-    assert result.metadata.account_id == scan.aws_account_id
-    datetime.fromisoformat(result.metadata.generated_at.rstrip("Z"))
+    assert nodes == []
+    assert edges == []
+    assert builder.graph_metadata is not None
+    assert builder.graph_metadata.graph_id == f"{scan.scan_id}-graph"
+    assert builder.graph_metadata.scan_id == scan.scan_id
+    assert builder.graph_metadata.account_id == scan.aws_account_id
+    datetime.fromisoformat(builder.graph_metadata.generated_at.rstrip("Z"))
 
 
 # ---------------------------------------------------------------------------

@@ -155,6 +155,26 @@ class TestTierClassification:
         ]
         role = make_role(attached_policies=attached)
         result = IAMPolicyParser().parse(role)
+        assert result.tier is None
+
+    def test_tier2_iam_pass_role_with_lambda_create_function(self):
+        attached = [
+            {
+                "name": "PassRoleAndLambdaPolicy",
+                "arn": "arn:aws:iam::123456789012:policy/PassRoleAndLambdaPolicy",
+                "document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": ["iam:PassRole", "lambda:CreateFunction"],
+                            "Resource": "*",
+                        }
+                    ]
+                },
+            }
+        ]
+        role = make_role(attached_policies=attached)
+        result = IAMPolicyParser().parse(role)
         assert result.tier == 2
 
     def test_tier3_s3_wildcard(self):

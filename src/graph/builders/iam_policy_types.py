@@ -1,7 +1,7 @@
 """Data classes representing IAM Policy analysis results."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -30,7 +30,7 @@ class ResourceAccess:
     is_wildcard_resource: bool
     policy_name: Optional[str]
     policy_arn: Optional[str]
-    conditions: Optional[dict]
+    conditions: Optional[dict[str, Any]]
 
 
 @dataclass

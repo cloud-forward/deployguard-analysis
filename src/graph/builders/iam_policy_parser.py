@@ -1,6 +1,6 @@
 """IAM Policy Parser: parses IAM role scan data into structured analysis results."""
 
-from typing import Optional
+from typing import Any, Optional
 
 from src.graph.builders.aws_scanner_types import IAMRoleScan, IAMUserScan
 from src.graph.builders.iam_policy_types import (
@@ -16,14 +16,13 @@ class IAMPolicyParser:
 
     def parse(self, role: IAMRoleScan) -> IAMPolicyAnalysisResult:
         """Parse an IAMRoleScan into a full IAMPolicyAnalysisResult."""
-        trust_analysis = self._parse_trust_policy(role.trust_policy)
+        account_id = self._extract_account_id(role.arn)
+        trust_analysis = self._parse_trust_policy(role.trust_policy, account_id)
         resource_access = self._parse_permission_policies(
             role.attached_policies, role.inline_policies
         )
         tier, tier_reason = self._classify_tier(resource_access, role.attached_policies)
         risk_signals = self._detect_risk_signals(resource_access)
-
-        account_id = role.arn.split(":")[4] if role.arn else ""
 
         return IAMPolicyAnalysisResult(
             role_name=role.name,
@@ -38,7 +37,39 @@ class IAMPolicyParser:
             has_credential_access=risk_signals.get("has_credential_access", False),
         )
 
-    def _parse_trust_policy(self, trust_policy: dict) -> TrustPolicyAnalysis:
+    def _extract_account_id(self, arn: str) -> str:
+        parts = arn.split(":")
+        if len(parts) >= 5:
+            return parts[4]
+        return ""
+
+    def _normalize_statements(self, document: dict[str, Any]) -> list[dict[str, Any]]:
+        statements = document.get("Statement", [])
+        if isinstance(statements, dict):
+            return [statements]
+        if isinstance(statements, list):
+            return [s for s in statements if isinstance(s, dict)]
+        return []
+
+    def _get_policy_name(self, policy: dict[str, Any]) -> Optional[str]:
+        return policy.get("name") or policy.get("PolicyName")
+
+    def _get_policy_arn(self, policy: dict[str, Any]) -> Optional[str]:
+        return policy.get("arn") or policy.get("PolicyArn")
+
+    def _get_policy_document(self, policy: dict[str, Any]) -> Optional[dict[str, Any]]:
+        document = (
+            policy.get("document")
+            or policy.get("Document")
+            or policy.get("PolicyDocument")
+        )
+        return document if isinstance(document, dict) else None
+
+    def _parse_trust_policy(
+        self,
+        trust_policy: dict[str, Any],
+        current_account_id: str,
+    ) -> TrustPolicyAnalysis:
         """Parse a trust policy document into a TrustPolicyAnalysis."""
         is_irsa_enabled = False
         oidc_issuer: Optional[str] = None
@@ -49,7 +80,7 @@ class IAMPolicyParser:
         allows_lambda = False
         cross_account_principals: list[str] = []
 
-        statements = trust_policy.get("Statement", [])
+        statements = self._normalize_statements(trust_policy)
         for statement in statements:
             if statement.get("Effect") != "Allow":
                 continue
@@ -85,7 +116,10 @@ class IAMPolicyParser:
             if isinstance(aws_principals, str):
                 aws_principals = [aws_principals]
             for arn in aws_principals:
-                if isinstance(arn, str) and arn != "*":
+                if not isinstance(arn, str) or arn == "*":
+                    continue
+                principal_account_id = self._extract_account_id(arn)
+                if principal_account_id and principal_account_id != current_account_id:
                     cross_account_principals.append(arn)
 
             # Parse OIDC conditions for service account patterns (only when IRSA)
@@ -125,9 +159,9 @@ class IAMPolicyParser:
         results: list[ResourceAccess] = []
 
         for policy in attached:
-            policy_name = policy.get("name")
-            policy_arn = policy.get("arn")
-            document = policy.get("document")
+            policy_name = self._get_policy_name(policy)
+            policy_arn = self._get_policy_arn(policy)
+            document = self._get_policy_document(policy)
             if document is None:
                 continue
             results.extend(
@@ -135,8 +169,8 @@ class IAMPolicyParser:
             )
 
         for policy in inline:
-            policy_name = policy.get("name")
-            document = policy.get("document", {})
+            policy_name = self._get_policy_name(policy)
+            document = self._get_policy_document(policy) or {}
             results.extend(
                 self._parse_single_document(document, policy_name, None)
             )
@@ -151,7 +185,7 @@ class IAMPolicyParser:
     ) -> list[ResourceAccess]:
         """Parse a single policy document into ResourceAccess entries."""
         results: list[ResourceAccess] = []
-        statements = document.get("Statement", [])
+        statements = self._normalize_statements(document)
 
         for statement in statements:
             effect = statement.get("Effect", "Allow")
@@ -204,7 +238,7 @@ class IAMPolicyParser:
 
         # Tier 1 — Explicit Admin
         for policy in attached_policies:
-            if policy.get("name") == "AdministratorAccess":
+            if self._get_policy_name(policy) == "AdministratorAccess":
                 return 1, "AdministratorAccess policy attached"
 
         for ra in resource_access:
@@ -217,19 +251,39 @@ class IAMPolicyParser:
 
         # Tier 2 — Effective Admin (privilege escalation possible)
         iam_actions = set()
+        lambda_actions = set()
+        ec2_actions = set()
+        all_allow_actions: set[str] = set()
         for ra in resource_access:
-            if ra.effect == "Allow" and ra.service == "iam":
-                for action in ra.actions:
-                    iam_actions.add(action.lower())
+            if ra.effect != "Allow":
+                continue
+            action_set = {action.lower() for action in ra.actions}
+            if ra.is_wildcard_action:
+                action_set.add(f"{ra.service}:*")
+            all_allow_actions |= action_set
+            if ra.service == "iam":
+                iam_actions |= action_set
+            elif ra.service == "lambda":
+                lambda_actions |= action_set
+            elif ra.service == "ec2":
+                ec2_actions |= action_set
 
         def has_iam_action(action: str) -> bool:
             return "iam:*" in iam_actions or action.lower() in iam_actions
 
+        def has_action(action_set: set[str], action: str) -> bool:
+            service = action.split(":")[0]
+            return f"{service}:*" in action_set or action.lower() in action_set
+
         if has_iam_action("iam:createrole") and has_iam_action("iam:attachrolepolicy"):
             return 2, "iam:CreateRole + iam:AttachRolePolicy"
 
-        if has_iam_action("iam:passrole"):
-            return 2, "iam:PassRole detected"
+        if has_iam_action("iam:passrole") and (
+            has_action(lambda_actions, "lambda:CreateFunction")
+            or has_action(ec2_actions, "ec2:RunInstances")
+            or has_action(all_allow_actions, "glue:CreateJob")
+        ):
+            return 2, "iam:PassRole + compute creation detected"
 
         if has_iam_action("iam:updateassumerolepolicy"):
             return 2, "iam:UpdateAssumeRolePolicy detected"
@@ -293,6 +347,14 @@ class IAMPolicyParser:
 
         # iam:PutRolePolicy (can add arbitrary permissions)
         if has_action(iam_actions, "iam:PutRolePolicy"):
+            has_privilege_escalation = True
+
+        # iam:PutUserPolicy can directly grant broader user permissions
+        if has_action(iam_actions, "iam:PutUserPolicy"):
+            has_privilege_escalation = True
+
+        # iam:UpdateAssumeRolePolicy can broaden role trust relationships
+        if has_action(iam_actions, "iam:UpdateAssumeRolePolicy"):
             has_privilege_escalation = True
 
         # --- has_data_exfiltration_risk ---
@@ -363,7 +425,7 @@ class IAMPolicyParser:
         tier, tier_reason = self._classify_tier(resource_access, user.attached_policies)
         risk_signals = self._detect_risk_signals(resource_access)
 
-        account_id = user.arn.split(":")[4] if user.arn else ""
+        account_id = self._extract_account_id(user.arn)
 
         return IAMUserPolicyAnalysisResult(
             username=user.username,

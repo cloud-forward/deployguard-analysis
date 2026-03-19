@@ -13,6 +13,9 @@ class ClusterRepository(Protocol):
         cluster_type: str,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
+        aws_account_id: Optional[str] = None,
+        aws_role_arn: Optional[str] = None,
+        aws_region: Optional[str] = None,
     ) -> object:
         """Create a new cluster."""
         ...

@@ -83,5 +83,19 @@ class Cluster(Base):
     api_token: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'eks' | 'self-managed' | 'aws'
+    aws_account_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    aws_role_arn: Mapped[str | None] = mapped_column(String, nullable=True)
+    aws_region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class InventorySnapshot(Base):
+    __tablename__ = "inventory_snapshots"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    scan_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)

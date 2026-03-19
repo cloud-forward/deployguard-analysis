@@ -39,6 +39,7 @@ class RDSInstanceScan:
     storage_encrypted: bool
     publicly_accessible: bool
     vpc_security_groups: list[str]
+    endpoint: Optional[str] = None
 
 
 @dataclass

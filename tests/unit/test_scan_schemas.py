@@ -98,12 +98,12 @@ class TestScanStatusResponse:
             scan_id="abc-123",
             cluster_id="prod-01",
             scanner_type="k8s",
-            status="processing",
+            status="completed",
             created_at=datetime(2024, 1, 15, 10, 0, 0),
-            completed_at=None,
+            completed_at=datetime(2024, 1, 15, 10, 5, 0),
             files=["scans/prod-01/abc-123/k8s.json"]
         )
         data = resp.model_dump()
-        assert data["status"] == "processing"
-        assert data["completed_at"] is None
+        assert data["status"] == "completed"
+        assert data["completed_at"] is not None
         assert len(data["files"]) == 1

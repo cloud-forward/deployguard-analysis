@@ -1,8 +1,8 @@
 """AWS Graph Builder base structure with core data classes."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Optional
 
 from src.graph.builders.aws_scanner_types import AWSScanResult, EC2InstanceScan, IAMRoleScan, IAMUserScan, RDSInstanceScan, S3BucketScan, SecurityGroupScan
 from src.graph.builders.cross_domain_types import IRSAMapping, SecretContainsCredentialsFact
@@ -24,7 +24,7 @@ class GraphNode:
 
     id: str
     type: str
-    namespace: str
+    namespace: Optional[str]
     is_entry_point: bool = False
     is_crown_jewel: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -45,6 +45,16 @@ class GraphEdge:
     target: str
     type: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GraphMetadata:
+    """Graph-level metadata required by the AWS graph contract."""
+
+    graph_id: str
+    scan_id: str
+    account_id: str
+    generated_at: str
 
 
 class AWSGraphBuilder:
@@ -73,6 +83,7 @@ class AWSGraphBuilder:
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
         self._node_ids: set[str] = set()
+        self.graph_metadata: Optional[GraphMetadata] = None
 
     def _add_node(self, node: GraphNode) -> None:
         """Add a node to the graph, preventing duplicates.
@@ -85,6 +96,45 @@ class AWSGraphBuilder:
         if node.id not in self._node_ids:
             self._node_ids.add(node.id)
             self.nodes.append(node)
+
+    def _timestamp(self) -> str:
+        """Return a UTC timestamp in ISO 8601 format."""
+        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+    def _policy_name(self, policy: dict[str, Any]) -> Optional[str]:
+        return policy.get("PolicyName") or policy.get("name")
+
+    def _graph_metadata(self) -> GraphMetadata:
+        generated_at = self._timestamp()
+        return GraphMetadata(
+            graph_id=f"{self.scan_id}-graph",
+            scan_id=self.scan_id,
+            account_id=self.account_id,
+            generated_at=generated_at,
+        )
+
+    def _security_group_edge_metadata(self, sg: Optional[SecurityGroupScan], resource_type: str) -> dict[str, Any]:
+        rules = sg.inbound_rules if sg else []
+        is_public = False
+        open_ports: list[int] = []
+
+        for rule in rules:
+            for ip_range in rule.get("IpRanges", []):
+                if ip_range.get("CidrIp") == "0.0.0.0/0":
+                    is_public = True
+                    from_port = rule.get("FromPort")
+                    if isinstance(from_port, int):
+                        open_ports.append(from_port)
+
+        return {
+            "resource_type": resource_type,
+            "rules": rules,
+            "is_public": is_public,
+            "open_ports": open_ports,
+            "scan_id": self.scan_id,
+            "source_type": "aws_scanner",
+            "created_at": self._timestamp(),
+        }
 
     def _build_s3_nodes(self, buckets: list[S3BucketScan]) -> None:
         """Build graph nodes for S3 buckets.
@@ -108,7 +158,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"s3:{self.account_id}:{bucket.name}",
                 type="s3_bucket",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=True,
                 metadata={
@@ -138,7 +188,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"rds:{self.account_id}:{rds.identifier}",
                 type="rds",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=True,
                 metadata={
@@ -179,7 +229,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"sg:{self.account_id}:{sg.group_id}",
                 type="security_group",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=False,
                 metadata={
@@ -216,7 +266,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"ec2:{self.account_id}:{ec2.instance_id}",
                 type="ec2_instance",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=False,
                 metadata={
@@ -249,7 +299,8 @@ class AWSGraphBuilder:
                 "arn": role.arn,
                 "is_irsa": role.is_irsa,
                 "attached_policies": [
-                    p["PolicyName"] for p in role.attached_policies if "PolicyName" in p
+                    name for p in role.attached_policies
+                    if (name := self._policy_name(p)) is not None
                 ],
                 "scan_id": self.scan_id,
             }
@@ -262,10 +313,13 @@ class AWSGraphBuilder:
                 metadata["has_credential_access"] = analysis.has_credential_access
                 metadata["trust"] = {
                     "is_irsa_enabled": analysis.trust_analysis.is_irsa_enabled,
+                    "oidc_issuer": analysis.trust_analysis.oidc_issuer,
                     "allows_all_sa": analysis.trust_analysis.allows_all_sa,
+                    "allowed_sa_patterns": analysis.trust_analysis.allowed_sa_patterns,
                     "allowed_sa_explicit": analysis.trust_analysis.allowed_sa_explicit,
                     "allows_ec2": analysis.trust_analysis.allows_ec2,
                     "allows_lambda": analysis.trust_analysis.allows_lambda,
+                    "cross_account_principals": analysis.trust_analysis.cross_account_principals,
                 }
             else:
                 metadata["tier"] = None
@@ -273,7 +327,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"iam:{self.account_id}:{role.name}",
                 type="iam_role",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=is_crown_jewel,
                 metadata=metadata,
@@ -324,7 +378,7 @@ class AWSGraphBuilder:
             node = GraphNode(
                 id=f"iam_user:{self.account_id}:{user.username}",
                 type="iam_user",
-                namespace=None,
+                namespace=self.account_id,
                 is_entry_point=False,
                 is_crown_jewel=is_crown_jewel,
                 metadata=metadata,
@@ -337,18 +391,14 @@ class AWSGraphBuilder:
         Args:
             scan: The AWSScanResult containing RDS and EC2 instances.
         """
+        sg_by_id = {sg.group_id: sg for sg in scan.security_groups}
         for rds in scan.rds_instances:
             for sg_id in rds.vpc_security_groups:
                 self._add_edge(GraphEdge(
                     source=f"sg:{self.account_id}:{sg_id}",
                     target=f"rds:{self.account_id}:{rds.identifier}",
                     type="security_group_allows",
-                    metadata={
-                        "resource_type": "rds",
-                        "scan_id": self.scan_id,
-                        "source_type": "aws_scanner",
-                        "created_at": datetime.utcnow().isoformat() + "Z",
-                    },
+                    metadata=self._security_group_edge_metadata(sg_by_id.get(sg_id), "rds"),
                 ))
 
         for ec2 in scan.ec2_instances:
@@ -357,12 +407,7 @@ class AWSGraphBuilder:
                     source=f"sg:{self.account_id}:{sg_id}",
                     target=f"ec2:{self.account_id}:{ec2.instance_id}",
                     type="security_group_allows",
-                    metadata={
-                        "resource_type": "ec2",
-                        "scan_id": self.scan_id,
-                        "source_type": "aws_scanner",
-                        "created_at": datetime.utcnow().isoformat() + "Z",
-                    },
+                    metadata=self._security_group_edge_metadata(sg_by_id.get(sg_id), "ec2"),
                 ))
 
     def _build_instance_profile_edges(self, instances: list[EC2InstanceScan]) -> None:
@@ -384,10 +429,11 @@ class AWSGraphBuilder:
                 type="instance_profile_assumes",
                 metadata={
                     "profile_arn": profile_arn,
+                    "role_name": role_name,
                     "via": "instance_profile",
                     "scan_id": self.scan_id,
                     "source_type": "aws_scanner",
-                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "created_at": self._timestamp(),
                 },
             ))
 
@@ -406,12 +452,13 @@ class AWSGraphBuilder:
                 target=f"iam:{mapping.account_id}:{mapping.iam_role_name}",
                 type="service_account_assumes_iam_role",
                 metadata={
-                    "annotation": mapping.iam_role_arn,
+                    "annotation_key": "eks.amazonaws.com/role-arn",
+                    "annotation_value": mapping.iam_role_arn,
                     "role_arn": mapping.iam_role_arn,
                     "via": "irsa",
                     "scan_id": self.scan_id,
-                    "source_type": "aws_scanner",
-                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "source_type": "irsa_mapper",
+                    "created_at": self._timestamp(),
                 },
             ))
 
@@ -425,19 +472,17 @@ class AWSGraphBuilder:
             credential_facts: List of SecretContainsCredentialsFact objects to process.
         """
         for fact in credential_facts:
-            # target_type drives the node ID prefix; supported values include "rds", "s3", and
-            # "iam_user" — the last produces "iam_user:{account_id}:{target_id}" which matches
-            # the node ID format emitted by _build_iam_user_nodes, so no special-casing is needed.
+            edge_type = "secret_contains_aws_credentials" if fact.target_type == "iam_user" else "secret_contains_credentials"
             self._add_edge(GraphEdge(
                 source=f"secret:{fact.secret_namespace}:{fact.secret_name}",
                 target=f"{fact.target_type}:{self.account_id}:{fact.target_id}",
-                type="secret_contains_credentials",
+                type=edge_type,
                 metadata={
                     "matched_keys": fact.matched_keys,
                     "confidence": fact.confidence,
                     "scan_id": self.scan_id,
-                    "source_type": "aws_scanner",
-                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "source_type": "credential_matcher",
+                    "created_at": self._timestamp(),
                 },
             ))
 
@@ -463,7 +508,7 @@ class AWSGraphBuilder:
                 they can access
 
         Returns:
-            Tuple of (nodes, edges)
+            Tuple of (nodes, edges).
 
         Implementation:
             - Creates nodes: IAM Role, IAM User, S3, RDS, SecurityGroup, EC2
@@ -489,6 +534,7 @@ class AWSGraphBuilder:
         if user_policy_results:
             self._build_iam_user_access_edges(user_policy_results, scan)
 
+        self.graph_metadata = self._graph_metadata()
         return (self.nodes, self.edges)
 
     def _resolve_wildcard_targets(self, service: str, known_s3: set[str], known_rds: set[str]) -> list[str]:
@@ -548,8 +594,8 @@ class AWSGraphBuilder:
                             "policy_name": resource_access.policy_name,
                             "policy_arn": resource_access.policy_arn,
                             "scan_id": self.scan_id,
-                            "source_type": "iam_policy_analysis",
-                            "created_at": datetime.utcnow().isoformat() + "Z",
+                            "source_type": "iam_policy_parser",
+                            "created_at": self._timestamp(),
                         },
                     ))
 
@@ -577,7 +623,7 @@ class AWSGraphBuilder:
                     self._add_edge(GraphEdge(
                         source=source,
                         target=target,
-                        type="iam_role_access_resource",
+                        type="iam_user_access_resource",
                         metadata={
                             "service": service,
                             "actions": resource_access.actions,
@@ -586,8 +632,8 @@ class AWSGraphBuilder:
                             "policy_name": resource_access.policy_name,
                             "policy_arn": resource_access.policy_arn,
                             "scan_id": self.scan_id,
-                            "source_type": "iam_user_policy_analysis",
-                            "created_at": datetime.utcnow().isoformat() + "Z",
+                            "source_type": "iam_policy_parser",
+                            "created_at": self._timestamp(),
                         },
                     ))
 

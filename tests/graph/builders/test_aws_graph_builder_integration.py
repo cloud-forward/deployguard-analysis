@@ -79,6 +79,7 @@ def test_golden_path_002_partial():
     # --- Helper lookups ---
     nodes_by_id = {n.id: n for n in nodes}
     edges_as_pairs = [(e.source, e.target) for e in edges]
+    edge_types_by_pair = {(e.source, e.target): e.type for e in edges}
 
     # --- RDS node assertions ---
     rds_id = f"rds:{account_id}:production-db"
@@ -423,10 +424,12 @@ def test_iam_user_credential_secret_path():
 
     # --- Assert ---
     edges_as_pairs = [(e.source, e.target) for e in edges]
+    edge_types_by_pair = {(e.source, e.target): e.type for e in edges}
 
     secret_id = "secret:production:aws-credentials"
     user_id = f"iam_user:{account_id}:web-app-deployer"
     s3_id = f"s3:{account_id}:sensitive-data-bucket"
 
     assert (secret_id, user_id) in edges_as_pairs, "Secret → IAM User edge should exist"
+    assert edge_types_by_pair[(secret_id, user_id)] == "secret_contains_aws_credentials"
     assert (user_id, s3_id) in edges_as_pairs, "IAM User → S3 edge should exist"

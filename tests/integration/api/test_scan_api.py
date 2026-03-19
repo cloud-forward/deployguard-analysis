@@ -276,12 +276,9 @@ class TestStartScan:
         s3_key = url_resp.json()["s3_key"]
         client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
 
-        # Mark as completed by updating status directly through the repo
-        # (simulate analysis pipeline finishing)
-        # We verify the service allows a new scan when no active scan exists
-        # by checking the completed scan is no longer "active"
+        # Verify the scan lifecycle is complete and no longer considered active.
         status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
-        assert status_resp.json()["status"] == "processing"
+        assert status_resp.json()["status"] == "completed"
 
         # A new scan for a different cluster should always succeed
         new_resp = client.post("/api/v1/scans/start", json={
@@ -397,15 +394,15 @@ class TestCompleteScan:
         response = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
         assert response.status_code == 202
         data = response.json()
-        assert data["status"] == "processing"
+        assert data["status"] == "completed"
         assert data["scan_id"] == scan_id
 
-    def test_complete_scan_transitions_to_processing(self, client):
-        """After complete, scan status becomes 'processing'."""
+    def test_complete_scan_transitions_to_completed(self, client):
+        """After complete, scan status becomes 'completed'."""
         scan_id, s3_key = self._start_and_get_key(client)
         client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
         status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
-        assert status_resp.json()["status"] == "processing"
+        assert status_resp.json()["status"] == "completed"
 
     def test_complete_scan_missing_file_returns_400(self, client_missing_s3):
         """Returns 400 when a file is not found in S3."""
@@ -452,8 +449,8 @@ class TestScanStatus:
         response = client.get("/api/v1/scans/nonexistent/status")
         assert response.status_code == 404
 
-    def test_status_transitions_queued_uploading_processing(self, client):
-        """Validates full status transition: queued → uploading → processing."""
+    def test_status_transitions_queued_uploading_completed(self, client):
+        """Validates full status transition: queued → uploading → completed."""
         start_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": AUTH_CLUSTER_ID, "scanner_type": "image"
         })
@@ -469,7 +466,7 @@ class TestScanStatus:
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "uploading"
 
-        # processing
+        # completed
         s3_key = url_resp.json()["s3_key"]
         client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "processing"
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "completed"

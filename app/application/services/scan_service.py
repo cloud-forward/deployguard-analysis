@@ -10,10 +10,10 @@ from uuid import UUID
 from fastapi import HTTPException
 from app.models.schemas import ScannerType, RequestSource
 from app.core.constants import (
+    SCAN_STATUS_COMPLETED,
     SCAN_STATUS_QUEUED,
     SCAN_STATUS_RUNNING,
     SCAN_STATUS_UPLOADING,
-    SCAN_STATUS_PROCESSING,
 )
 from app.models.schemas import (
     ScanCompleteResponse,
@@ -231,7 +231,13 @@ class ScanService:
                 )
                 raise HTTPException(status_code=400, detail=f"File not found in S3: {f}")
         status_before = record.status
-        await self._repo.update(scan_id, status=SCAN_STATUS_PROCESSING, s3_keys=files)
+        completed_at = datetime.utcnow()
+        await self._repo.update(
+            scan_id,
+            status=SCAN_STATUS_COMPLETED,
+            s3_keys=files,
+            completed_at=completed_at,
+        )
         logger.info(
             "scan.complete.accepted",
             extra=_context(
@@ -240,12 +246,12 @@ class ScanService:
                 cluster_id=record.cluster_id,
                 scanner_type=record.scanner_type,
                 status_before=status_before,
-                status_after=SCAN_STATUS_PROCESSING,
+                status_after=SCAN_STATUS_COMPLETED,
             ),
         )
         if self._analysis is not None:
             await self._analysis.maybe_trigger_analysis(record.cluster_id, request_id=request_id)
-        return ScanCompleteResponse(scan_id=scan_id, status=SCAN_STATUS_PROCESSING)
+        return ScanCompleteResponse(scan_id=scan_id, status=SCAN_STATUS_COMPLETED)
 
     async def get_scan_status(self, scan_id: str) -> ScanStatusResponse:
         record = await self._repo.get_by_scan_id(scan_id)

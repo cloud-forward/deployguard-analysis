@@ -20,12 +20,18 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         cluster_type: str,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
+        aws_account_id: Optional[str] = None,
+        aws_role_arn: Optional[str] = None,
+        aws_region: Optional[str] = None,
     ) -> Cluster:
         cluster = Cluster(
             name=name,
             cluster_type=cluster_type,
             description=description,
             api_token=api_token,
+            aws_account_id=aws_account_id,
+            aws_role_arn=aws_role_arn,
+            aws_region=aws_region,
         )
         self._session.add(cluster)
         await self._session.commit()

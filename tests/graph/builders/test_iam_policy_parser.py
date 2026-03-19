@@ -155,6 +155,26 @@ class TestTierClassification:
         ]
         role = make_role(attached_policies=attached)
         result = IAMPolicyParser().parse(role)
+        assert result.tier is None
+
+    def test_tier2_iam_pass_role_with_lambda_create_function(self):
+        attached = [
+            {
+                "name": "PassRoleAndLambdaPolicy",
+                "arn": "arn:aws:iam::123456789012:policy/PassRoleAndLambdaPolicy",
+                "document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": ["iam:PassRole", "lambda:CreateFunction"],
+                            "Resource": "*",
+                        }
+                    ]
+                },
+            }
+        ]
+        role = make_role(attached_policies=attached)
+        result = IAMPolicyParser().parse(role)
         assert result.tier == 2
 
     def test_tier3_s3_wildcard(self):
@@ -309,6 +329,46 @@ class TestRiskSignals:
         role = make_role(attached_policies=attached)
         result = IAMPolicyParser().parse(role)
         assert result.has_credential_access is True
+
+    def test_has_privilege_escalation_update_assume_role_policy(self):
+        attached = [
+            {
+                "name": "TrustEscalationPolicy",
+                "arn": "arn:aws:iam::123456789012:policy/TrustEscalationPolicy",
+                "document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": "iam:UpdateAssumeRolePolicy",
+                            "Resource": "*",
+                        }
+                    ]
+                },
+            }
+        ]
+        role = make_role(attached_policies=attached)
+        result = IAMPolicyParser().parse(role)
+        assert result.has_privilege_escalation is True
+
+    def test_has_privilege_escalation_put_user_policy(self):
+        attached = [
+            {
+                "name": "UserEscalationPolicy",
+                "arn": "arn:aws:iam::123456789012:policy/UserEscalationPolicy",
+                "document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": "iam:PutUserPolicy",
+                            "Resource": "*",
+                        }
+                    ]
+                },
+            }
+        ]
+        role = make_role(attached_policies=attached)
+        result = IAMPolicyParser().parse(role)
+        assert result.has_privilege_escalation is True
 
 
 # ---------------------------------------------------------------------------

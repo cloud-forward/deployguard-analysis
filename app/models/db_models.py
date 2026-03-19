@@ -28,7 +28,7 @@ class ScanRecord(Base):
     cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     scanner_type: Mapped[str] = mapped_column(String, nullable=False)  # k8s | aws | image | runtime
     request_source: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default=SCAN_STATUS_QUEUED)  # queued | running | uploading | processing | completed | failed
+    status: Mapped[str] = mapped_column(String, nullable=False, default=SCAN_STATUS_QUEUED)  # queued | running | uploading | completed | failed
     s3_keys: Mapped[list] = mapped_column(JSON, default=list)
 
     requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -30,16 +30,17 @@ def service(jobs_repo, scan_repo):
 
 @pytest.mark.asyncio
 async def test_maybe_trigger_analysis_creates_job_when_all_scans_present(service, jobs_repo, scan_repo):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     scan_repo.get_latest_completed_scans.return_value = {
         SCANNER_TYPE_K8S: _make_scan("k8s-1", SCANNER_TYPE_K8S),
         SCANNER_TYPE_AWS: _make_scan("aws-1", SCANNER_TYPE_AWS),
         SCANNER_TYPE_IMAGE: _make_scan("img-1", SCANNER_TYPE_IMAGE),
     }
 
-    await service.maybe_trigger_analysis("cluster-abc")
+    await service.maybe_trigger_analysis(cluster_id)
 
     jobs_repo.create_analysis_job.assert_awaited_once_with(
-        cluster_id="cluster-abc",
+        cluster_id=cluster_id,
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id="img-1",
@@ -53,7 +54,7 @@ async def test_maybe_trigger_analysis_skips_when_scan_missing(service, jobs_repo
         SCANNER_TYPE_AWS: _make_scan("aws-1", SCANNER_TYPE_AWS),
     }
 
-    await service.maybe_trigger_analysis("cluster-abc")
+    await service.maybe_trigger_analysis("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
     jobs_repo.create_analysis_job.assert_not_awaited()
 
@@ -62,6 +63,6 @@ async def test_maybe_trigger_analysis_skips_when_scan_missing(service, jobs_repo
 async def test_maybe_trigger_analysis_skips_when_no_scans(service, jobs_repo, scan_repo):
     scan_repo.get_latest_completed_scans.return_value = {}
 
-    await service.maybe_trigger_analysis("cluster-abc")
+    await service.maybe_trigger_analysis("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
     jobs_repo.create_analysis_job.assert_not_awaited()

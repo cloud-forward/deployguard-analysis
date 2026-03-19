@@ -554,6 +554,7 @@ class TestCompleteScan:
             assert repo._store[scan_id].status == SCAN_STATUS_COMPLETED
 
         assert len(jobs_repo.jobs) == 1
+        assert jobs_repo.jobs[0]["cluster_id"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         assert jobs_repo.jobs[0]["status"] == "pending"
         assert all(record.status == SCAN_STATUS_COMPLETED for record in repo._store.values())
 

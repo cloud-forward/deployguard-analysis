@@ -45,10 +45,10 @@ class TestSQLAlchemyScanRepository:
     async def test_update_status(self, repo):
         """update_status changes the status field"""
         await repo.create(scan_id="test-002", cluster_id="c1", scanner_type="k8s")
-        await repo.update_status("test-002", "processing")
+        await repo.update_status("test-002", "completed")
 
         found = await repo.get_by_scan_id("test-002")
-        assert found.status == "processing"
+        assert found.status == "completed"
 
     @pytest.mark.asyncio
     async def test_update_files(self, repo):

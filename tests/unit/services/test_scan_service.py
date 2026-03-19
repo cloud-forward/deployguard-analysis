@@ -222,19 +222,19 @@ class TestScanServiceUploadUrl:
 class TestScanServiceComplete:
 
     @pytest.mark.asyncio
-    async def test_complete_scan_returns_processing(self):
-        """complete_scan returns status=processing on success"""
+    async def test_complete_scan_returns_completed(self):
+        """complete_scan returns status=completed on success"""
         svc, repo, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="uploading")
 
         result = await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
 
-        assert result.status == "processing"
+        assert result.status == "completed"
         assert result.scan_id == "s1"
 
     @pytest.mark.asyncio
     async def test_complete_scan_calls_update(self):
-        """complete_scan calls repository.update with status=processing"""
+        """complete_scan calls repository.update with status=completed"""
         svc, repo, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="uploading")
 
@@ -242,7 +242,24 @@ class TestScanServiceComplete:
 
         repo.update.assert_called_once()
         call_kwargs = repo.update.call_args
-        assert call_kwargs[1]["status"] == "processing"
+        assert call_kwargs[1]["status"] == "completed"
+        assert call_kwargs[1]["completed_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_complete_scan_triggers_analysis_check(self):
+        svc, repo, _ = make_service()
+        analysis = AsyncMock()
+        svc._analysis = analysis
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="uploading",
+        )
+
+        await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+
+        analysis.maybe_trigger_analysis.assert_awaited_once_with("c1", request_id=None)
 
     @pytest.mark.asyncio
     async def test_complete_scan_not_found_raises_404(self):
@@ -268,6 +285,26 @@ class TestScanServiceComplete:
             await svc.complete_scan("s1", ["scans/c1/s1/k8s/missing.json"])
 
         assert exc_info.value.status_code == 400
+        repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_complete_scan_missing_file_does_not_trigger_analysis(self):
+        from fastapi import HTTPException
+        svc, repo, s3 = make_service()
+        analysis = AsyncMock()
+        svc._analysis = analysis
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="uploading",
+        )
+        s3.verify_file_exists.return_value = False
+
+        with pytest.raises(HTTPException):
+            await svc.complete_scan("s1", ["scans/c1/s1/k8s/missing.json"])
+
+        analysis.maybe_trigger_analysis.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_complete_scan_missing_file_logs_failure_context(self, caplog):
@@ -360,14 +397,14 @@ class TestScanServiceGetStatus:
         svc, repo, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1", cluster_id="c1", scanner_type="k8s",
-            status="processing",
-            created_at=datetime(2024, 1, 15), completed_at=None,
+            status="completed",
+            created_at=datetime(2024, 1, 15), completed_at=datetime(2024, 1, 15, 10, 30),
             s3_keys=["scans/c1/s1/k8s.json"]
         )
 
         result = await svc.get_scan_status("s1")
 
-        assert result.status == "processing"
+        assert result.status == "completed"
         assert result.scan_id == "s1"
 
     @pytest.mark.asyncio

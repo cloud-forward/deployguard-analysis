@@ -65,6 +65,9 @@ class ClusterService:
             cluster_type=request.cluster_type,
             description=request.description,
             api_token=api_token,
+            aws_account_id=request.aws_account_id,
+            aws_role_arn=request.aws_role_arn,
+            aws_region=request.aws_region,
         )
         return ClusterCreateResponse.model_validate({
             **cluster.__dict__,

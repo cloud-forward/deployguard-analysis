@@ -7,10 +7,12 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.inventory_service import InventoryService
 from app.config import settings
 from app.gateway.db.session import get_db
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
+from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
 from app.application.services.scan_service import ScanService
 from app.application.services.s3_service import S3Service
 from app.application.services.cluster_service import ClusterService
@@ -39,3 +41,11 @@ def get_cluster_service(
 ) -> ClusterService:
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     return ClusterService(cluster_repository=cluster_repo)
+
+
+def get_inventory_service(
+    db: AsyncSession = Depends(get_db),
+) -> InventoryService:
+    cluster_repo = SQLAlchemyClusterRepository(session=db)
+    snapshot_repo = SQLAlchemyInventorySnapshotRepository(session=db)
+    return InventoryService(cluster_repository=cluster_repo, inventory_snapshot_repository=snapshot_repo)

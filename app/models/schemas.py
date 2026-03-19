@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 from app.core.constants import (
     SCAN_STATUS_QUEUED,
@@ -205,15 +205,32 @@ ALLOWED_CLUSTER_TYPES = ("eks", "self-managed", "aws")
 class ClusterCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="클러스터 고유 이름", example="prod-cluster-01")
     description: Optional[str] = Field(None, max_length=1000, description="클러스터 설명", example="프로덕션 EKS 클러스터")
-    cluster_type: str = Field(..., description="클러스터 유형: 'eks' | 'self-managed' | 'aws'", example="eks")
+    cluster_type: Optional[str] = Field(None, description="클러스터 유형: 'eks' | 'self-managed' | 'aws'", example="eks")
+    aws_account_id: Optional[str] = Field(None, description="Discovery Inventory용 AWS account id", example="123456789012")
+    aws_role_arn: Optional[str] = Field(None, description="Discovery sync용 AssumeRole ARN")
+    aws_region: Optional[str] = Field(None, description="Discovery Inventory 기본 AWS 리전", example="ap-northeast-2")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"name": "prod-cluster-01", "description": "프로덕션 EKS 클러스터", "cluster_type": "eks"}
     ]})
 
+    @model_validator(mode="after")
+    def default_inventory_cluster_type(self) -> "ClusterCreateRequest":
+        has_inventory_fields = any(
+            value is not None
+            for value in (self.aws_account_id, self.aws_role_arn, self.aws_region)
+        )
+        if self.cluster_type is None and has_inventory_fields:
+            self.cluster_type = "aws"
+        if self.cluster_type is None:
+            raise ValueError("cluster_type is required unless AWS discovery fields are provided")
+        return self
+
     @field_validator("cluster_type")
     @classmethod
-    def validate_cluster_type(cls, v: str) -> str:
+    def validate_cluster_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         if v not in ALLOWED_CLUSTER_TYPES:
             raise ValueError("cluster_type must be one of 'eks', 'self-managed', or 'aws'")
         return v
@@ -240,9 +257,12 @@ class ClusterResponse(BaseModel):
     id: str = Field(..., description="클러스터 고유 ID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     name: str = Field(..., description="클러스터 이름", example="prod-cluster-01")
     description: Optional[str] = Field(None, description="클러스터 설명", example="프로덕션 EKS 클러스터")
-    cluster_type: str = Field(..., description="클러스터 유형", example="eks")
-    created_at: datetime = Field(..., description="생성 일시")
-    updated_at: datetime = Field(..., description="최종 수정 일시")
+    cluster_type: Optional[str] = Field(None, description="클러스터 유형", example="eks")
+    aws_account_id: Optional[str] = Field(None, description="AWS account id", example="123456789012")
+    aws_role_arn: Optional[str] = Field(None, description="Discovery sync용 AssumeRole ARN")
+    aws_region: Optional[str] = Field(None, description="AWS region", example="ap-northeast-2")
+    created_at: Optional[datetime] = Field(None, description="생성 일시")
+    updated_at: Optional[datetime] = Field(None, description="최종 수정 일시")
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -251,6 +271,9 @@ class ClusterResponse(BaseModel):
             "name": "prod-cluster-01",
             "description": "프로덕션 EKS 클러스터",
             "cluster_type": "eks",
+            "aws_account_id": "123456789012",
+            "aws_role_arn": "arn:aws:iam::123456789012:role/deployguard-discovery",
+            "aws_region": "ap-northeast-2",
             "created_at": "2024-01-15T10:00:00Z",
             "updated_at": "2024-01-15T10:00:00Z",
         }]}
@@ -270,6 +293,9 @@ class ClusterCreateResponse(BaseModel):
     name: str = Field(..., description="클러스터 이름", example="prod-cluster-01")
     description: Optional[str] = Field(None, description="클러스터 설명", example="프로덕션 EKS 클러스터")
     cluster_type: str = Field(..., description="클러스터 유형", example="eks")
+    aws_account_id: Optional[str] = Field(None, description="AWS account id", example="123456789012")
+    aws_role_arn: Optional[str] = Field(None, description="Discovery sync용 AssumeRole ARN")
+    aws_region: Optional[str] = Field(None, description="AWS region", example="ap-northeast-2")
     api_token: str = Field(..., description="스캐너 인증용 API 토큰", example="dg_scanner_xxxxxxxxxxxxxxxxxxxxx")
     onboarding: ClusterOnboardingResponse = Field(..., description="클러스터 유형별 설치 가이드")
     created_at: datetime = Field(..., description="생성 일시")
@@ -282,6 +308,9 @@ class ClusterCreateResponse(BaseModel):
             "name": "prod-cluster-01",
             "description": "프로덕션 EKS 클러스터",
             "cluster_type": "eks",
+            "aws_account_id": "123456789012",
+            "aws_role_arn": "arn:aws:iam::123456789012:role/deployguard-discovery",
+            "aws_region": "ap-northeast-2",
             "api_token": "dg_scanner_xxxxxxxxxxxxxxxxxxxxx",
             "onboarding": {
                 "installation_method": "helm",
@@ -301,3 +330,43 @@ class ClusterCreateResponse(BaseModel):
             "updated_at": "2024-01-15T10:00:00Z",
         }]}
     )
+
+
+class ClusterListResponse(BaseModel):
+    clusters: list[ClusterResponse] = Field(default_factory=list)
+
+
+class SyncResponse(BaseModel):
+    status: str
+    cluster_id: str
+    scan_id: str
+
+
+class AssetStatusResponse(BaseModel):
+    discovered: bool = True
+    source: str = "aws"
+
+
+class InventorySummaryResponse(BaseModel):
+    total_assets: int = 0
+
+
+class AssetInventoryItemResponse(BaseModel):
+    asset_id: str
+    asset_type: str
+    name: str
+    cluster_id: str
+    cluster_name: str
+    account_id: str
+    region: str | None = None
+    status: AssetStatusResponse
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssetInventoryListResponse(BaseModel):
+    summary: InventorySummaryResponse
+    assets: list[AssetInventoryItemResponse] = Field(default_factory=list)
+
+
+class AssetDetailResponse(AssetInventoryItemResponse):
+    pass

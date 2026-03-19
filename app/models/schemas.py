@@ -8,8 +8,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 from app.core.constants import (
+    SCAN_STATUS_COMPLETED,
     SCAN_STATUS_QUEUED,
-    SCAN_STATUS_PROCESSING,
 )
 
 
@@ -24,14 +24,14 @@ RequestSource = Literal["manual", "scheduled"]
 
 
 class AnalysisJobRequest(BaseModel):
-    cluster_id: str = Field(..., description="분석 대상 클러스터 ID", example="prod-cluster-01")
+    cluster_id: UUID = Field(..., description="분석 대상 클러스터 UUID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     k8s_scan_id: str = Field(..., description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
     aws_scan_id: str = Field(..., description="AWS 스캔 세션 ID", example="20260309T113020-aws")
     image_scan_id: str = Field(..., description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
-            "cluster_id": "prod-cluster-01",
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "k8s_scan_id": "20260309T113020-k8s",
             "aws_scan_id": "20260309T113020-aws",
             "image_scan_id": "20260309T113020-image",
@@ -156,10 +156,10 @@ class UploadUrlResponse(BaseModel):
 
 class ScanCompleteResponse(BaseModel):
     scan_id: str
-    status: str = Field(default=SCAN_STATUS_PROCESSING, description="처리 상태")
+    status: str = Field(default=SCAN_STATUS_COMPLETED, description="스캔 완료 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"scan_id": "20260309T113020-k8s", "status": "processing"}
+        {"scan_id": "20260309T113020-k8s", "status": "completed"}
     ]})
 
 
@@ -167,7 +167,7 @@ class ScanStatusResponse(BaseModel):
     scan_id: str
     cluster_id: str
     scanner_type: str
-    status: str = Field(..., description="queued | running | uploading | processing | completed | failed")
+    status: str = Field(..., description="queued | running | uploading | completed | failed")
     created_at: datetime
     completed_at: datetime | None = None
     files: list[str] = Field(default_factory=list)

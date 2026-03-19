@@ -101,7 +101,14 @@ class FakeScanRepository:
         return None
 
     async def get_latest_completed_scans(self, cluster_id: str):
-        return {}
+        completed = {}
+        for record in self._store.values():
+            if record.cluster_id != cluster_id or record.status != SCAN_STATUS_COMPLETED:
+                continue
+            existing = completed.get(record.scanner_type)
+            if existing is None or record.created_at >= existing.created_at:
+                completed[record.scanner_type] = record
+        return completed
 
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
@@ -135,10 +142,22 @@ class FakeS3ServiceMissingFile(FakeS3Service):
 
 
 class FakeAnalysisJobRepository:
+    def __init__(self):
+        self.jobs = []
+
     async def create_job(self, target_id: str, params: dict) -> str:
         return "job_stub"
 
     async def create_analysis_job(self, cluster_id: str, k8s_scan_id: str, aws_scan_id: str, image_scan_id: str) -> str:
+        self.jobs.append(
+            {
+                "cluster_id": cluster_id,
+                "k8s_scan_id": k8s_scan_id,
+                "aws_scan_id": aws_scan_id,
+                "image_scan_id": image_scan_id,
+                "status": "pending",
+            }
+        )
         return "analysis-job"
 
 
@@ -202,6 +221,50 @@ def client_missing_s3():
     app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     with TestClient(app) as c:
         yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_missing_s3_with_repo():
+    repo = FakeScanRepository()
+    s3 = FakeS3ServiceMissingFile()
+    service = ScanService(scan_repository=repo, s3_service=s3)
+    app.dependency_overrides[get_scan_service] = lambda: service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
+    with TestClient(app) as c:
+        yield c, repo
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_with_analysis_repo():
+    repo = FakeScanRepository()
+    s3 = FakeS3Service()
+    jobs_repo = FakeAnalysisJobRepository()
+    analysis = AnalysisService(jobs_repo=jobs_repo, scan_repo=repo)
+    service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis)
+    app.dependency_overrides[get_scan_service] = lambda: service
+    async def _fake_auth_cluster():
+        return ClusterResponse(
+            id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name="test-cluster",
+            description=None,
+            cluster_type="eks",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
+    with TestClient(app) as c:
+        yield c, repo, jobs_repo
     app.dependency_overrides.clear()
 
 
@@ -401,12 +464,12 @@ class TestUploadUrl:
 
 
 class TestCompleteScan:
-    def test_complete_updates_status_to_processing(self, client):
+    def test_complete_updates_status_to_completed(self, client):
         scan_id = _start(client).json()["scan_id"]
         _claim(client)
         resp = _complete(client, scan_id)
         assert resp.status_code == 202
-        assert resp.json()["status"] == SCAN_STATUS_PROCESSING
+        assert resp.json()["status"] == SCAN_STATUS_COMPLETED
 
     def test_complete_stores_s3_keys(self, client):
         scan_id = _start(client).json()["scan_id"]
@@ -417,7 +480,17 @@ class TestCompleteScan:
         status_resp = client.get(f"/api/v1/scans/{scan_id}/status").json()
         assert s3_key in status_resp["files"]
 
-    def test_complete_from_running_transitions_to_processing(self, client):
+    def test_complete_sets_completed_at(self, client):
+        scan_id = _start(client).json()["scan_id"]
+        _claim(client)
+        _complete(client, scan_id)
+
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
+        data = status_resp.json()
+        assert data["status"] == SCAN_STATUS_COMPLETED
+        assert data["completed_at"] is not None
+
+    def test_complete_from_running_transitions_to_completed(self, client):
         scan_id = _start(client).json()["scan_id"]
         _claim(client)
         resp = client.post(
@@ -425,7 +498,7 @@ class TestCompleteScan:
             json={"files": [f"scans/a1b2c3d4-e5f6-7890-abcd-ef1234567890/{scan_id}/k8s/scan.json"]},
         )
         assert resp.status_code == 202
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
 
     def test_complete_scan_not_found_returns_404(self, client):
         resp = client.post("/api/v1/scans/ghost-scan/complete", json={"files": ["some/key.json"]})
@@ -457,6 +530,33 @@ class TestCompleteScan:
         _claim(client_missing_s3)
         resp = _complete(client_missing_s3, scan_id)
         assert resp.status_code == 400
+
+    def test_complete_missing_s3_file_keeps_scan_not_completed(self, client_missing_s3_with_repo):
+        client, repo = client_missing_s3_with_repo
+        scan_id = _start(client).json()["scan_id"]
+        _claim(client)
+
+        resp = _complete(client, scan_id)
+
+        assert resp.status_code == 400
+        record = repo._store[scan_id]
+        assert record.status == SCAN_STATUS_UPLOADING
+        assert record.completed_at is None
+
+    def test_complete_keeps_analysis_lifecycle_separate(self, client_with_analysis_repo):
+        client, repo, jobs_repo = client_with_analysis_repo
+
+        for scanner_type in ("k8s", "aws", "image"):
+            scan_id = _start(client, scanner_type=scanner_type).json()["scan_id"]
+            _claim(client, scanner_type=scanner_type)
+            resp = _complete(client, scan_id)
+            assert resp.status_code == 202
+            assert repo._store[scan_id].status == SCAN_STATUS_COMPLETED
+
+        assert len(jobs_repo.jobs) == 1
+        assert jobs_repo.jobs[0]["cluster_id"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert jobs_repo.jobs[0]["status"] == "pending"
+        assert all(record.status == SCAN_STATUS_COMPLETED for record in repo._store.values())
 
     def test_complete_emits_lifecycle_logs(self, caplog):
         repo = FakeScanRepository()
@@ -506,7 +606,7 @@ class TestCompleteScan:
             assert accepted.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
             assert accepted.scanner_type == "k8s"
             assert accepted.status_before == SCAN_STATUS_UPLOADING
-            assert accepted.status_after == SCAN_STATUS_PROCESSING
+            assert accepted.status_after == SCAN_STATUS_COMPLETED
 
             trigger_check = next(record for record in records if record.getMessage() == "scan.analysis.trigger_check_invoked")
             assert trigger_check.request_id == "req-complete-1"
@@ -528,7 +628,7 @@ class TestScanStatus:
         resp = client.get("/api/v1/scans/ghost-id/status")
         assert resp.status_code == 404
 
-    def test_status_transitions_queued_uploading_processing(self, client):
+    def test_status_transitions_queued_uploading_completed(self, client):
         scan_id = _start(client).json()["scan_id"]
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_QUEUED
         _claim(client)
@@ -536,7 +636,7 @@ class TestScanStatus:
         _upload_url(client, scan_id)
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
         _complete(client, scan_id)
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
 
 
 class TestClaimPendingScan:

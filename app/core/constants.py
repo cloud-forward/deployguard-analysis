@@ -51,7 +51,6 @@ VALID_SCAN_STATUSES: frozenset[str] = frozenset({
     SCAN_STATUS_QUEUED,
     SCAN_STATUS_RUNNING,
     SCAN_STATUS_UPLOADING,
-    SCAN_STATUS_PROCESSING,
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_FAILED,
 })
@@ -61,7 +60,6 @@ ACTIVE_SCAN_STATUSES: tuple[str, ...] = (
     SCAN_STATUS_QUEUED,
     SCAN_STATUS_RUNNING,
     SCAN_STATUS_UPLOADING,
-    SCAN_STATUS_PROCESSING,
 )
 
 # ---------------------------------------------------------------------------

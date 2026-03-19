@@ -42,7 +42,7 @@ class ScanRepository(Protocol):
         """Return all ScanRecords for a given cluster_id."""
         ...
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> object | None:
-        """Return an active ScanRecord (status in queued/running/uploading/processing) for the given cluster and scanner_type, or None."""
+        """Return an active ScanRecord (status in queued/running/uploading) for the given cluster and scanner_type, or None."""
         ...
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
         """Return a dict mapping scanner_type -> latest completed ScanRecord for the given cluster."""

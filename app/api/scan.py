@@ -44,7 +44,7 @@ router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
 - `runtime` — 런타임 보안 이벤트 (eBPF, CloudTrail)
 
 클러스터와 scanner_type 조합당 하나의 활성 스캔만 허용합니다.
-활성 상태(`queued`, `running`, `uploading`, `processing`)가 이미 있으면 409를 반환합니다.
+활성 상태(`queued`, `running`, `uploading`)가 이미 있으면 409를 반환합니다.
 """,
     responses={
         201: {"description": "스캔 세션이 성공적으로 생성되었습니다"},
@@ -198,13 +198,13 @@ async def get_upload_url(
 요청한 스캔이 인증된 클러스터 소유인지 검증하며, 불일치 시 거부합니다.
 동작은 다음과 같습니다:
 1. 업로드된 S3 파일 존재 여부 검증
-2. 상태를 `running` 또는 `uploading`에서 `processing`으로 전이
+2. 상태를 `running` 또는 `uploading`에서 `completed`로 전이
 3. 현재 구현된 분석 오케스트레이션 체크(`maybe_trigger_analysis`)만 호출
 
 즉, complete는 다음 오케스트레이션 단계로 넘기는 역할이며 분석 파이프라인 실행 자체를 수행하지 않습니다.
 """,
     responses={
-        202: {"description": "스캔 완료가 접수되었으며 processing 상태로 전이되었습니다"},
+        202: {"description": "스캔 완료가 접수되었으며 completed 상태로 전이되었습니다"},
         400: {"description": "S3에서 하나 이상의 파일을 찾을 수 없습니다"},
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
         409: {"description": "현재 상태에서는 complete 처리할 수 없습니다"},
@@ -249,9 +249,8 @@ async def complete_scan(
 - `queued` — 스캔 요청이 큐에 등록됨
 - `running` — 워커가 스캔을 실행 중
 - `uploading` — 하나 이상의 업로드 URL이 요청됨
-- `processing` — 업로드 완료, 분석 진행 중
-- `completed` — 분석 완료, 결과 이용 가능
-- `failed` — 분석 실패 (로그 확인 필요)
+- `completed` — 스캔 업로드 검증까지 완료됨
+- `failed` — 스캔 실행 또는 업로드 검증 실패
 """,
     responses={
         200: {"description": "스캔 세션 상태"},

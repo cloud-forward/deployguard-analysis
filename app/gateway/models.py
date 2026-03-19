@@ -64,7 +64,7 @@ class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    cluster_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
     k8s_scan_id: Mapped[str] = mapped_column(String, nullable=False)
     aws_scan_id: Mapped[str] = mapped_column(String, nullable=False)
     image_scan_id: Mapped[str] = mapped_column(String, nullable=False)

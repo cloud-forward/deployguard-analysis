@@ -24,14 +24,14 @@ RequestSource = Literal["manual", "scheduled"]
 
 
 class AnalysisJobRequest(BaseModel):
-    cluster_id: str = Field(..., description="분석 대상 클러스터 ID", example="prod-cluster-01")
+    cluster_id: UUID = Field(..., description="분석 대상 클러스터 UUID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     k8s_scan_id: str = Field(..., description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
     aws_scan_id: str = Field(..., description="AWS 스캔 세션 ID", example="20260309T113020-aws")
     image_scan_id: str = Field(..., description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
-            "cluster_id": "prod-cluster-01",
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "k8s_scan_id": "20260309T113020-k8s",
             "aws_scan_id": "20260309T113020-aws",
             "image_scan_id": "20260309T113020-image",

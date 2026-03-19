@@ -31,7 +31,7 @@ async def create_analysis_job(
     service: AnalysisService = Depends(get_analysis_service),
 ):
     job_id = await service._jobs.create_analysis_job(
-        cluster_id=request.cluster_id,
+        cluster_id=str(request.cluster_id),
         k8s_scan_id=request.k8s_scan_id,
         aws_scan_id=request.aws_scan_id,
         image_scan_id=request.image_scan_id,

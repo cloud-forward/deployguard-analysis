@@ -46,11 +46,11 @@ class SecretContainsCredentialsFact:
 
 
 @dataclass
-class IRSABridgeResult:
+class BridgeResult:
     """Unified bridge output consumed by AWSGraphBuilder."""
 
     irsa_mappings: list[IRSAMapping] = field(default_factory=list)
     credential_facts: list[SecretContainsCredentialsFact] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[dict[str, str]] = field(default_factory=list)
     skipped_irsa: int = 0
     skipped_credentials: int = 0

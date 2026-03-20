@@ -40,6 +40,7 @@ class RDSInstanceScan:
     publicly_accessible: bool
     vpc_security_groups: list[str]
     endpoint: Optional[str] = None
+    engine_version: Optional[str] = None
 
 
 @dataclass
@@ -99,4 +100,5 @@ class AWSScanResult:
     rds_instances: list[RDSInstanceScan]
     ec2_instances: list[EC2InstanceScan]
     security_groups: list[SecurityGroupScan]
+    region: Optional[str] = None
     iam_users: list[IAMUserScan] = field(default_factory=list)

@@ -30,6 +30,7 @@ class SecretCredentialsExtractor:
         iam_users: list[IAMUserScan],
         rds_instances: list[RDSInstanceScan | dict[str, Any] | Any] | None = None,
         s3_buckets: list[S3BucketScan | dict[str, Any] | Any] | None = None,
+        credential_config: dict[str, Any] | None = None,
     ) -> list[SecretContainsCredentialsFact]:
         """Return credential facts for Secrets that map to scanned IAM users."""
         facts: list[SecretContainsCredentialsFact] = []
@@ -39,7 +40,13 @@ class SecretCredentialsExtractor:
 
         for secret in secrets:
             facts.extend(
-                self._extract_single(secret, users_by_active_key, rds_by_endpoint, s3_by_name)
+                self._extract_single(
+                    secret,
+                    users_by_active_key,
+                    rds_by_endpoint,
+                    s3_by_name,
+                    credential_config or {},
+                )
             )
 
         return facts
@@ -61,6 +68,7 @@ class SecretCredentialsExtractor:
         users_by_active_key: dict[str, IAMUserScan],
         rds_by_endpoint: dict[str, list[str]],
         s3_by_name: dict[str, list[str]],
+        credential_config: dict[str, Any],
     ) -> list[SecretContainsCredentialsFact]:
         metadata = secret.get("metadata")
         if not isinstance(metadata, dict):
@@ -94,6 +102,7 @@ class SecretCredentialsExtractor:
             name,
             detected_keys,
             users_by_active_key,
+            credential_config,
         )
         if iam_fact is not None:
             facts.append(iam_fact)
@@ -127,12 +136,26 @@ class SecretCredentialsExtractor:
         name: str,
         detected_keys: list[str],
         users_by_active_key: dict[str, IAMUserScan],
+        credential_config: dict[str, Any],
     ) -> SecretContainsCredentialsFact | None:
         matched_access_id_keys = [key for key in detected_keys if key in ACCESS_KEY_ID_KEYS]
         matched_secret_keys = [key for key in detected_keys if key in SECRET_ACCESS_KEY_KEYS]
 
         if not matched_access_id_keys or not matched_secret_keys:
             return None
+
+        matched_keys = matched_access_id_keys + matched_secret_keys
+
+        configured_username = self._configured_iam_username(credential_config, namespace, name)
+        if configured_username is not None:
+            return SecretContainsCredentialsFact(
+                secret_namespace=namespace,
+                secret_name=name,
+                target_type="iam_user",
+                target_id=configured_username,
+                matched_keys=matched_keys,
+                confidence="high",
+            )
 
         access_key_id = self._find_access_key_id(secret, matched_access_id_keys)
         if access_key_id is None:
@@ -145,15 +168,15 @@ class SecretCredentialsExtractor:
 
         user = users_by_active_key.get(access_key_id)
         if user is None:
-            logger.warning(
-                "Skipping Secret %s/%s because no scanned IAM user active key matched %s",
-                namespace,
-                name,
-                access_key_id,
+            return SecretContainsCredentialsFact(
+                secret_namespace=namespace,
+                secret_name=name,
+                target_type="iam_user",
+                target_id="unknown",
+                matched_keys=matched_keys,
+                confidence="medium",
             )
-            return None
 
-        matched_keys = matched_access_id_keys + matched_secret_keys
         return SecretContainsCredentialsFact(
             secret_namespace=namespace,
             secret_name=name,
@@ -162,6 +185,27 @@ class SecretCredentialsExtractor:
             matched_keys=matched_keys,
             confidence="high",
         )
+
+    def _configured_iam_username(
+        self,
+        credential_config: dict[str, Any],
+        namespace: str,
+        name: str,
+    ) -> str | None:
+        secret_key = f"{namespace}/{name}"
+        for candidate in (
+            credential_config.get(secret_key),
+            credential_config.get("secrets", {}).get(secret_key)
+            if isinstance(credential_config.get("secrets"), dict)
+            else None,
+            credential_config.get("secrets", {}).get(namespace, {}).get(name)
+            if isinstance(credential_config.get("secrets"), dict)
+            and isinstance(credential_config.get("secrets", {}).get(namespace), dict)
+            else None,
+        ):
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return None
 
     def _extract_rds_fact(
         self,

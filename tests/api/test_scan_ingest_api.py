@@ -132,6 +132,9 @@ class FakeS3Service:
         s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"
         return f"https://fake-s3.example.com/{s3_key}", s3_key
 
+    def generate_presigned_download_url(self, s3_key: str, expires_in: int = 600) -> str:
+        return f"https://fake-s3.example.com/{s3_key}?download=1&X-Amz-Expires={expires_in}"
+
     def verify_file_exists(self, s3_key: str) -> bool:
         return True
 
@@ -637,6 +640,83 @@ class TestScanStatus:
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
         _complete(client, scan_id)
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
+
+
+class TestScanDetail:
+    def test_get_detail_returns_scan_metadata(self, client):
+        scan_id = _start(client).json()["scan_id"]
+
+        resp = client.get(f"/api/v1/scans/{scan_id}")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scan_id"] == scan_id
+        assert data["cluster_id"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert data["scanner_type"] == "k8s"
+        assert data["status"] == SCAN_STATUS_QUEUED
+        assert data["s3_keys"] == []
+        assert data["created_at"] is not None
+        assert data["completed_at"] is None
+
+    def test_get_detail_returns_s3_keys_after_complete(self, client):
+        scan_id = _start(client).json()["scan_id"]
+        _claim(client)
+        s3_key = _upload_url(client, scan_id).json()["s3_key"]
+        _complete(client, scan_id, files=[s3_key])
+
+        resp = client.get(f"/api/v1/scans/{scan_id}")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scan_id"] == scan_id
+        assert data["status"] == SCAN_STATUS_COMPLETED
+        assert data["s3_keys"] == [s3_key]
+        assert data["completed_at"] is not None
+
+    def test_get_detail_not_found(self, client):
+        resp = client.get("/api/v1/scans/ghost-id")
+        assert resp.status_code == 404
+
+
+class TestRawScanResultUrl:
+    def test_get_raw_result_url_returns_presigned_download_url(self, client):
+        scan_id = _start(client).json()["scan_id"]
+        _claim(client)
+        s3_key = _upload_url(client, scan_id).json()["s3_key"]
+        _complete(client, scan_id, files=[s3_key])
+
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scan_id"] == scan_id
+        assert data["s3_key"] == s3_key
+        assert data["download_url"].startswith(f"https://fake-s3.example.com/{s3_key}")
+        assert data["expires_in"] == 600
+
+    def test_get_raw_result_url_not_found_when_scan_missing(self, client):
+        resp = client.get("/api/v1/scans/ghost-id/raw-result-url")
+        assert resp.status_code == 404
+
+    def test_get_raw_result_url_not_found_when_no_s3_keys(self, client):
+        scan_id = _start(client).json()["scan_id"]
+
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+
+        assert resp.status_code == 404
+
+    def test_get_raw_result_url_rejects_multiple_s3_keys(self, client_with_repo):
+        client, repo = client_with_repo
+        scan_id = _start(client).json()["scan_id"]
+        record = repo._store[scan_id]
+        record.s3_keys = [
+            f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/scan.json",
+            f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/extra.json",
+        ]
+
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+
+        assert resp.status_code == 409
 
 
 class TestClaimPendingScan:

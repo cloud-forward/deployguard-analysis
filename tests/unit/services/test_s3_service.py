@@ -59,6 +59,33 @@ class TestS3Service:
             ExpiresIn=600
         )
 
+    def test_generate_presigned_download_url_returns_url(self):
+        """Download presigned URL generation returns the signed URL"""
+        self.mock_s3_client.generate_presigned_url.return_value = "https://test-bucket.s3.amazonaws.com/download-url"
+
+        url = self.service.generate_presigned_download_url(
+            "scans/prod-01/scan-001/k8s/k8s_scan.json"
+        )
+
+        assert url == "https://test-bucket.s3.amazonaws.com/download-url"
+
+    def test_download_presigned_url_called_with_correct_params(self):
+        """boto3 called with GET method and correct bucket/key"""
+        self.mock_s3_client.generate_presigned_url.return_value = "https://url"
+
+        self.service.generate_presigned_download_url(
+            "scans/c1/s1/image/f1.json"
+        )
+
+        self.mock_s3_client.generate_presigned_url.assert_called_with(
+            "get_object",
+            Params={
+                "Bucket": "test-bucket",
+                "Key": "scans/c1/s1/image/f1.json"
+            },
+            ExpiresIn=600
+        )
+
     def test_verify_file_exists_true(self):
         """verify_file_exists returns True when file exists"""
         self.mock_s3_client.head_object.return_value = {"ContentLength": 1024}
@@ -90,6 +117,24 @@ class TestS3Service:
         self.mock_s3_client.generate_presigned_url.return_value = "https://url"
 
         self.service.generate_presigned_upload_url("c1", "s1", "k8s", "f.json", expires_in=300)
+
+        call_args = self.mock_s3_client.generate_presigned_url.call_args
+        assert call_args[1]["ExpiresIn"] == 300
+
+    def test_download_presigned_url_expiration_default(self):
+        """Default download expiration is 600 seconds"""
+        self.mock_s3_client.generate_presigned_url.return_value = "https://url"
+
+        self.service.generate_presigned_download_url("scans/c1/s1/k8s/f.json")
+
+        call_args = self.mock_s3_client.generate_presigned_url.call_args
+        assert call_args[1]["ExpiresIn"] == 600
+
+    def test_download_presigned_url_custom_expiration(self):
+        """Custom download expiration is passed through"""
+        self.mock_s3_client.generate_presigned_url.return_value = "https://url"
+
+        self.service.generate_presigned_download_url("scans/c1/s1/k8s/f.json", expires_in=300)
 
         call_args = self.mock_s3_client.generate_presigned_url.call_args
         assert call_args[1]["ExpiresIn"] == 300

@@ -188,6 +188,36 @@ def test_bridge_builder_combines_irsa_iam_user_rds_and_s3_outputs():
     assert facts_by_type["s3"].target_id == "sensitive-data-bucket"
 
 
+def test_bridge_builder_credential_config_mapping_wins_for_iam_user_secret():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "aws-credentials",
+                },
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAUNKNOWNKEY000000",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            }
+        ],
+    }
+
+    result = builder.build(
+        k8s_scan,
+        aws_scan,
+        credential_config={"production/aws-credentials": "configured-user"},
+    )
+
+    assert len(result.credential_facts) == 1
+    assert result.credential_facts[0].target_type == "iam_user"
+    assert result.credential_facts[0].target_id == "configured-user"
+    assert result.credential_facts[0].confidence == "high"
+
+
 def test_bridge_builder_outputs_feed_directly_into_aws_graph_builder():
     bridge_builder = IRSABridgeBuilder()
     aws_scan = make_aws_scan()
@@ -259,3 +289,141 @@ def test_bridge_builder_handles_empty_inputs_safely():
     assert result.warnings == []
     assert result.skipped_irsa == 0
     assert result.skipped_credentials == 0
+
+
+def test_bridge_builder_emits_structured_warning_for_malformed_irsa_arn():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "api-sa",
+                    "annotations": {
+                        "eks.amazonaws.com/role-arn": "not-an-arn",
+                    },
+                }
+            }
+        ]
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert result.warnings == [
+        {
+            "level": "WARNING",
+            "reason": "malformed_role_arn",
+            "resource": "service_account:production/api-sa",
+            "note": "annotated IRSA role ARN is malformed",
+        }
+    ]
+
+
+def test_bridge_builder_emits_structured_warning_for_kube2iam_annotation():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "api-sa",
+                    "annotations": {
+                        "iam.amazonaws.com/role": "legacy-role",
+                    },
+                }
+            }
+        ]
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert result.warnings == [
+        {
+            "level": "INFO",
+            "reason": "kube2iam_unsupported",
+            "resource": "service_account:production/api-sa",
+            "note": "kube2iam/kiam role annotations are unsupported",
+        }
+    ]
+
+
+def test_bridge_builder_emits_structured_warning_for_unknown_iam_user_fallback():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "aws-credentials",
+                },
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAUNKNOWNKEY000000",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            }
+        ]
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.credential_facts) == 1
+    assert result.credential_facts[0].target_id == "unknown"
+    assert result.warnings == [
+        {
+            "level": "WARNING",
+            "reason": "iam_user_unresolved",
+            "resource": "secret:production/aws-credentials",
+            "note": "AWS credential keys found but IAM user could not be resolved",
+        }
+    ]
+
+
+def test_bridge_builder_emits_structured_warnings_for_unresolved_rds_and_s3_targets():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "db-credentials",
+                },
+                "stringData": {
+                    "host": "missing-db.example.us-east-1.rds.amazonaws.com",
+                    "username": "appuser",
+                    "password": "super-secret",
+                },
+            },
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "s3-config",
+                },
+                "stringData": {
+                    "bucket": "missing-bucket",
+                    "region": "us-east-1",
+                },
+            },
+        ]
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert result.credential_facts == []
+    assert result.warnings == [
+        {
+            "level": "WARNING",
+            "reason": "rds_target_unresolved",
+            "resource": "secret:production/db-credentials",
+            "note": "RDS credential pattern found but no scanned endpoint matched",
+        },
+        {
+            "level": "WARNING",
+            "reason": "s3_target_unresolved",
+            "resource": "secret:production/s3-config",
+            "note": "S3 credential pattern found but no scanned bucket matched",
+        },
+    ]

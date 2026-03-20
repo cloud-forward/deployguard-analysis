@@ -80,7 +80,7 @@ def test_secret_with_only_access_key_id_emits_no_fact():
     assert facts == []
 
 
-def test_secret_with_both_keys_but_no_matching_iam_user_emits_no_fact():
+def test_secret_with_both_keys_but_no_matching_iam_user_emits_unknown_fact():
     extractor = SecretCredentialsExtractor()
     secrets = [
         make_secret(
@@ -95,7 +95,37 @@ def test_secret_with_both_keys_but_no_matching_iam_user_emits_no_fact():
 
     facts = extractor.extract(secrets, [make_iam_user("web-app-deployer", "AKIAIOSFODNN7EXAMPLE")])
 
-    assert facts == []
+    assert len(facts) == 1
+    assert facts[0].target_type == "iam_user"
+    assert facts[0].target_id == "unknown"
+    assert facts[0].matched_keys == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    assert facts[0].confidence == "medium"
+
+
+def test_secret_with_credential_config_mapping_emits_configured_iam_user():
+    extractor = SecretCredentialsExtractor()
+    secrets = [
+        make_secret(
+            "production",
+            "aws-credentials",
+            data={
+                "AWS_ACCESS_KEY_ID": "AKIAUNKNOWNKEY000000",
+                "AWS_SECRET_ACCESS_KEY": "super-secret",
+            },
+        )
+    ]
+
+    facts = extractor.extract(
+        secrets,
+        [make_iam_user("web-app-deployer", "AKIAIOSFODNN7EXAMPLE")],
+        credential_config={"production/aws-credentials": "configured-user"},
+    )
+
+    assert len(facts) == 1
+    assert facts[0].target_type == "iam_user"
+    assert facts[0].target_id == "configured-user"
+    assert facts[0].matched_keys == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    assert facts[0].confidence == "high"
 
 
 def test_malformed_secret_does_not_crash():
@@ -146,9 +176,10 @@ def test_multiple_secrets_only_valid_matches_emitted():
 
     facts = extractor.extract(secrets, iam_users)
 
-    assert len(facts) == 1
-    assert facts[0].secret_name == "aws-credentials"
-    assert facts[0].target_id == "web-app-deployer"
+    assert len(facts) == 2
+    facts_by_name = {fact.secret_name: fact for fact in facts}
+    assert facts_by_name["aws-credentials"].target_id == "web-app-deployer"
+    assert facts_by_name["unknown-credentials"].target_id == "unknown"
 
 
 def test_secret_with_credential_keys_in_string_data_only_emits_fact():

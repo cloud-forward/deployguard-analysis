@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED, SCAN_STATUS_RUNNING
 from app.domain.repositories.scan_repository import ScanRepository
-from app.models.db_models import ScanRecord
+from app.gateway.models import ScanRecord
 from app.models.schemas import RequestSource
 
 logger = logging.getLogger(__name__)
@@ -36,18 +36,15 @@ class SQLAlchemyScanRepository(ScanRepository):
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = "queued",
+        status: str = SCAN_STATUS_QUEUED,
         request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
     ) -> ScanRecord:
-        requested_at = requested_at or datetime.utcnow()
         record = ScanRecord(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
             status=status,
-            request_source=request_source,
-            requested_at=requested_at,
         )
         self._session.add(record)
         try:
@@ -224,7 +221,7 @@ class SQLAlchemyScanRepository(ScanRepository):
                 ScanRecord.scanner_type == scanner_type,
                 ScanRecord.status == SCAN_STATUS_QUEUED,
             )
-            .order_by(ScanRecord.requested_at.asc(), ScanRecord.created_at.asc())
+            .order_by(ScanRecord.created_at.asc())
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -232,14 +229,14 @@ class SQLAlchemyScanRepository(ScanRepository):
         if record is None:
             return None
         record.status = SCAN_STATUS_RUNNING
-        record.claimed_by = claimed_by
-        record.claimed_at = started_at
-        record.started_at = started_at
-        record.lease_expires_at = lease_expires_at
         record.updated_at = started_at
         try:
             await self._session.commit()
             await self._session.refresh(record)
+            record.claimed_by = claimed_by
+            record.claimed_at = started_at
+            record.started_at = started_at
+            record.lease_expires_at = lease_expires_at
             return record
         except IntegrityError as exc:
             await self._rollback_and_log(

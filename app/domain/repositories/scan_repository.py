@@ -15,7 +15,7 @@ class ScanRepository(Protocol):
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = "queued",
+        status: str = "created",
         request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
     ) -> object:
@@ -42,7 +42,7 @@ class ScanRepository(Protocol):
         """Return all ScanRecords for a given cluster_id."""
         ...
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> object | None:
-        """Return an active ScanRecord (status in queued/running/uploading) for the given cluster and scanner_type, or None."""
+        """Return an active ScanRecord (status in created/processing/uploading) for the given cluster and scanner_type, or None."""
         ...
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
         """Return a dict mapping scanner_type -> latest completed ScanRecord for the given cluster."""
@@ -56,5 +56,5 @@ class ScanRepository(Protocol):
         lease_expires_at: datetime,
         started_at: datetime,
     ) -> object | None:
-        """Atomically claim one queued scan for a worker. Returns claimed ScanRecord or None."""
+        """Atomically claim one created scan for a worker. Returns claimed ScanRecord or None."""
         ...

@@ -45,11 +45,11 @@ class S3Service:
                   ├ k8s
                   ├ aws
                   ├ image
-                  └ runtime
+                  └ image
 
         S3 key format: scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}
 
-        scanner_type must be one of: "k8s", "aws", "image", "runtime".
+        scanner_type must be one of: "k8s", "aws", "image".
 
         Returns: (presigned_url, s3_key)
         """

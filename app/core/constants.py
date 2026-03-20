@@ -33,32 +33,35 @@ VALID_SCANNER_TYPES: frozenset[str] = frozenset({
     SCANNER_TYPE_K8S,
     SCANNER_TYPE_AWS,
     SCANNER_TYPE_IMAGE,
-    SCANNER_TYPE_RUNTIME,
 })
 
 # ---------------------------------------------------------------------------
 # Scan statuses
 # ---------------------------------------------------------------------------
 
-SCAN_STATUS_QUEUED: str = "queued"
-SCAN_STATUS_RUNNING: str = "running"
+SCAN_STATUS_CREATED: str = "created"
 SCAN_STATUS_UPLOADING: str = "uploading"
 SCAN_STATUS_PROCESSING: str = "processing"
 SCAN_STATUS_COMPLETED: str = "completed"
 SCAN_STATUS_FAILED: str = "failed"
+SCAN_STATUS_PENDING: str = "pending"
+
+# Backward-compatible aliases used by existing application flow code.
+SCAN_STATUS_QUEUED: str = SCAN_STATUS_CREATED
+SCAN_STATUS_RUNNING: str = SCAN_STATUS_PROCESSING
 
 VALID_SCAN_STATUSES: frozenset[str] = frozenset({
-    SCAN_STATUS_QUEUED,
-    SCAN_STATUS_RUNNING,
+    SCAN_STATUS_CREATED,
     SCAN_STATUS_UPLOADING,
+    SCAN_STATUS_PROCESSING,
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_FAILED,
 })
 
 # Statuses that indicate a scan session is still active (not terminal)
 ACTIVE_SCAN_STATUSES: tuple[str, ...] = (
-    SCAN_STATUS_QUEUED,
-    SCAN_STATUS_RUNNING,
+    SCAN_STATUS_CREATED,
+    SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
 )
 

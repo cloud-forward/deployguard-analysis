@@ -36,6 +36,7 @@ class SecretCredentialsExtractor:
         facts: list[SecretContainsCredentialsFact] = []
         users_by_active_key = self._index_active_access_keys(iam_users)
         rds_by_endpoint = self._index_rds_endpoints(rds_instances or [])
+        rds_identifiers = self._index_rds_identifiers(rds_instances or [])
         s3_by_name = self._index_s3_buckets(s3_buckets or [])
 
         for secret in secrets:
@@ -44,6 +45,7 @@ class SecretCredentialsExtractor:
                     secret,
                     users_by_active_key,
                     rds_by_endpoint,
+                    rds_identifiers,
                     s3_by_name,
                     credential_config or {},
                 )
@@ -67,6 +69,7 @@ class SecretCredentialsExtractor:
         secret: dict[str, Any],
         users_by_active_key: dict[str, IAMUserScan],
         rds_by_endpoint: dict[str, list[str]],
+        rds_identifiers: list[str],
         s3_by_name: dict[str, list[str]],
         credential_config: dict[str, Any],
     ) -> list[SecretContainsCredentialsFact]:
@@ -113,6 +116,7 @@ class SecretCredentialsExtractor:
             name,
             detected_keys,
             rds_by_endpoint,
+            rds_identifiers,
         )
         if rds_fact is not None:
             facts.append(rds_fact)
@@ -214,6 +218,7 @@ class SecretCredentialsExtractor:
         name: str,
         detected_keys: list[str],
         rds_by_endpoint: dict[str, list[str]],
+        rds_identifiers: list[str],
     ) -> SecretContainsCredentialsFact | None:
         matched_host_keys = [key for key in detected_keys if key in RDS_HOST_KEYS]
         if not matched_host_keys:
@@ -237,6 +242,22 @@ class SecretCredentialsExtractor:
 
         matched_identifiers = rds_by_endpoint.get(host_value, [])
         if not matched_identifiers:
+            if len(rds_identifiers) == 1:
+                matched_keys = [
+                    key for key in detected_keys
+                    if key in RDS_HOST_KEYS
+                    or key in RDS_USERNAME_KEYS
+                    or key in RDS_PASSWORD_KEYS
+                    or key in RDS_PORT_KEYS
+                ]
+                return SecretContainsCredentialsFact(
+                    secret_namespace=namespace,
+                    secret_name=name,
+                    target_type="rds",
+                    target_id=rds_identifiers[0],
+                    matched_keys=matched_keys,
+                    confidence="medium",
+                )
             logger.warning(
                 "Skipping Secret %s/%s because no scanned RDS endpoint matched %s",
                 namespace,
@@ -368,6 +389,17 @@ class SecretCredentialsExtractor:
                 continue
             endpoints.setdefault(endpoint, []).append(identifier)
         return endpoints
+
+    def _index_rds_identifiers(
+        self,
+        rds_instances: list[RDSInstanceScan | dict[str, Any] | Any],
+    ) -> list[str]:
+        identifiers: list[str] = []
+        for instance in rds_instances:
+            identifier = self._rds_identifier(instance)
+            if identifier and identifier not in identifiers:
+                identifiers.append(identifier)
+        return identifiers
 
     def _rds_identifier(self, instance: Any) -> str | None:
         if isinstance(instance, dict):

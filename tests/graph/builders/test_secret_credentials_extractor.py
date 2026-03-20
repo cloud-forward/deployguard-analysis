@@ -263,7 +263,7 @@ def test_secret_with_rds_host_username_password_and_exact_matching_endpoint_emit
     assert facts[0].confidence == "high"
 
 
-def test_secret_with_rds_host_but_no_matching_endpoint_emits_no_fact():
+def test_secret_with_rds_host_but_no_matching_endpoint_and_one_scanned_rds_emits_fallback_fact():
     extractor = SecretCredentialsExtractor()
     secrets = [
         make_secret(
@@ -290,7 +290,11 @@ def test_secret_with_rds_host_but_no_matching_endpoint_emits_no_fact():
 
     facts = extractor.extract(secrets, iam_users=[], rds_instances=rds_instances)
 
-    assert facts == []
+    assert len(facts) == 1
+    assert facts[0].target_type == "rds"
+    assert facts[0].target_id == "production-db"
+    assert facts[0].matched_keys == ["host", "username", "password"]
+    assert facts[0].confidence == "medium"
 
 
 def test_secret_with_insufficient_rds_key_categories_emits_no_fact():
@@ -363,7 +367,64 @@ def test_mixed_iam_user_and_rds_style_secrets_emit_both_fact_types():
     assert facts_by_type["rds"].target_id == "production-db"
 
 
-def test_typed_rds_model_without_endpoint_safely_skips_rds_match():
+def test_secret_with_rds_host_but_no_matching_endpoint_and_zero_scanned_rds_emits_no_fact():
+    extractor = SecretCredentialsExtractor()
+    secrets = [
+        make_secret(
+            "production",
+            "db-credentials",
+            string_data={
+                "host": "prod-db.example.us-east-1.rds.amazonaws.com",
+                "username": "appuser",
+                "password": "super-secret",
+            },
+        )
+    ]
+    facts = extractor.extract(secrets, iam_users=[], rds_instances=[])
+
+    assert facts == []
+
+
+def test_secret_with_rds_host_but_no_matching_endpoint_and_multiple_scanned_rds_emits_no_fact():
+    extractor = SecretCredentialsExtractor()
+    secrets = [
+        make_secret(
+            "production",
+            "db-credentials",
+            string_data={
+                "host": "unknown-db.example.us-east-1.rds.amazonaws.com",
+                "username": "appuser",
+                "password": "super-secret",
+            },
+        )
+    ]
+    rds_instances = [
+        RDSInstanceScan(
+            identifier="production-db",
+            arn="arn:aws:rds:us-east-1:123456789012:db:production-db",
+            engine="postgres",
+            storage_encrypted=True,
+            publicly_accessible=False,
+            vpc_security_groups=[],
+            endpoint="prod-db.example.us-east-1.rds.amazonaws.com",
+        ),
+        RDSInstanceScan(
+            identifier="analytics-db",
+            arn="arn:aws:rds:us-east-1:123456789012:db:analytics-db",
+            engine="postgres",
+            storage_encrypted=True,
+            publicly_accessible=False,
+            vpc_security_groups=[],
+            endpoint="analytics-db.example.us-east-1.rds.amazonaws.com",
+        ),
+    ]
+
+    facts = extractor.extract(secrets, iam_users=[], rds_instances=rds_instances)
+
+    assert facts == []
+
+
+def test_typed_rds_model_without_endpoint_and_one_scanned_rds_emits_fallback_fact():
     extractor = SecretCredentialsExtractor()
     secrets = [
         make_secret(
@@ -390,7 +451,11 @@ def test_typed_rds_model_without_endpoint_safely_skips_rds_match():
 
     facts = extractor.extract(secrets, iam_users=[], rds_instances=rds_instances)
 
-    assert facts == []
+    assert len(facts) == 1
+    assert facts[0].target_type == "rds"
+    assert facts[0].target_id == "production-db"
+    assert facts[0].matched_keys == ["host", "username", "password"]
+    assert facts[0].confidence == "medium"
 
 
 def test_secret_with_exact_matching_bucket_name_emits_s3_fact():

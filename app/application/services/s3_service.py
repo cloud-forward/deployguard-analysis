@@ -69,6 +69,27 @@ class S3Service:
             raise
         return presigned_url, s3_key
 
+    def generate_presigned_download_url(
+        self,
+        s3_key: str,
+        expires_in: int = 600,
+    ) -> str:
+        """
+        Generate a presigned GET URL for S3 download.
+
+        Returns: presigned_url
+        """
+        try:
+            presigned_url = self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": s3_key},
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.error("Failed to generate download presigned URL for key '%s': %s", s3_key, e)
+            raise
+        return presigned_url
+
     def verify_file_exists(self, s3_key: str) -> bool:
         """
         Check if a file exists in S3 (used during scan complete to verify uploads).

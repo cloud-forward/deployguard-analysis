@@ -187,6 +187,46 @@ class ScanStatusResponse(BaseModel):
     ]})
 
 
+class ScanDetailResponse(BaseModel):
+    scan_id: str
+    cluster_id: str
+    scanner_type: str
+    status: str = Field(..., description="queued | running | uploading | completed | failed")
+    created_at: datetime
+    completed_at: datetime | None = None
+    s3_keys: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "cluster_id": "prod-cluster-01",
+            "scanner_type": "k8s",
+            "status": "completed",
+            "created_at": "2024-01-15T10:00:00Z",
+            "completed_at": "2024-01-15T10:30:00Z",
+            "s3_keys": [
+                "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json"
+            ],
+        }
+    ]})
+
+
+class RawScanResultUrlResponse(BaseModel):
+    scan_id: str
+    s3_key: str
+    download_url: str
+    expires_in: int = Field(default=600, description="URL 만료 시간(초)")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
+            "download_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+            "expires_in": 600,
+        }
+    ]})
+
+
 class PendingScanClaimResponse(BaseModel):
     scan_id: str
     cluster_id: str

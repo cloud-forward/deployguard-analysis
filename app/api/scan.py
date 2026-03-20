@@ -5,9 +5,11 @@ import logging
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from app.models.schemas import (
+    RawScanResultUrlResponse,
     ScanStartRequest, ScanStartResponse,
     UploadUrlRequest, UploadUrlResponse,
     ScanCompleteRequest, ScanCompleteResponse,
+    ScanDetailResponse,
     ScanStatusResponse,
     PendingScanClaimResponse,
     ScannerType,
@@ -235,6 +237,46 @@ async def complete_scan(
         request_id=request_id,
         endpoint_path=request_context.url.path,
     )
+
+
+@router.get(
+    "/{scan_id}",
+    response_model=ScanDetailResponse,
+    status_code=200,
+    summary="스캔 세션 상세 조회",
+    description="""
+스캔 세션의 메타데이터를 조회합니다.
+
+반환값에는 스캔 식별자, 클러스터, scanner_type, 상태, 생성/완료 시각과
+저장된 S3 키 목록이 포함됩니다.
+""",
+    responses={
+        200: {"description": "스캔 세션 상세"},
+        404: {"description": "스캔 세션을 찾을 수 없습니다"},
+    },
+)
+async def get_scan_detail(scan_id: str, service: ScanService = Depends(get_scan_service)):
+    return await service.get_scan_detail(scan_id=scan_id)
+
+
+@router.get(
+    "/{scan_id}/raw-result-url",
+    response_model=RawScanResultUrlResponse,
+    status_code=200,
+    summary="원본 스캔 결과 다운로드 URL 조회",
+    description="""
+스캔에 저장된 원본 결과 파일 1건에 대한 presigned download URL을 반환합니다.
+
+현재는 저장된 S3 키가 정확히 1개인 경우에만 URL을 생성합니다.
+""",
+    responses={
+        200: {"description": "원본 스캔 결과 다운로드 URL"},
+        404: {"description": "스캔 세션 또는 원본 결과 파일을 찾을 수 없습니다"},
+        409: {"description": "원본 결과 파일이 여러 개라 기본 선택 규칙이 없습니다"},
+    },
+)
+async def get_raw_result_download_url(scan_id: str, service: ScanService = Depends(get_scan_service)):
+    return await service.get_raw_result_download_url(scan_id=scan_id)
 
 
 @router.get(

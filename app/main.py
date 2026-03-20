@@ -56,6 +56,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["General"])
 app.include_router(analyze.router, prefix="/api/v1", tags=["Analysis"])
 app.include_router(scan.router)
+app.include_router(scan.cluster_router)
 app.include_router(clusters.router)
 app.include_router(sync.router)
 app.include_router(inventory.router)

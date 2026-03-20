@@ -227,6 +227,50 @@ class RawScanResultUrlResponse(BaseModel):
     ]})
 
 
+class ScanSummaryItemResponse(BaseModel):
+    scan_id: str
+    scanner_type: str
+    status: str = Field(..., description="queued | running | uploading | completed | failed")
+    created_at: datetime
+    completed_at: datetime | None = None
+    file_count: int
+    has_raw_result: bool
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "scanner_type": "k8s",
+            "status": "completed",
+            "created_at": "2024-01-15T10:00:00Z",
+            "completed_at": "2024-01-15T10:30:00Z",
+            "file_count": 1,
+            "has_raw_result": True,
+        }
+    ]})
+
+
+class ClusterScanListResponse(BaseModel):
+    items: list[ScanSummaryItemResponse] = Field(default_factory=list)
+    total: int
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "items": [
+                {
+                    "scan_id": "20260309T113020-k8s",
+                    "scanner_type": "k8s",
+                    "status": "completed",
+                    "created_at": "2024-01-15T10:00:00Z",
+                    "completed_at": "2024-01-15T10:30:00Z",
+                    "file_count": 1,
+                    "has_raw_result": True,
+                }
+            ],
+            "total": 1,
+        }
+    ]})
+
+
 class PendingScanClaimResponse(BaseModel):
     scan_id: str
     cluster_id: str

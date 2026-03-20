@@ -16,7 +16,9 @@ from app.core.constants import (
     SCAN_STATUS_UPLOADING,
 )
 from app.models.schemas import (
+    ClusterScanListResponse,
     RawScanResultUrlResponse,
+    ScanSummaryItemResponse,
     ScanCompleteResponse,
     ScanDetailResponse,
     ScanStartResponse,
@@ -282,6 +284,23 @@ class ScanService:
             completed_at=record.completed_at,
             s3_keys=record.s3_keys or [],
         )
+
+    async def list_cluster_scans(self, cluster_id: str) -> ClusterScanListResponse:
+        records = await self._repo.list_by_cluster(cluster_id)
+        ordered_records = sorted(records, key=lambda record: record.created_at, reverse=True)
+        items = [
+            ScanSummaryItemResponse(
+                scan_id=record.scan_id,
+                scanner_type=record.scanner_type,
+                status=record.status,
+                created_at=record.created_at,
+                completed_at=record.completed_at,
+                file_count=len(record.s3_keys or []),
+                has_raw_result=bool(record.s3_keys),
+            )
+            for record in ordered_records
+        ]
+        return ClusterScanListResponse(items=items, total=len(items))
 
     async def get_raw_result_download_url(
         self,

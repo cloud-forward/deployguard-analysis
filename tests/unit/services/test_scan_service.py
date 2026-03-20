@@ -457,6 +457,51 @@ class TestScanServiceGetDetail:
         assert exc_info.value.status_code == 404
 
 
+class TestScanServiceListClusterScans:
+
+    @pytest.mark.asyncio
+    async def test_list_cluster_scans_returns_newest_first(self):
+        from datetime import datetime
+        svc, repo, _ = make_service()
+        repo.list_by_cluster.return_value = [
+            MagicMock(
+                scan_id="older",
+                scanner_type="k8s",
+                status="completed",
+                created_at=datetime(2024, 1, 15, 10, 0, 0),
+                completed_at=datetime(2024, 1, 15, 10, 30, 0),
+                s3_keys=["scans/c1/older/k8s/scan.json"],
+            ),
+            MagicMock(
+                scan_id="newer",
+                scanner_type="aws",
+                status="running",
+                created_at=datetime(2024, 1, 16, 10, 0, 0),
+                completed_at=None,
+                s3_keys=[],
+            ),
+        ]
+
+        result = await svc.list_cluster_scans("c1")
+
+        assert result.total == 2
+        assert [item.scan_id for item in result.items] == ["newer", "older"]
+        assert result.items[0].file_count == 0
+        assert result.items[0].has_raw_result is False
+        assert result.items[1].file_count == 1
+        assert result.items[1].has_raw_result is True
+
+    @pytest.mark.asyncio
+    async def test_list_cluster_scans_returns_empty_list(self):
+        svc, repo, _ = make_service()
+        repo.list_by_cluster.return_value = []
+
+        result = await svc.list_cluster_scans("c1")
+
+        assert result.total == 0
+        assert result.items == []
+
+
 class TestScanServiceGetRawResultDownloadUrl:
 
     @pytest.mark.asyncio

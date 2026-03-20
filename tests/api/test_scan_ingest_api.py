@@ -719,6 +719,66 @@ class TestRawScanResultUrl:
         assert resp.status_code == 409
 
 
+class TestClusterScanList:
+    def test_list_cluster_scans_returns_scan_summaries_newest_first(self, client_with_repo):
+        client, repo = client_with_repo
+        older = _FakeScanRecord(
+            scan_id="older-scan",
+            cluster_id="cluster-1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_COMPLETED,
+            s3_keys=["scans/cluster-1/older-scan/k8s/scan.json"],
+            created_at=datetime(2026, 3, 9, 10, 0, 0),
+            completed_at=datetime(2026, 3, 9, 10, 5, 0),
+            request_source="manual",
+            requested_at=datetime(2026, 3, 9, 9, 59, 0),
+        )
+        newer = _FakeScanRecord(
+            scan_id="newer-scan",
+            cluster_id="cluster-1",
+            scanner_type="aws",
+            status=SCAN_STATUS_RUNNING,
+            s3_keys=[],
+            created_at=datetime(2026, 3, 10, 10, 0, 0),
+            completed_at=None,
+            request_source="manual",
+            requested_at=datetime(2026, 3, 10, 9, 59, 0),
+        )
+        other_cluster = _FakeScanRecord(
+            scan_id="other-scan",
+            cluster_id="cluster-2",
+            scanner_type="image",
+            status=SCAN_STATUS_QUEUED,
+            s3_keys=[],
+            created_at=datetime(2026, 3, 11, 10, 0, 0),
+            completed_at=None,
+            request_source="manual",
+            requested_at=datetime(2026, 3, 11, 9, 59, 0),
+        )
+        repo._store = {
+            older.scan_id: older,
+            newer.scan_id: newer,
+            other_cluster.scan_id: other_cluster,
+        }
+
+        resp = client.get("/api/v1/clusters/cluster-1/scans")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 2
+        assert [item["scan_id"] for item in data["items"]] == ["newer-scan", "older-scan"]
+        assert data["items"][0]["file_count"] == 0
+        assert data["items"][0]["has_raw_result"] is False
+        assert data["items"][1]["file_count"] == 1
+        assert data["items"][1]["has_raw_result"] is True
+
+    def test_list_cluster_scans_returns_empty_result_for_unknown_cluster(self, client):
+        resp = client.get("/api/v1/clusters/unknown-cluster/scans")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"items": [], "total": 0}
+
+
 class TestClaimPendingScan:
     def test_claims_one_queued_scan(self, client):
         scan_id = _start(client).json()["scan_id"]

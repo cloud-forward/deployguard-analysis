@@ -5,6 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from app.models.schemas import (
+    ClusterScanListResponse,
     RawScanResultUrlResponse,
     ScanStartRequest, ScanStartResponse,
     UploadUrlRequest, UploadUrlResponse,
@@ -22,6 +23,7 @@ from app.api.auth import get_authenticated_cluster
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["Scans"])
+cluster_router = APIRouter(prefix="/api/v1/clusters", tags=["Scans"])
 
 
 @router.post(
@@ -237,6 +239,24 @@ async def complete_scan(
         request_id=request_id,
         endpoint_path=request_context.url.path,
     )
+
+
+@cluster_router.get(
+    "/{cluster_id}/scans",
+    response_model=ClusterScanListResponse,
+    status_code=200,
+    summary="클러스터 스캔 이력 조회",
+    description="""
+클러스터에 속한 스캔 세션 목록을 최신순으로 조회합니다.
+
+각 항목에는 스캐너 유형, 상태, 생성/완료 시각과 원본 결과 파일 존재 여부가 포함됩니다.
+""",
+    responses={
+        200: {"description": "클러스터 스캔 이력"},
+    },
+)
+async def list_cluster_scans(cluster_id: str, service: ScanService = Depends(get_scan_service)):
+    return await service.list_cluster_scans(cluster_id=cluster_id)
 
 
 @router.get(

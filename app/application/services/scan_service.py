@@ -16,7 +16,11 @@ from app.core.constants import (
     SCAN_STATUS_UPLOADING,
 )
 from app.models.schemas import (
+    ClusterScanListResponse,
+    RawScanResultUrlResponse,
+    ScanSummaryItemResponse,
     ScanCompleteResponse,
+    ScanDetailResponse,
     ScanStartResponse,
     ScanStatusResponse,
     UploadUrlResponse,
@@ -265,6 +269,64 @@ class ScanService:
             created_at=record.created_at,
             completed_at=record.completed_at,
             files=record.s3_keys or [],
+        )
+
+    async def get_scan_detail(self, scan_id: str) -> ScanDetailResponse:
+        record = await self._repo.get_by_scan_id(scan_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
+        return ScanDetailResponse(
+            scan_id=record.scan_id,
+            cluster_id=record.cluster_id,
+            scanner_type=record.scanner_type,
+            status=record.status,
+            created_at=record.created_at,
+            completed_at=record.completed_at,
+            s3_keys=record.s3_keys or [],
+        )
+
+    async def list_cluster_scans(self, cluster_id: str) -> ClusterScanListResponse:
+        records = await self._repo.list_by_cluster(cluster_id)
+        ordered_records = sorted(records, key=lambda record: record.created_at, reverse=True)
+        items = [
+            ScanSummaryItemResponse(
+                scan_id=record.scan_id,
+                scanner_type=record.scanner_type,
+                status=record.status,
+                created_at=record.created_at,
+                completed_at=record.completed_at,
+                file_count=len(record.s3_keys or []),
+                has_raw_result=bool(record.s3_keys),
+            )
+            for record in ordered_records
+        ]
+        return ClusterScanListResponse(items=items, total=len(items))
+
+    async def get_raw_result_download_url(
+        self,
+        scan_id: str,
+        expires_in: int = 600,
+    ) -> RawScanResultUrlResponse:
+        record = await self._repo.get_by_scan_id(scan_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
+
+        s3_keys = record.s3_keys or []
+        if not s3_keys:
+            raise HTTPException(status_code=404, detail=f"No raw scan result files found for scan: {scan_id}")
+        if len(s3_keys) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Scan has multiple raw result files and no primary file selection rule is defined",
+            )
+
+        s3_key = s3_keys[0]
+        download_url = self._s3.generate_presigned_download_url(s3_key=s3_key, expires_in=expires_in)
+        return RawScanResultUrlResponse(
+            scan_id=record.scan_id,
+            s3_key=s3_key,
+            download_url=download_url,
+            expires_in=expires_in,
         )
 
     async def claim_pending_scan(

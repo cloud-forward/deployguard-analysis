@@ -21,6 +21,10 @@ async def repo_and_session():
 
 
 class TestSqlAlchemyAnalysisJobRepository:
+    def test_analysis_job_graph_id_has_graph_snapshots_fk(self):
+        foreign_keys = {fk.target_fullname for fk in AnalysisJob.__table__.c.graph_id.foreign_keys}
+        assert foreign_keys == {"graph_snapshots.id"}
+
     @pytest.mark.asyncio
     async def test_create_analysis_job_persists_uuid_cluster_id(self, repo_and_session):
         repo, session = repo_and_session

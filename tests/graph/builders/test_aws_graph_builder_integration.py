@@ -12,12 +12,14 @@ from src.graph.builders.aws_scanner_types import (
     SecurityGroupScan,
 )
 from src.graph.builders.cross_domain_types import IRSAMapping, SecretContainsCredentialsFact
+from src.graph.builders.irsa_mapping_extractor import IRSAMappingExtractor
 from src.graph.builders.iam_policy_types import (
     IAMPolicyAnalysisResult,
     IAMUserPolicyAnalysisResult,
     ResourceAccess,
     TrustPolicyAnalysis,
 )
+from src.graph.builders.secret_credentials_extractor import SecretCredentialsExtractor
 
 
 def test_golden_path_002_partial():
@@ -433,3 +435,227 @@ def test_iam_user_credential_secret_path():
     assert (secret_id, user_id) in edges_as_pairs, "Secret → IAM User edge should exist"
     assert edge_types_by_pair[(secret_id, user_id)] == "secret_contains_aws_credentials"
     assert (user_id, s3_id) in edges_as_pairs, "IAM User → S3 edge should exist"
+
+
+def test_irsa_extractor_output_integrates_with_aws_graph_builder():
+    account_id = "123456789012"
+    scan_id = "20260309T113025-aws"
+    role_arn = f"arn:aws:iam::{account_id}:role/WebAppRole"
+
+    iam_role = IAMRoleScan(
+        name="WebAppRole",
+        arn=role_arn,
+        is_irsa=True,
+        irsa_oidc_issuer="https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE",
+        attached_policies=[],
+        inline_policies=[],
+        trust_policy={
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": (
+                            f"arn:aws:iam::{account_id}:"
+                            "oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+                        )
+                    },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud": "sts.amazonaws.com",
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:sub": "system:serviceaccount:production:api-sa",
+                        }
+                    },
+                }
+            ]
+        },
+    )
+    scan = AWSScanResult(
+        scan_id=scan_id,
+        aws_account_id=account_id,
+        scanned_at="2026-03-09T11:30:25Z",
+        iam_roles=[iam_role],
+        s3_buckets=[],
+        rds_instances=[],
+        ec2_instances=[],
+        security_groups=[],
+    )
+    service_accounts = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": role_arn,
+                },
+            }
+        }
+    ]
+
+    irsa_mappings = IRSAMappingExtractor().extract(service_accounts, scan.iam_roles)
+
+    builder = AWSGraphBuilder(account_id, scan_id)
+    _, edges = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=[])
+
+    edge = next(e for e in edges if e.type == "service_account_assumes_iam_role")
+    assert edge.source == "sa:production:api-sa"
+    assert edge.target == f"iam:{account_id}:WebAppRole"
+    assert edge.metadata["source_type"] == "irsa_mapper"
+    assert edge.metadata["annotation_value"] == role_arn
+
+
+def test_secret_credentials_extractor_output_integrates_with_aws_graph_builder():
+    account_id = "123456789012"
+    scan_id = "20260309T113025-aws"
+
+    user = IAMUserScan(
+        username="web-app-deployer",
+        arn=f"arn:aws:iam::{account_id}:user/web-app-deployer",
+        access_keys=[
+            AccessKeyScan(
+                access_key_id="AKIAIOSFODNN7EXAMPLE",
+                status="Active",
+                create_date="2026-01-01T00:00:00Z",
+            )
+        ],
+        attached_policies=[],
+        inline_policies=[],
+        has_mfa=False,
+        last_used=None,
+    )
+    scan = AWSScanResult(
+        scan_id=scan_id,
+        aws_account_id=account_id,
+        scanned_at="2026-03-09T11:30:25Z",
+        iam_roles=[],
+        s3_buckets=[],
+        rds_instances=[],
+        ec2_instances=[],
+        security_groups=[],
+        iam_users=[user],
+    )
+    secrets = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "aws-credentials",
+            },
+            "stringData": {
+                "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                "AWS_SECRET_ACCESS_KEY": "super-secret",
+            },
+        }
+    ]
+
+    credential_facts = SecretCredentialsExtractor().extract(secrets, scan.iam_users)
+
+    builder = AWSGraphBuilder(account_id, scan_id)
+    _, edges = builder.build(scan, irsa_mappings=[], credential_facts=credential_facts)
+
+    edge = next(e for e in edges if e.type == "secret_contains_aws_credentials")
+    assert edge.source == "secret:production:aws-credentials"
+    assert edge.target == f"iam_user:{account_id}:web-app-deployer"
+    assert edge.metadata["source_type"] == "credential_matcher"
+    assert edge.metadata["matched_keys"] == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+
+
+def test_bridge_producer_outputs_coexist_in_single_aws_graph_build():
+    account_id = "123456789012"
+    scan_id = "20260309T113025-aws"
+    role_arn = f"arn:aws:iam::{account_id}:role/WebAppRole"
+
+    iam_role = IAMRoleScan(
+        name="WebAppRole",
+        arn=role_arn,
+        is_irsa=True,
+        irsa_oidc_issuer="https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE",
+        attached_policies=[],
+        inline_policies=[],
+        trust_policy={
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": (
+                            f"arn:aws:iam::{account_id}:"
+                            "oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+                        )
+                    },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud": "sts.amazonaws.com",
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:sub": "system:serviceaccount:production:api-sa",
+                        }
+                    },
+                }
+            ]
+        },
+    )
+    user = IAMUserScan(
+        username="web-app-deployer",
+        arn=f"arn:aws:iam::{account_id}:user/web-app-deployer",
+        access_keys=[
+            AccessKeyScan(
+                access_key_id="AKIAIOSFODNN7EXAMPLE",
+                status="Active",
+                create_date="2026-01-01T00:00:00Z",
+            )
+        ],
+        attached_policies=[],
+        inline_policies=[],
+        has_mfa=False,
+        last_used=None,
+    )
+    scan = AWSScanResult(
+        scan_id=scan_id,
+        aws_account_id=account_id,
+        scanned_at="2026-03-09T11:30:25Z",
+        iam_roles=[iam_role],
+        s3_buckets=[],
+        rds_instances=[],
+        ec2_instances=[],
+        security_groups=[],
+        iam_users=[user],
+    )
+    service_accounts = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": role_arn,
+                },
+            }
+        }
+    ]
+    secrets = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "aws-credentials",
+            },
+            "stringData": {
+                "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                "AWS_SECRET_ACCESS_KEY": "super-secret",
+            },
+        }
+    ]
+
+    irsa_mappings = IRSAMappingExtractor().extract(service_accounts, scan.iam_roles)
+    credential_facts = SecretCredentialsExtractor().extract(secrets, scan.iam_users)
+
+    builder = AWSGraphBuilder(account_id, scan_id)
+    _, edges = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=credential_facts)
+
+    edges_as_triplets = {(e.source, e.target, e.type) for e in edges}
+    assert (
+        "sa:production:api-sa",
+        f"iam:{account_id}:WebAppRole",
+        "service_account_assumes_iam_role",
+    ) in edges_as_triplets
+    assert (
+        "secret:production:aws-credentials",
+        f"iam_user:{account_id}:web-app-deployer",
+        "secret_contains_aws_credentials",
+    ) in edges_as_triplets

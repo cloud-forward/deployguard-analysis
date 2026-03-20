@@ -45,11 +45,11 @@ class S3Service:
                   ├ k8s
                   ├ aws
                   ├ image
-                  └ runtime
+                  └ image
 
         S3 key format: scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}
 
-        scanner_type must be one of: "k8s", "aws", "image", "runtime".
+        scanner_type must be one of: "k8s", "aws", "image".
 
         Returns: (presigned_url, s3_key)
         """
@@ -68,6 +68,27 @@ class S3Service:
             logger.error("Failed to generate presigned URL for key '%s': %s", s3_key, e)
             raise
         return presigned_url, s3_key
+
+    def generate_presigned_download_url(
+        self,
+        s3_key: str,
+        expires_in: int = 600,
+    ) -> str:
+        """
+        Generate a presigned GET URL for S3 download.
+
+        Returns: presigned_url
+        """
+        try:
+            presigned_url = self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": s3_key},
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.error("Failed to generate download presigned URL for key '%s': %s", s3_key, e)
+            raise
+        return presigned_url
 
     def verify_file_exists(self, s3_key: str) -> bool:
         """

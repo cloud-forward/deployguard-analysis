@@ -23,8 +23,8 @@ class TestScanStartRequest:
         assert req.request_source == "manual"
 
     def test_valid_scanner_types(self):
-        """All 4 scanner types are accepted"""
-        for st, expected in [("k8s", ScannerType.k8s), ("aws", ScannerType.aws), ("image", ScannerType.image), ("runtime", ScannerType.runtime)]:
+        """All documented scanner types are accepted"""
+        for st, expected in [("k8s", ScannerType.k8s), ("aws", ScannerType.aws), ("image", ScannerType.image)]:
             req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type=st)
             assert req.scanner_type == expected
 

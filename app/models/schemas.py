@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing import List, Optional, Dict, Any
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
-    SCAN_STATUS_QUEUED,
+    SCAN_STATUS_CREATED,
 )
 
 
@@ -17,7 +17,6 @@ class ScannerType(str, Enum):
     k8s = "k8s"
     aws = "aws"
     image = "image"
-    runtime = "runtime"
 
 
 RequestSource = Literal["manual", "scheduled"]
@@ -129,10 +128,10 @@ class ScanCompleteRequest(BaseModel):
 
 class ScanStartResponse(BaseModel):
     scan_id: str = Field(..., description="생성된 스캔 세션 ID", example="20260309T113020-k8s")
-    status: str = Field(default=SCAN_STATUS_QUEUED, description="스캔 세션 상태")
+    status: str = Field(default=SCAN_STATUS_CREATED, description="스캔 세션 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"scan_id": "20260309T113020-k8s", "status": "queued"}
+        {"scan_id": "20260309T113020-k8s", "status": "created"}
     ]})
 
 
@@ -167,7 +166,7 @@ class ScanStatusResponse(BaseModel):
     scan_id: str
     cluster_id: str
     scanner_type: str
-    status: str = Field(..., description="queued | running | uploading | completed | failed")
+    status: str = Field(..., description="created | processing | uploading | completed | failed")
     created_at: datetime
     completed_at: datetime | None = None
     files: list[str] = Field(default_factory=list)
@@ -177,7 +176,7 @@ class ScanStatusResponse(BaseModel):
             "scan_id": "20260309T113020-k8s",
             "cluster_id": "prod-cluster-01",
             "scanner_type": "k8s",
-            "status": "queued",
+            "status": "created",
             "created_at": "2024-01-15T10:00:00Z",
             "completed_at": None,
             "files": [
@@ -187,11 +186,95 @@ class ScanStatusResponse(BaseModel):
     ]})
 
 
+class ScanDetailResponse(BaseModel):
+    scan_id: str
+    cluster_id: str
+    scanner_type: str
+    status: str = Field(..., description="created | processing | uploading | completed | failed")
+    created_at: datetime
+    completed_at: datetime | None = None
+    s3_keys: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "cluster_id": "prod-cluster-01",
+            "scanner_type": "k8s",
+            "status": "completed",
+            "created_at": "2024-01-15T10:00:00Z",
+            "completed_at": "2024-01-15T10:30:00Z",
+            "s3_keys": [
+                "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json"
+            ],
+        }
+    ]})
+
+
+class RawScanResultUrlResponse(BaseModel):
+    scan_id: str
+    s3_key: str
+    download_url: str
+    expires_in: int = Field(default=600, description="URL 만료 시간(초)")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
+            "download_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+            "expires_in": 600,
+        }
+    ]})
+
+
+class ScanSummaryItemResponse(BaseModel):
+    scan_id: str
+    scanner_type: str
+    status: str = Field(..., description="created | processing | uploading | completed | failed")
+    created_at: datetime
+    completed_at: datetime | None = None
+    file_count: int
+    has_raw_result: bool
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "scan_id": "20260309T113020-k8s",
+            "scanner_type": "k8s",
+            "status": "completed",
+            "created_at": "2024-01-15T10:00:00Z",
+            "completed_at": "2024-01-15T10:30:00Z",
+            "file_count": 1,
+            "has_raw_result": True,
+        }
+    ]})
+
+
+class ClusterScanListResponse(BaseModel):
+    items: list[ScanSummaryItemResponse] = Field(default_factory=list)
+    total: int
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "items": [
+                {
+                    "scan_id": "20260309T113020-k8s",
+                    "scanner_type": "k8s",
+                    "status": "completed",
+                    "created_at": "2024-01-15T10:00:00Z",
+                    "completed_at": "2024-01-15T10:30:00Z",
+                    "file_count": 1,
+                    "has_raw_result": True,
+                }
+            ],
+            "total": 1,
+        }
+    ]})
+
+
 class PendingScanClaimResponse(BaseModel):
     scan_id: str
     cluster_id: str
     scanner_type: str
-    status: str = Field(..., description="running")
+    status: str = Field(..., description="processing")
     claimed_by: str
     claimed_at: datetime
     started_at: datetime

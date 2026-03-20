@@ -3,11 +3,33 @@ SQLAlchemy ORM models for PostgreSQL. Gateway layer only.
 Moved from app/models/db_models.py to avoid domain→gateway dependency.
 """
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, JSON, DateTime, Boolean, Integer, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    String,
+    JSON,
+    DateTime,
+    Boolean,
+    Integer,
+    Text,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from uuid import uuid4
 from datetime import datetime
 from app.gateway.db.base import Base
+from app.core.constants import (
+    SCAN_STATUS_CREATED,
+    SCAN_STATUS_PENDING,
+    SCANNER_TYPE_AWS,
+    SCANNER_TYPE_IMAGE,
+    SCANNER_TYPE_K8S,
+)
+
+
+JSONB_COMPAT = JSON().with_variant(JSONB, "postgresql")
+UUID_COMPAT = UUID(as_uuid=False).with_variant(String(36), "sqlite")
 
 
 class MergeState(Base):
@@ -60,16 +82,64 @@ class AlertGroup(Base):
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class GraphSnapshot(Base):
+    __tablename__ = "graph_snapshots"
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+
+
 class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'fact_extraction', 'graph_building', 'path_discovery', "
+            "'risk_calculation', 'optimization', 'completed', 'failed')",
+            name="ck_analysis_jobs_status",
+        ),
+        Index("idx_analysis_jobs_cluster_id", "cluster_id"),
+        Index("idx_analysis_jobs_status", "status"),
+    )
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    cluster_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
-    k8s_scan_id: Mapped[str] = mapped_column(String, nullable=False)
-    aws_scan_id: Mapped[str] = mapped_column(String, nullable=False)
-    image_scan_id: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    cluster_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id"),
+        nullable=False,
+    )
+    graph_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default=SCAN_STATUS_PENDING,
+        server_default=text("'pending'"),
+    )
+    current_step: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    k8s_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aws_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
 
 
 class Cluster(Base):
@@ -78,7 +148,7 @@ class Cluster(Base):
     """
     __tablename__ = "clusters"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(UUID_COMPAT, primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     api_token: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -92,10 +162,105 @@ class Cluster(Base):
 
 class InventorySnapshot(Base):
     __tablename__ = "inventory_snapshots"
+    __table_args__ = (
+        Index("idx_inventory_snapshots_cluster_id", "cluster_id"),
+        Index("idx_inventory_snapshots_scanned_at", text("scanned_at DESC")),
+        Index("idx_inventory_snapshots_cluster_scanned_at", "cluster_id", text("scanned_at DESC")),
+        Index(
+            "uq_inventory_snapshots_cluster_scan_id",
+            "cluster_id",
+            "scan_id",
+            unique=True,
+            postgresql_where=text("scan_id IS NOT NULL"),
+        ),
+    )
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    cluster_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    scan_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
-    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    raw_result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    cluster_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scanned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    raw_result_json: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+
+class ScanRecord(Base):
+    __tablename__ = "scan_records"
+    __table_args__ = (
+        CheckConstraint(
+            f"scanner_type IN ('{SCANNER_TYPE_K8S}', '{SCANNER_TYPE_AWS}', '{SCANNER_TYPE_IMAGE}')",
+            name="ck_scan_records_scanner_type",
+        ),
+        CheckConstraint(
+            "status IN ('created', 'uploading', 'processing', 'completed', 'failed')",
+            name="ck_scan_records_status",
+        ),
+        Index("idx_scan_records_scan_id", "scan_id"),
+        Index("idx_scan_records_cluster_id", "cluster_id"),
+        Index("idx_scan_records_status", "status"),
+        Index("idx_scan_records_created_at", text("created_at DESC")),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    scan_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    cluster_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id"),
+        nullable=False,
+    )
+    scanner_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default=SCAN_STATUS_CREATED,
+        server_default=text("'created'"),
+    )
+    s3_keys: Mapped[list] = mapped_column(
+        JSONB_COMPAT,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("status", SCAN_STATUS_CREATED)
+        kwargs.setdefault("s3_keys", [])
+        super().__init__(**kwargs)

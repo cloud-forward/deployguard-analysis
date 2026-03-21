@@ -64,7 +64,7 @@ class LateralMoveExtractor(BaseExtractor):
         return facts
     
     def _extract_lateral_moves(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract bounded lateral movement facts."""
+        """Extract lateral movement facts with namespace-scoped NetworkPolicy suppression."""
         facts: List[Fact] = []
         
         pods = scan.get("pods", [])
@@ -84,11 +84,9 @@ class LateralMoveExtractor(BaseExtractor):
         for pod in pods:
             pod_namespace = pod.get("namespace")
             pod_name = pod.get("name")
+            pod_labels = pod.get("labels", {})
             
             if not pod_namespace or not pod_name:
-                continue
-
-            if pod_namespace in protected_namespaces:
                 continue
             
             for service in security_services:
@@ -96,7 +94,21 @@ class LateralMoveExtractor(BaseExtractor):
                 svc_name = service.get("name")
                 svc_port = service.get("port")
                 
-                if not svc_namespace or not svc_name or not isinstance(svc_port, int):
+                if not svc_namespace or not svc_name:
+                    continue
+
+                if (
+                    pod_namespace in protected_namespaces
+                    or svc_namespace in protected_namespaces
+                ):
+                    continue
+
+                if self._is_same_workload_service_target(
+                    pod_namespace,
+                    pod_labels,
+                    svc_namespace,
+                    service,
+                ):
                     continue
                 
                 # Cross-namespace or same-namespace security service
@@ -109,7 +121,7 @@ class LateralMoveExtractor(BaseExtractor):
                     object_id=self.id_gen.service(svc_namespace, svc_name),
                     object_type=NodeType.SERVICE.value,
                     metadata={
-                        "reason": "no_namespace_network_policy",
+                        "reason": "no_network_policy",
                         "cross_namespace": is_cross_namespace,
                         "target_port": svc_port,
                         "compliance_violation": "PRCC-024",
@@ -117,6 +129,27 @@ class LateralMoveExtractor(BaseExtractor):
                 ))
         
         return facts
+
+    def _protected_namespaces(
+        self,
+        network_policies: List[Dict[str, Any]],
+    ) -> set[str]:
+        namespaces: set[str] = set()
+
+        for policy in network_policies:
+            if not isinstance(policy, dict):
+                continue
+
+            namespace = policy.get("namespace")
+            if not namespace:
+                metadata = policy.get("metadata")
+                if isinstance(metadata, dict):
+                    namespace = metadata.get("namespace")
+
+            if isinstance(namespace, str) and namespace:
+                namespaces.add(namespace)
+
+        return namespaces
     
     def _is_security_relevant_service(self, service: Dict[str, Any]) -> bool:
         """Check if service is security-relevant"""
@@ -134,16 +167,25 @@ class LateralMoveExtractor(BaseExtractor):
         
         return False
 
-    def _protected_namespaces(self, network_policies: List[Dict[str, Any]]) -> set[str]:
-        """Return namespaces that have at least one NetworkPolicy defined."""
-        namespaces: set[str] = set()
+    def _is_same_workload_service_target(
+        self,
+        pod_namespace: str,
+        pod_labels: Dict[str, Any],
+        service_namespace: str,
+        service: Dict[str, Any],
+    ) -> bool:
+        if pod_namespace != service_namespace:
+            return False
 
-        for policy in network_policies:
-            namespace = policy.get("namespace")
-            if not namespace:
-                metadata = policy.get("metadata", {})
-                namespace = metadata.get("namespace")
-            if namespace:
-                namespaces.add(namespace)
+        selector = service.get("selector")
+        if not isinstance(selector, dict) or not selector:
+            return False
 
-        return namespaces
+        if not isinstance(pod_labels, dict) or not pod_labels:
+            return False
+
+        for key, value in selector.items():
+            if pod_labels.get(key) != value:
+                return False
+
+        return True

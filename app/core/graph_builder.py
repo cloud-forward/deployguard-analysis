@@ -1,95 +1,45 @@
-"""
-Graph builder module - converts Facts to NetworkX graph.
-"""
+"""NetworkX graph adapter for unified and legacy graph inputs."""
 import networkx as nx
 from typing import List, Dict, Any, Set
 
 from src.facts.canonical_fact import Fact
+from src.facts.id_generator import NodeIDGenerator
 from src.facts.types import NodeType
 from src.facts.logger import setup_logger
-from src.graph.builders.aws_graph_builder import AWSGraphBuilder
-from src.graph.builders.aws_scanner_types import (
-    AWSScanResult,
-    EC2InstanceScan,
-    IAMRoleScan,
-    IAMUserScan,
-    RDSInstanceScan,
-    S3BucketScan,
-    SecurityGroupScan,
+from src.facts.validation.rules import ValidationRules
+from src.graph.builders.build_result_types import (
+    UnifiedGraphResult,
+    graph_edge_attrs,
+    graph_node_attrs,
 )
-from src.graph.builders.iam_policy_types import (
-    IAMPolicyAnalysisResult,
-    IAMUserPolicyAnalysisResult,
-)
-from src.graph.builders.k8s_graph_builder import K8sGraphBuilder
-from src.graph.graph_models import GraphNode, GraphEdge
+
+PREFIX_TO_NODE_TYPE = {
+    prefix.rstrip(":"): node_type
+    for node_type, prefix in ValidationRules.TYPE_PREFIX_MAP.items()
+}
 
 
 class GraphBuilder:
-    """
-    Constructs a NetworkX graph from canonical facts.
-    """
+    """Adapts unified graph results to NetworkX, with facts as fallback only."""
     
     def __init__(self):
         self.graph = nx.DiGraph()
         self._created_nodes: Set[str] = set()
-        self._seeded_edge_keys: Set[tuple[str, str, str]] = set()
         self.logger = setup_logger("graph_builder")
-        self._k8s_builder = K8sGraphBuilder()
     
-    async def build_from_facts(
-        self,
-        facts: List[Fact],
-        k8s_scan: Dict[str, Any] | None = None,
-        scan_id: str | None = None,
-        aws_scan: Dict[str, Any] | None = None,
-        policy_results: List[IAMPolicyAnalysisResult] | None = None,
-        user_policy_results: List[IAMUserPolicyAnalysisResult] | None = None,
-    ) -> nx.DiGraph:
+    async def build_from_facts(self, facts: List[Fact]) -> nx.DiGraph:
         """
-        Build a directed graph from facts.
+        Transitional fallback: build a directed graph from canonical facts.
         
         Args:
             facts: List of canonical facts
-            k8s_scan: Raw Kubernetes scan data used for K8s node enrichment
-            scan_id: Scan ID associated with the Kubernetes scan
-            aws_scan: Raw AWS scan data used for AWS node enrichment
-            policy_results: Optional IAM role policy analysis for AWS typed edges
-            user_policy_results: Optional IAM user policy analysis for AWS typed edges
         
         Returns:
             NetworkX DiGraph
         """
-        self.graph.clear()
-        self._created_nodes.clear()
-        self._seeded_edge_keys.clear()
+        self._reset_graph()
         
         self.logger.info(f"Building graph from {len(facts)} facts")
-
-        if k8s_scan is not None:
-            effective_scan_id = scan_id or k8s_scan.get("scan_id", "unknown")
-            k8s_nodes, k8s_edges = self._k8s_builder.build(
-                facts=facts,
-                k8s_scan=k8s_scan,
-                scan_id=effective_scan_id,
-            )
-            self._seed_prebuilt_graph(k8s_nodes, k8s_edges)
-
-        if aws_scan is not None:
-            aws_result = self._to_aws_scan_result(aws_scan)
-            if aws_result is not None:
-                aws_builder = AWSGraphBuilder(
-                    account_id=aws_result.aws_account_id,
-                    scan_id=aws_result.scan_id,
-                )
-                aws_nodes, aws_edges = aws_builder.build(
-                    aws_result,
-                    irsa_mappings=[],
-                    credential_facts=[],
-                    policy_results=policy_results,
-                    user_policy_results=user_policy_results,
-                )
-                self._seed_prebuilt_graph(aws_nodes, aws_edges)
         
         # Step 1: Create nodes and edges from facts
         for fact in facts:
@@ -102,29 +52,36 @@ class GraphBuilder:
             f"{self.graph.number_of_edges()} edges"
         )
         
-        # Step 2: Classify nodes
-        self._mark_entry_points()
-        self._mark_crown_jewels()
-        self._update_base_risk()
-        
-        return self.graph
+        return self._finalize_graph()
 
-    def _seed_prebuilt_graph(
+    async def build_from_unified_result(
         self,
-        nodes: List[GraphNode],
-        edges: List[GraphEdge],
-    ) -> None:
-        """Seed graph state from typed builder output before fact fallback."""
-        for node in nodes:
-            self._add_prebuilt_node(node)
-        for edge in edges:
-            self._seeded_edge_keys.add((edge.source, edge.target, edge.type))
-            self.graph.add_edge(
-                edge.source,
-                edge.target,
-                type=edge.type,
-                metadata=edge.metadata or {},
-            )
+        unified_result: UnifiedGraphResult,
+    ) -> nx.DiGraph:
+        """Primary path: translate a UnifiedGraphResult into NetworkX.
+
+        This adapter only:
+        - copies unified nodes into NetworkX node attributes
+        - copies unified edges into NetworkX edge attributes
+        - creates explicit placeholder nodes for dangling edge endpoints so
+          downstream NetworkX consumers still see a consistent graph shape
+
+        It does not discover new relationships or rebuild domain graphs.
+        """
+        self._reset_graph()
+
+        self.logger.info(
+            f"Building graph from unified result: {len(unified_result.nodes)} nodes, "
+            f"{len(unified_result.edges)} edges"
+        )
+
+        for node in unified_result.nodes:
+            self._add_unified_node(node)
+
+        for edge in unified_result.edges:
+            self._add_unified_edge(edge)
+
+        return self._finalize_graph()
     
     def _ensure_node(self, node_id: str, node_type: str):
         """Create node if it doesn't exist"""
@@ -142,86 +99,79 @@ class GraphBuilder:
         )
         self._created_nodes.add(node_id)
 
-    def _node_attr(self, node: Any, name: str, default: Any) -> Any:
-        """Safely read fields from typed builder node objects with minor shape differences."""
-        return getattr(node, name, default)
+    def _add_unified_node(self, node) -> None:
+        """Copy a typed unified node into the NetworkX graph."""
+        node_attrs = graph_node_attrs(node)
+        self.graph.add_node(node.id, **node_attrs)
+        self._created_nodes.add(node.id)
 
-    def _add_prebuilt_node(self, node: GraphNode):
-        """Create a node from builder output if it doesn't exist yet."""
-        node_id = self._node_attr(node, "id", None)
-        if not node_id:
-            return
+    def _add_unified_edge(self, edge) -> None:
+        """Copy a typed unified edge into the NetworkX graph."""
+        self._ensure_unified_endpoint_node(edge.source)
+        self._ensure_unified_endpoint_node(edge.target)
+        edge_attrs = graph_edge_attrs(edge)
+        self._add_edge_by_values(
+            source=edge_attrs["source"],
+            target=edge_attrs["target"],
+            edge_type=edge_attrs["type"],
+            metadata=edge_attrs["metadata"],
+        )
+
+    def _ensure_unified_endpoint_node(self, node_id: str) -> None:
+        """Add a placeholder node only when a unified edge references a missing endpoint."""
         if node_id in self._created_nodes:
             return
 
-        base_risk = self._node_attr(node, "base_risk", 0.0)
+        node_type = self._canonical_placeholder_node_type(node_id)
         self.graph.add_node(
             node_id,
             id=node_id,
-            type=self._node_attr(node, "type", "unknown"),
-            is_entry_point=self._node_attr(node, "is_entry_point", False),
-            is_crown_jewel=self._node_attr(node, "is_crown_jewel", False),
-            base_risk=base_risk,
-            metadata=self._node_attr(node, "metadata", {}) or {},
+            type=node_type,
+            is_entry_point=False,
+            is_crown_jewel=False,
+            base_risk=0.0,
+            metadata={"adapter_placeholder": True},
         )
         self._created_nodes.add(node_id)
+
+    def _canonical_placeholder_node_type(self, node_id: str) -> str:
+        parsed_type = NodeIDGenerator.parse_node_type(node_id)
+        if not parsed_type:
+            return "unknown"
+        return PREFIX_TO_NODE_TYPE.get(parsed_type, parsed_type)
     
     def _add_edge(self, fact: Fact):
         """Add edge from fact"""
-        if self._is_seeded_internal_edge(fact):
-            return
-        self.graph.add_edge(
-            fact.subject_id,
-            fact.object_id,
-            type=fact.fact_type,
+        self._add_edge_by_values(
+            source=fact.subject_id,
+            target=fact.object_id,
+            edge_type=fact.fact_type,
             metadata=fact.metadata or {},
         )
 
-    def _is_seeded_internal_edge(self, fact: Fact) -> bool:
-        """Skip re-adding internal edges already seeded from typed builders."""
-        edge_key = (fact.subject_id, fact.object_id, fact.fact_type)
-        return edge_key in self._seeded_edge_keys
-
-    def _to_aws_scan_result(self, aws_scan: Dict[str, Any]) -> AWSScanResult | None:
-        """Convert a raw AWS scan dict into the typed result needed by AWSGraphBuilder."""
-        account_id = aws_scan.get("aws_account_id")
-        scan_id = aws_scan.get("scan_id")
-        scanned_at = aws_scan.get("scanned_at")
-
-        if not isinstance(account_id, str) or not account_id:
-            return None
-        if not isinstance(scan_id, str) or not scan_id:
-            return None
-        if not isinstance(scanned_at, str) or not scanned_at:
-            scanned_at = scan_id
-
-        return AWSScanResult(
-            scan_id=scan_id,
-            aws_account_id=account_id,
-            scanned_at=scanned_at,
-            iam_roles=self._typed_aws_list(aws_scan.get("iam_roles"), IAMRoleScan),
-            s3_buckets=self._typed_aws_list(aws_scan.get("s3_buckets"), S3BucketScan),
-            rds_instances=self._typed_aws_list(aws_scan.get("rds_instances"), RDSInstanceScan),
-            ec2_instances=self._typed_aws_list(aws_scan.get("ec2_instances"), EC2InstanceScan),
-            security_groups=self._typed_aws_list(aws_scan.get("security_groups"), SecurityGroupScan),
-            iam_users=self._typed_aws_list(aws_scan.get("iam_users"), IAMUserScan),
-            region=aws_scan.get("region"),
+    def _add_edge_by_values(
+        self,
+        source: str,
+        target: str,
+        edge_type: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        self.graph.add_edge(
+            source,
+            target,
+            type=edge_type,
+            metadata=metadata,
         )
 
-    def _typed_aws_list(self, items: Any, cls):
-        if not isinstance(items, list):
-            return []
+    def _reset_graph(self) -> None:
+        self.graph.clear()
+        self._created_nodes.clear()
 
-        typed_items = []
-        for item in items:
-            if isinstance(item, cls):
-                typed_items.append(item)
-            elif isinstance(item, dict):
-                try:
-                    typed_items.append(cls(**item))
-                except TypeError:
-                    continue
-        return typed_items
+    def _finalize_graph(self) -> nx.DiGraph:
+        self._mark_entry_points()
+        self._mark_crown_jewels()
+        self._update_base_risk()
+        return self.graph
     
     # ========================================
     # Node Classification
@@ -356,12 +306,6 @@ class GraphBuilder:
         
         elif node_type == NodeType.NODE.value:
             return 0.5
-        
-        elif node_type == NodeType.NODE_CREDENTIAL.value:
-            base = 0.8
-            if metadata.get("grants_cluster_admin"):
-                base = 0.95
-            return base
         
         elif node_type == NodeType.CONTAINER_IMAGE.value:
             base = 0.2

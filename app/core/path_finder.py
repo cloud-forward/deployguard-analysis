@@ -20,7 +20,7 @@ class PathFinder:
         graph: nx.DiGraph,
         entry_points: List[str],
         crown_jewels: List[str],
-        max_path_length: int = 10,
+        max_path_length: int = 7,
     ) -> List[List[str]]:
         """
         Find all simple paths from entry points to crown jewels.

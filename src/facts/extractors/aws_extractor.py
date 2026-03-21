@@ -109,18 +109,21 @@ class AWSFactExtractor(BaseExtractor):
                     aws_scan.get("aws_account_id", ""),
                     cred_fact.target_id
                 )
+                object_type = NodeType.IAM_USER.value
             elif cred_fact.target_type == "rds":
                 fact_type = FactType.SECRET_CONTAINS_CREDENTIALS.value
                 object_id = self.id_gen.rds(
                     aws_scan.get("aws_account_id", ""),
                     cred_fact.target_id
                 )
+                object_type = NodeType.RDS.value
             elif cred_fact.target_type == "s3":
                 fact_type = FactType.SECRET_CONTAINS_CREDENTIALS.value
                 object_id = self.id_gen.s3_bucket(
                     aws_scan.get("aws_account_id", ""),
                     cred_fact.target_id
                 )
+                object_type = NodeType.S3_BUCKET.value
             else:
                 continue
             
@@ -132,7 +135,7 @@ class AWSFactExtractor(BaseExtractor):
                 ),
                 subject_type=NodeType.SECRET.value,
                 object_id=object_id,
-                object_type=cred_fact.target_type,
+                object_type=object_type,
                 metadata={
                     "matched_keys": cred_fact.matched_keys,
                     "confidence": cred_fact.confidence,

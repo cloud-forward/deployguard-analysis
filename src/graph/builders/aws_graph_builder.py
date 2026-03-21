@@ -2,11 +2,14 @@
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.graph.builders.aws_scanner_types import AWSScanResult, EC2InstanceScan, IAMRoleScan, IAMUserScan, RDSInstanceScan, S3BucketScan, SecurityGroupScan
-from src.graph.builders.cross_domain_types import IRSAMapping, SecretContainsCredentialsFact
+from src.graph.builders.cross_domain_types import BridgeResult, IRSAMapping, SecretContainsCredentialsFact
 from src.graph.builders.iam_policy_types import IAMPolicyAnalysisResult, IAMUserPolicyAnalysisResult
+
+if TYPE_CHECKING:
+    from src.graph.builders.build_result_types import AWSBuildResult
 
 
 @dataclass
@@ -493,7 +496,7 @@ class AWSGraphBuilder:
         credential_facts: list[SecretContainsCredentialsFact],
         policy_results: list[IAMPolicyAnalysisResult] | None = None,
         user_policy_results: list[IAMUserPolicyAnalysisResult] | None = None,
-    ) -> tuple[list[GraphNode], list[GraphEdge]]:
+    ) -> "AWSBuildResult":
         """
         Build AWS graph nodes and edges from scan data.
 
@@ -508,7 +511,7 @@ class AWSGraphBuilder:
                 they can access
 
         Returns:
-            Tuple of (nodes, edges).
+            AWSBuildResult containing nodes, edges, and graph metadata.
 
         Implementation:
             - Creates nodes: IAM Role, IAM User, S3, RDS, SecurityGroup, EC2
@@ -516,6 +519,8 @@ class AWSGraphBuilder:
               IAM access edges (only when policy_results provided), and IAM user
               access edges (only when user_policy_results provided)
         """
+        from src.graph.builders.build_result_types import AWSBuildResult
+
         # Nodes first
         self._build_iam_role_nodes(scan.iam_roles, policy_results)
         self._build_iam_user_nodes(scan.iam_users, user_policy_results)
@@ -535,7 +540,32 @@ class AWSGraphBuilder:
             self._build_iam_user_access_edges(user_policy_results, scan)
 
         self.graph_metadata = self._graph_metadata()
-        return (self.nodes, self.edges)
+        return AWSBuildResult(
+            nodes=self.nodes,
+            edges=self.edges,
+            metadata={
+                "graph_id": self.graph_metadata.graph_id,
+                "scan_id": self.graph_metadata.scan_id,
+                "account_id": self.graph_metadata.account_id,
+            },
+        )
+
+    def build_with_bridge_result(
+        self,
+        scan: AWSScanResult,
+        bridge_result: BridgeResult,
+        policy_results: list[IAMPolicyAnalysisResult] | None = None,
+        user_policy_results: list[IAMUserPolicyAnalysisResult] | None = None,
+    ) -> "AWSBuildResult":
+        """Compose AWS-owned graph output from AWS scan data and typed bridge inputs."""
+
+        return self.build(
+            scan=scan,
+            irsa_mappings=bridge_result.irsa_mappings,
+            credential_facts=bridge_result.credential_facts,
+            policy_results=policy_results,
+            user_policy_results=user_policy_results,
+        )
 
     def _resolve_wildcard_targets(self, service: str, known_s3: set[str], known_rds: set[str]) -> list[str]:
         if service == "s3":

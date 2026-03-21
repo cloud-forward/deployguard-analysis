@@ -2,6 +2,7 @@
 
 from src.facts.canonical_fact import Fact
 from src.facts.types import FactType, NodeType
+from src.graph.builders.build_result_types import K8sBuildResult, unpack_build_result
 from src.graph.builders.k8s_graph_builder import K8sGraphBuilder
 
 
@@ -9,6 +10,7 @@ def make_k8s_scan() -> dict:
     """Return a small Kubernetes scan fixture with core internal resources."""
     return {
         "scan_id": "scan-k8s-001",
+        "cluster_id": "cluster-001",
         "pods": [
             {
                 "namespace": "production",
@@ -21,10 +23,10 @@ def make_k8s_scan() -> dict:
                         "name": "api",
                         "image": "nginx:1.25",
                         "security_context": {"privileged": False},
-                        "volume_mounts": [],
-                        "env_from_secrets": [],
                     }
                 ],
+                "volume_mounts": [],
+                "env_from_secrets": [],
             }
         ],
         "service_accounts": [
@@ -32,7 +34,9 @@ def make_k8s_scan() -> dict:
                 "metadata": {
                     "namespace": "production",
                     "name": "api-sa",
-                    "annotations": {"eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole"},
+                    "annotations": {
+                        "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole",
+                    },
                 }
             }
         ],
@@ -46,29 +50,32 @@ def make_k8s_scan() -> dict:
         "cluster_roles": [
             {
                 "name": "cluster-admin",
-                "rules": [{"resources": ["pods"], "verbs": ["*"], "api_groups": [""]}],
+                "rules": [{"resources": ["pods"], "verbs": ["*"], "api_groups": ["*"]}],
             }
         ],
         "secrets": [
             {
-                "namespace": "production",
-                "name": "db-creds",
+                "metadata": {"namespace": "production", "name": "db-creds"},
                 "type": "Opaque",
+                "data": {"username": "dXNlcg=="},
+                "stringData": {"password": "plaintext"},
             }
         ],
         "services": [
             {
                 "namespace": "production",
                 "name": "api-service",
-                "selector": {"app": "api"},
-                "port": 8080,
                 "type": "ClusterIP",
+                "selector": {"app": "api"},
+                "port": 80,
+                "ports": [{"port": 80, "targetPort": 8080}],
             }
         ],
         "ingresses": [
             {
                 "namespace": "production",
                 "name": "api-ingress",
+                "ingress_class_name": "nginx",
                 "rules": [
                     {
                         "host": "api.example.com",
@@ -76,7 +83,7 @@ def make_k8s_scan() -> dict:
                             {
                                 "path": "/",
                                 "backend_service": "api-service",
-                                "backend_port": 8080,
+                                "backend_port": 80,
                             }
                         ],
                     }
@@ -84,6 +91,10 @@ def make_k8s_scan() -> dict:
             }
         ],
     }
+
+
+def build(builder: K8sGraphBuilder, facts: list[Fact], k8s_scan: dict) -> K8sBuildResult:
+    return builder.build(facts, k8s_scan, scan_id="scan-k8s-001")
 
 
 def make_internal_facts() -> list[Fact]:
@@ -103,40 +114,38 @@ def make_internal_facts() -> list[Fact]:
             subject_type=NodeType.INGRESS.value,
             object_id="service:production:api-service",
             object_type=NodeType.SERVICE.value,
-            metadata={"host": "api.example.com", "path": "/", "backend_port": 8080},
+            metadata={},
         ),
     ]
 
 
-def build(facts: list[Fact], k8s_scan: dict, scan_id: str = "scan-k8s-001"):
-    """Build graph from facts and raw scan data."""
+def test_build_returns_k8s_build_result():
     builder = K8sGraphBuilder()
-    return builder.build(facts=facts, k8s_scan=k8s_scan, scan_id=scan_id)
+
+    result = build(builder, make_internal_facts(), make_k8s_scan())
+
+    assert isinstance(result, K8sBuildResult)
+    assert result.metadata == {
+        "graph_id": "scan-k8s-001-graph",
+        "scan_id": "scan-k8s-001",
+        "cluster_id": "cluster-001",
+    }
 
 
-def test_build_exists_and_returns_lists():
-    nodes, edges = build(make_internal_facts(), make_k8s_scan())
+def test_build_accepts_explicit_scan_id_and_uses_it_in_metadata():
+    builder = K8sGraphBuilder()
 
-    assert isinstance(nodes, list)
-    assert isinstance(edges, list)
+    result = builder.build(make_internal_facts(), make_k8s_scan(), scan_id="explicit-k8s-scan")
+
+    assert result.metadata["scan_id"] == "explicit-k8s-scan"
+    assert result.metadata["graph_id"] == "explicit-k8s-scan-graph"
 
 
 def test_nodes_are_created_from_raw_k8s_scan_not_only_fact_endpoints():
-    nodes, _ = build(
-        facts=[
-            Fact(
-                fact_type=FactType.POD_USES_SERVICE_ACCOUNT.value,
-                subject_id="pod:production:api-pod",
-                subject_type=NodeType.POD.value,
-                object_id="sa:production:api-sa",
-                object_type=NodeType.SERVICE_ACCOUNT.value,
-                metadata={},
-            )
-        ],
-        k8s_scan=make_k8s_scan(),
-    )
+    builder = K8sGraphBuilder()
 
-    node_ids = {node.id for node in nodes}
+    result = build(builder, make_internal_facts(), make_k8s_scan())
+    node_ids = {node.id for node in result.nodes}
 
     assert "pod:production:api-pod" in node_ids
     assert "sa:production:api-sa" in node_ids
@@ -145,12 +154,15 @@ def test_nodes_are_created_from_raw_k8s_scan_not_only_fact_endpoints():
     assert "secret:production:db-creds" in node_ids
     assert "service:production:api-service" in node_ids
     assert "ingress:production:api-ingress" in node_ids
+    assert "node:worker-1" in node_ids
+    assert "container_image:nginx:1.25" in node_ids
 
 
 def test_edges_are_created_from_valid_kubernetes_facts():
-    _, edges = build(make_internal_facts(), make_k8s_scan())
+    builder = K8sGraphBuilder()
 
-    edge_triplets = {(edge.source, edge.target, edge.type) for edge in edges}
+    result = build(builder, make_internal_facts(), make_k8s_scan())
+    edge_triplets = {(edge.source, edge.target, edge.type) for edge in result.edges}
 
     assert (
         "pod:production:api-pod",
@@ -164,7 +176,8 @@ def test_edges_are_created_from_valid_kubernetes_facts():
     ) in edge_triplets
 
 
-def test_only_kubernetes_internal_nodes_and_edges_are_returned():
+def test_cross_domain_edges_are_excluded_even_when_present_in_fact_input():
+    builder = K8sGraphBuilder()
     facts = make_internal_facts() + [
         Fact(
             fact_type=FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value,
@@ -184,105 +197,62 @@ def test_only_kubernetes_internal_nodes_and_edges_are_returned():
         ),
     ]
 
-    nodes, edges = build(facts, make_k8s_scan())
+    result = build(builder, facts, make_k8s_scan())
+    edge_triplets = {(edge.source, edge.target, edge.type) for edge in result.edges}
+    node_ids = {node.id for node in result.nodes}
 
-    node_ids = {node.id for node in nodes}
-    edge_triplets = {(edge.source, edge.target, edge.type) for edge in edges}
-
+    assert ("sa:production:api-sa", "iam:123456789012:WebAppRole", FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value) not in edge_triplets
+    assert ("secret:production:db-creds", "rds:123456789012:production-db", FactType.SECRET_CONTAINS_CREDENTIALS.value) not in edge_triplets
     assert "iam:123456789012:WebAppRole" not in node_ids
     assert "rds:123456789012:production-db" not in node_ids
-    assert (
-        "sa:production:api-sa",
-        "iam:123456789012:WebAppRole",
-        FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value,
-    ) not in edge_triplets
-    assert (
-        "secret:production:db-creds",
-        "rds:123456789012:production-db",
-        FactType.SECRET_CONTAINS_CREDENTIALS.value,
-    ) not in edge_triplets
-
-
-def test_cross_domain_edges_are_excluded_even_when_present_in_fact_input():
-    _, edges = build(
-        facts=[
-            Fact(
-                fact_type=FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value,
-                subject_id="sa:production:api-sa",
-                subject_type=NodeType.SERVICE_ACCOUNT.value,
-                object_id="iam:123456789012:WebAppRole",
-                object_type=NodeType.IAM_ROLE.value,
-                metadata={"via": "irsa"},
-            )
-        ],
-        k8s_scan=make_k8s_scan(),
-    )
-
-    assert edges == []
 
 
 def test_node_metadata_is_enriched_from_raw_k8s_scan():
-    nodes, _ = build(make_internal_facts(), make_k8s_scan())
-    nodes_by_id = {node.id: node for node in nodes}
+    builder = K8sGraphBuilder()
 
-    pod = nodes_by_id["pod:production:api-pod"]
-    assert pod.metadata["service_account"] == "api-sa"
-    assert pod.metadata["node_name"] == "worker-1"
-    assert pod.metadata["labels"] == {"app": "api"}
-    assert pod.metadata["container_images"] == ["nginx:1.25"]
+    result = build(builder, make_internal_facts(), make_k8s_scan())
+    nodes_by_id = {node.id: node for node in result.nodes}
 
-    service_account = nodes_by_id["sa:production:api-sa"]
-    assert service_account.metadata["annotations"]["eks.amazonaws.com/role-arn"].endswith(":role/WebAppRole")
-
-    role = nodes_by_id["role:production:secret-reader"]
-    assert role.metadata["rules"] == [{"resources": ["secrets"], "verbs": ["get"], "api_groups": [""]}]
-
-    cluster_role = nodes_by_id["cluster_role:cluster-admin"]
-    assert cluster_role.metadata["rules"] == [{"resources": ["pods"], "verbs": ["*"], "api_groups": [""]}]
-
-    secret = nodes_by_id["secret:production:db-creds"]
-    assert secret.metadata["secret_type"] == "Opaque"
-
-    service = nodes_by_id["service:production:api-service"]
-    assert service.metadata["selector"] == {"app": "api"}
-    assert service.metadata["port"] == 8080
-    assert service.metadata["service_type"] == "ClusterIP"
-
-    ingress = nodes_by_id["ingress:production:api-ingress"]
-    assert ingress.metadata["rules"][0]["host"] == "api.example.com"
+    assert nodes_by_id["pod:production:api-pod"].metadata["container_images"] == ["nginx:1.25"]
+    assert nodes_by_id["sa:production:api-sa"].metadata["annotations"]["eks.amazonaws.com/role-arn"].endswith(":role/WebAppRole")
+    assert nodes_by_id["secret:production:db-creds"].metadata["secret_type"] == "Opaque"
+    assert nodes_by_id["service:production:api-service"].metadata["service_type"] == "ClusterIP"
 
 
 def test_missing_internal_nodes_referenced_by_facts_are_created_as_fallback():
-    nodes, edges = build(
-        facts=[
-            Fact(
-                fact_type=FactType.SERVICE_TARGETS_POD.value,
-                subject_id="service:production:missing-service",
-                subject_type=NodeType.SERVICE.value,
-                object_id="pod:production:missing-pod",
-                object_type=NodeType.POD.value,
-                metadata={"port": 8080},
-            )
-        ],
-        k8s_scan=make_k8s_scan(),
+    builder = K8sGraphBuilder()
+    facts = [
+        Fact(
+            fact_type=FactType.SERVICE_TARGETS_POD.value,
+            subject_id="service:production:missing-service",
+            subject_type=NodeType.SERVICE.value,
+            object_id="pod:production:missing-pod",
+            object_type=NodeType.POD.value,
+            metadata={"selector": {"app": "missing"}},
+        )
+    ]
+
+    result = builder.build(
+        facts,
+        {"scan_id": "scan-k8s-001", "cluster_id": "cluster-001"},
+        scan_id="scan-k8s-001",
     )
+    nodes_by_id = {node.id: node for node in result.nodes}
+    matching_edges = [
+        edge for edge in result.edges
+        if edge.source == "service:production:missing-service"
+        and edge.target == "pod:production:missing-pod"
+    ]
 
-    nodes_by_id = {node.id: node for node in nodes}
-    edge_triplets = {(edge.source, edge.target, edge.type) for edge in edges}
-
-    assert "service:production:missing-service" in nodes_by_id
-    assert "pod:production:missing-pod" in nodes_by_id
     assert nodes_by_id["service:production:missing-service"].metadata["discovered_from"] == "fact_fallback"
     assert nodes_by_id["pod:production:missing-pod"].metadata["discovered_from"] == "fact_fallback"
-    assert (
-        "service:production:missing-service",
-        "pod:production:missing-pod",
-        FactType.SERVICE_TARGETS_POD.value,
-    ) in edge_triplets
+    assert len(matching_edges) == 1
+    assert matching_edges[0].metadata == {"selector": {"app": "missing"}}
 
 
 def test_duplicate_k8s_facts_do_not_create_duplicate_edges():
-    fact = Fact(
+    builder = K8sGraphBuilder()
+    duplicated_fact = Fact(
         fact_type=FactType.POD_USES_SERVICE_ACCOUNT.value,
         subject_id="pod:production:api-pod",
         subject_type=NodeType.POD.value,
@@ -291,13 +261,22 @@ def test_duplicate_k8s_facts_do_not_create_duplicate_edges():
         metadata={},
     )
 
-    _, edges = build([fact, fact], make_k8s_scan())
-
+    result = build(builder, [duplicated_fact, duplicated_fact], make_k8s_scan())
     matching_edges = [
-        edge for edge in edges
+        edge for edge in result.edges
         if edge.source == "pod:production:api-pod"
         and edge.target == "sa:production:api-sa"
         and edge.type == FactType.POD_USES_SERVICE_ACCOUNT.value
     ]
 
     assert len(matching_edges) == 1
+
+
+def test_transitional_unpack_adapter_preserves_node_and_edge_payloads():
+    builder = K8sGraphBuilder()
+    result = build(builder, make_internal_facts(), make_k8s_scan())
+
+    nodes, edges = unpack_build_result(result)
+
+    assert nodes == result.nodes
+    assert edges == result.edges

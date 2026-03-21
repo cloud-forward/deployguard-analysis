@@ -69,4 +69,5 @@ def get_inventory_view_service(
         cluster_repository=cluster_repo,
         scan_repository=scan_repo,
         snapshot_repository=snapshot_repo,
+        db=db,  # graph_snapshots / graph_nodes / attack_paths 직접 쿼리용
     )

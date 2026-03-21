@@ -36,6 +36,41 @@ def _error_type(error) -> str:
     return type(error).__name__
 
 
+def _get_record_created_at(record) -> datetime:
+    """Prefer persisted creation time, but support older/incomplete record shapes."""
+    created_at = getattr(record, "created_at", None)
+    if created_at is not None:
+        return created_at
+
+    requested_at = getattr(record, "requested_at", None)
+    if requested_at is not None:
+        return requested_at
+
+    updated_at = getattr(record, "updated_at", None)
+    if updated_at is not None:
+        return updated_at
+
+    completed_at = getattr(record, "completed_at", None)
+    if completed_at is not None:
+        return completed_at
+
+    scan_id = getattr(record, "scan_id", None)
+    logger.warning(
+        "scan.serialization.missing_created_at",
+        extra=_context(scan_id=scan_id),
+    )
+    return datetime.utcnow()
+
+
+def _get_record_completed_at(record):
+    return getattr(record, "completed_at", None)
+
+
+def _get_record_s3_keys(record) -> list[str]:
+    s3_keys = getattr(record, "s3_keys", None)
+    return list(s3_keys or [])
+
+
 class ScanService:
     def __init__(self, scan_repository, s3_service, analysis_service=None):
         self._repo = scan_repository
@@ -266,9 +301,9 @@ class ScanService:
             cluster_id=record.cluster_id,
             scanner_type=record.scanner_type,
             status=record.status,
-            created_at=record.created_at,
-            completed_at=record.completed_at,
-            files=record.s3_keys or [],
+            created_at=_get_record_created_at(record),
+            completed_at=_get_record_completed_at(record),
+            files=_get_record_s3_keys(record),
         )
 
     async def get_scan_detail(self, scan_id: str) -> ScanDetailResponse:
@@ -280,23 +315,23 @@ class ScanService:
             cluster_id=record.cluster_id,
             scanner_type=record.scanner_type,
             status=record.status,
-            created_at=record.created_at,
-            completed_at=record.completed_at,
-            s3_keys=record.s3_keys or [],
+            created_at=_get_record_created_at(record),
+            completed_at=_get_record_completed_at(record),
+            s3_keys=_get_record_s3_keys(record),
         )
 
     async def list_cluster_scans(self, cluster_id: str) -> ClusterScanListResponse:
         records = await self._repo.list_by_cluster(cluster_id)
-        ordered_records = sorted(records, key=lambda record: record.created_at, reverse=True)
+        ordered_records = sorted(records, key=_get_record_created_at, reverse=True)
         items = [
             ScanSummaryItemResponse(
                 scan_id=record.scan_id,
                 scanner_type=record.scanner_type,
                 status=record.status,
-                created_at=record.created_at,
-                completed_at=record.completed_at,
-                file_count=len(record.s3_keys or []),
-                has_raw_result=bool(record.s3_keys),
+                created_at=_get_record_created_at(record),
+                completed_at=_get_record_completed_at(record),
+                file_count=len(_get_record_s3_keys(record)),
+                has_raw_result=bool(_get_record_s3_keys(record)),
             )
             for record in ordered_records
         ]
@@ -311,7 +346,7 @@ class ScanService:
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
 
-        s3_keys = record.s3_keys or []
+        s3_keys = _get_record_s3_keys(record)
         if not s3_keys:
             raise HTTPException(status_code=404, detail=f"No raw scan result files found for scan: {scan_id}")
         if len(s3_keys) > 1:

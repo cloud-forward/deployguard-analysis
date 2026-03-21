@@ -31,6 +31,7 @@ router = APIRouter(tags=["Clusters"])
         200: {"description": "클러스터 자산 목록"},
         404: {"description": "클러스터를 찾을 수 없습니다"},
     },
+    tags=["Discovery Inventory"],
 )
 async def get_cluster_assets(
     cluster_id: str,
@@ -49,6 +50,7 @@ async def get_cluster_assets(
         200: {"description": "자산 상세 정보"},
         404: {"description": "자산을 찾을 수 없습니다"},
     },
+    tags=["Discovery Inventory"],
 )
 async def get_asset_detail(
     asset_id: str,

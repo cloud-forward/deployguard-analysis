@@ -39,6 +39,14 @@ DeployGuard는 Kubernetes 및 AWS 인프라의 공격 경로를 분석하고 최
             "name": "Clusters",
             "description": "클러스터 관리 — 등록/조회/수정/삭제 및 scanner 인증 토큰 온보딩 컨텍스트"
         },
+        {
+            "name": "Discovery Inventory",
+            "description": "AWS Discovery 기반 레거시 자산 조회 — sync, assets, asset detail"
+        },
+        {
+            "name": "Inventory (v1)",
+            "description": "신규 Asset Inventory View API — summary, assets, risk-spotlight, scanner-status"
+        },
     ]
 )
 

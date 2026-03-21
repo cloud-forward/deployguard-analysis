@@ -17,6 +17,7 @@ MVP 임시값 표시:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -32,6 +33,8 @@ from app.models.schemas import (
     InvScannerStatusResponse,
     InvSummaryResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # 상수 정의
@@ -236,8 +239,13 @@ class InventoryViewService:
     async def _get_completed_scans(self, cluster_id: str) -> dict:
         """scan_records 기반 최신 completed 스캔 반환. 없으면 빈 dict."""
         try:
-            return await self._scans.get_latest_completed_scans(cluster_id)
-        except Exception:
+            # scan_records.cluster_id 가 VARCHAR 로 저장되므로 str 로 통일
+            cluster_id_str = str(cluster_id)
+            result = await self._scans.get_latest_completed_scans(cluster_id_str)
+            logger.debug("_get_completed_scans result: %s", result)
+            return result
+        except Exception as e:
+            logger.error("_get_completed_scans 에러: %s", e, exc_info=True)
             return {}
 
     async def _get_latest_snapshot(self, cluster_id: str):

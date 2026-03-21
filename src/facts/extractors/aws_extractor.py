@@ -1,355 +1,501 @@
-"""
-AWS Fact Extractor.
-Wraps existing AWS graph builders to generate canonical facts (Phase 5).
-"""
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from src.facts.extractors.base_extractor import BaseExtractor
 from src.facts.canonical_fact import Fact
 from src.facts.types import FactType, NodeType
 from src.facts.id_generator import NodeIDGenerator
 
-# Import existing AWS builders
+# Existing builders / parsers
 from src.graph.builders.irsa_bridge_builder import IRSABridgeBuilder
 from src.graph.builders.iam_policy_parser import parse_all_roles, parse_all_users
-from src.graph.builders.aws_scanner_types import AWSScanResult
+from src.graph.builders.aws_scanner_types import (
+    AWSScanResult,
+    IAMRoleScan,
+    IAMUserScan,
+    S3BucketScan,
+    RDSInstanceScan,
+    EC2InstanceScan,
+    SecurityGroupScan,
+    AccessKeyScan,
+)
 
 
 class AWSFactExtractor(BaseExtractor):
-    """Extract AWS facts by wrapping existing builders"""
-    
+    """
+    Extract AWS facts by wrapping existing builders.
+    Also exposes bridge output for debug/test harnesses.
+
+    Important:
+    - Raw scan JSON is NOT the source of truth for downstream builders.
+    - This extractor is the source of truth.
+    - Therefore raw dict input is normalized here into the exact dataclass
+      shapes expected by IRSA bridge builders and IAM policy parsers.
+    """
+
     def __init__(self):
         super().__init__("aws")
         self.id_gen = NodeIDGenerator()
         self.bridge_builder = IRSABridgeBuilder()
-    
+
     def extract(self, scan_data: Dict[str, Any], **kwargs) -> List[Fact]:
+        facts, _bridge_output = self.extract_with_debug(scan_data, **kwargs)
+        return facts
+
+    def extract_with_debug(
+        self, scan_data: Dict[str, Any], **kwargs
+    ) -> Tuple[List[Fact], Dict[str, Any]]:
         """
-        Extract AWS facts (Phase 5: cross-domain).
-        
+        Extract AWS facts plus debug-friendly bridge output.
+
         Args:
-            scan_data: AWS scanner output
-            **kwargs: Must include 'k8s_scan' for cross-domain facts
-        
+            scan_data: raw AWS scanner output dict OR AWSScanResult
+            **kwargs: must include k8s_scan for cross-domain facts
+
         Returns:
-            List of Facts
+            (facts, bridge_output)
         """
-        scan_id = scan_data.get("scan_id", "unknown")
+        scan_id = (
+            scan_data.get("scan_id", "unknown")
+            if isinstance(scan_data, dict)
+            else getattr(scan_data, "scan_id", "unknown")
+        )
         self._log_extraction_start(scan_id)
-        
+
         facts: List[Fact] = []
-        
+        bridge_output: Dict[str, Any] = {
+            "irsa_mappings": [],
+            "credential_facts": [],
+            "warnings": [],
+        }
+
         try:
-            # Parse AWS scan result
             aws_scan = self._parse_aws_scan(scan_data)
             k8s_scan = kwargs.get("k8s_scan")
-            
+
             if not k8s_scan:
                 self.logger.warning(
                     "K8s scan not provided, skipping cross-domain facts",
                     scan_id=scan_id,
                 )
-                return facts
-            
-            # Extract cross-domain facts using existing bridge builder
-            facts.extend(self._extract_cross_domain_facts(k8s_scan, aws_scan))
-            
-            # Extract IAM policy facts
+                return facts, bridge_output
+
+            cross_domain_facts, bridge_output = self._extract_cross_domain_facts(
+                k8s_scan, aws_scan
+            )
+            facts.extend(cross_domain_facts)
+
             facts.extend(self._extract_iam_role_access_facts(aws_scan))
             facts.extend(self._extract_iam_user_access_facts(aws_scan))
-            
-            # Extract infrastructure facts
             facts.extend(self._extract_security_group_facts(aws_scan))
             facts.extend(self._extract_instance_profile_facts(aws_scan))
-            
+
             self._log_extraction_complete(scan_id, len(facts))
-            
+
         except Exception as e:
             self._log_error(scan_id, e, {"phase": "aws_extraction"})
             raise
-        
-        return facts
-    
-    def _parse_aws_scan(self, scan_data: Dict[str, Any]) -> Any:
-        """Parse raw scan data into AWSScanResult"""
-        # This is a simplified version - actual implementation should use proper dataclass parsing
-        return scan_data
-    
+
+        return facts, bridge_output
+
+    def _parse_aws_scan(self, scan_data: Dict[str, Any] | AWSScanResult) -> AWSScanResult:
+        """
+        Normalize raw AWS scan dict into the dataclass shapes expected by:
+        - IRSABridgeBuilder
+        - parse_all_roles / parse_all_users
+
+        This is the correct fix point for raw-vs-builder schema mismatch.
+        """
+        if isinstance(scan_data, AWSScanResult):
+            return scan_data
+
+        return AWSScanResult(
+            scan_id=scan_data.get("scan_id", "unknown"),
+            aws_account_id=scan_data.get("aws_account_id", ""),
+            region=scan_data.get("region"),
+            scanned_at=scan_data.get("scanned_at", ""),
+            iam_roles=[
+                role if isinstance(role, IAMRoleScan) else IAMRoleScan(
+                    name=role.get("name") or role.get("role_name", ""),
+                    arn=role.get("arn", ""),
+                    is_irsa=role.get("is_irsa", False),
+                    irsa_oidc_issuer=role.get("irsa_oidc_issuer"),
+                    attached_policies=role.get("attached_policies", []),
+                    inline_policies=role.get("inline_policies", []),
+                    trust_policy=role.get("trust_policy", {}),
+                )
+                for role in scan_data.get("iam_roles", [])
+            ],
+            iam_users=[
+                user if isinstance(user, IAMUserScan) else IAMUserScan(
+                    username=user.get("username", ""),
+                    arn=user.get("arn", ""),
+                    access_keys=[
+                        ak if isinstance(ak, AccessKeyScan) else AccessKeyScan(
+                            access_key_id=ak.get("access_key_id", ""),
+                            status=ak.get("status", ""),
+                            create_date=ak.get("create_date", ""),
+                        )
+                        for ak in user.get("access_keys", [])
+                    ],
+                    attached_policies=user.get("attached_policies", []),
+                    inline_policies=user.get("inline_policies", []),
+                    has_mfa=user.get("has_mfa", False),
+                    last_used=user.get("last_used"),
+                )
+                for user in scan_data.get("iam_users", [])
+            ],
+            s3_buckets=[
+                bucket if isinstance(bucket, S3BucketScan) else S3BucketScan(
+                    name=bucket.get("name", ""),
+                    arn=bucket.get("arn", ""),
+                    public_access_block=bucket.get("public_access_block"),
+                    encryption=bucket.get("encryption"),
+                    versioning=bucket.get("versioning", "Unknown"),
+                    logging_enabled=bucket.get("logging_enabled", False),
+                )
+                for bucket in scan_data.get("s3_buckets", [])
+            ],
+            rds_instances=[
+                rds if isinstance(rds, RDSInstanceScan) else RDSInstanceScan(
+                    identifier=rds.get("identifier", ""),
+                    arn=rds.get("arn", ""),
+                    engine=rds.get("engine", ""),
+                    engine_version=rds.get("engine_version"),
+                    storage_encrypted=rds.get("storage_encrypted", False),
+                    publicly_accessible=rds.get("publicly_accessible", False),
+                    vpc_security_groups=rds.get("vpc_security_groups", []),
+                    endpoint=rds.get("endpoint"),
+                )
+                for rds in scan_data.get("rds_instances", [])
+            ],
+            ec2_instances=[
+                ec2 if isinstance(ec2, EC2InstanceScan) else EC2InstanceScan(
+                    instance_id=ec2.get("instance_id", ""),
+                    instance_type=ec2.get("instance_type", ""),
+                    metadata_options=ec2.get("metadata_options", {}),
+                    iam_instance_profile=ec2.get("iam_instance_profile"),
+                    security_groups=ec2.get("security_groups", []),
+                    tags=ec2.get("tags", {}),
+                )
+                for ec2 in scan_data.get("ec2_instances", [])
+            ],
+            security_groups=[
+                sg if isinstance(sg, SecurityGroupScan) else SecurityGroupScan(
+                    group_id=sg.get("group_id", ""),
+                    group_name=sg.get("group_name", ""),
+                    vpc_id=sg.get("vpc_id", ""),
+                    inbound_rules=sg.get("inbound_rules", []),
+                    outbound_rules=sg.get("outbound_rules", []),
+                )
+                for sg in scan_data.get("security_groups", [])
+            ],
+        )
+
     def _extract_cross_domain_facts(
-        self, k8s_scan: Dict[str, Any], aws_scan: Any
-    ) -> List[Fact]:
-        """Extract cross-domain facts using existing IRSABridgeBuilder"""
+        self, k8s_scan: Dict[str, Any], aws_scan: AWSScanResult
+    ) -> Tuple[List[Fact], Dict[str, Any]]:
         facts: List[Fact] = []
-        
-        # Use existing bridge builder
+
         bridge_result = self.bridge_builder.build(k8s_scan, aws_scan)
-        
-        # Convert IRSA mappings to facts
-        for mapping in bridge_result.irsa_mappings:
-            facts.append(Fact(
-                fact_type=FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value,
-                subject_id=self.id_gen.service_account(
-                    mapping.sa_namespace, mapping.sa_name
-                ),
-                subject_type=NodeType.SERVICE_ACCOUNT.value,
-                object_id=self.id_gen.iam_role(mapping.account_id, mapping.iam_role_name),
-                object_type=NodeType.IAM_ROLE.value,
-                metadata={
-                    "annotation": "eks.amazonaws.com/role-arn",
-                    "role_arn": mapping.iam_role_arn,
-                    "via": "irsa",
-                },
-            ))
-        
-        # Convert credential facts
-        for cred_fact in bridge_result.credential_facts:
+        bridge_output = self._serialize_bridge_result(bridge_result)
+
+        # IRSA mappings -> facts
+        for mapping in getattr(bridge_result, "irsa_mappings", []):
+            facts.append(
+                Fact(
+                    fact_type=FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value,
+                    subject_id=self.id_gen.service_account(
+                        mapping.sa_namespace, mapping.sa_name
+                    ),
+                    subject_type=NodeType.SERVICE_ACCOUNT.value,
+                    object_id=self.id_gen.iam_role(
+                        mapping.account_id, mapping.iam_role_name
+                    ),
+                    object_type=NodeType.IAM_ROLE.value,
+                    metadata={
+                        "annotation": "eks.amazonaws.com/role-arn",
+                        "role_arn": mapping.iam_role_arn,
+                        "via": "irsa",
+                    },
+                )
+            )
+
+        account_id = aws_scan.aws_account_id
+
+        # Secret credential facts -> facts
+        for cred_fact in getattr(bridge_result, "credential_facts", []):
             if cred_fact.target_type == "iam_user":
                 fact_type = FactType.SECRET_CONTAINS_AWS_CREDENTIALS.value
-                object_id = self.id_gen.iam_user(
-                    aws_scan.get("aws_account_id", ""),
-                    cred_fact.target_id
-                )
+                object_id = self.id_gen.iam_user(account_id, cred_fact.target_id)
                 object_type = NodeType.IAM_USER.value
+
             elif cred_fact.target_type == "rds":
                 fact_type = FactType.SECRET_CONTAINS_CREDENTIALS.value
-                object_id = self.id_gen.rds(
-                    aws_scan.get("aws_account_id", ""),
-                    cred_fact.target_id
-                )
+                object_id = self.id_gen.rds(account_id, cred_fact.target_id)
                 object_type = NodeType.RDS.value
+
             elif cred_fact.target_type == "s3":
                 fact_type = FactType.SECRET_CONTAINS_CREDENTIALS.value
-                object_id = self.id_gen.s3_bucket(
-                    aws_scan.get("aws_account_id", ""),
-                    cred_fact.target_id
-                )
+                object_id = self.id_gen.s3_bucket(account_id, cred_fact.target_id)
                 object_type = NodeType.S3_BUCKET.value
+
             else:
                 continue
-            
-            facts.append(Fact(
-                fact_type=fact_type,
-                subject_id=self.id_gen.secret(
-                    cred_fact.secret_namespace,
-                    cred_fact.secret_name
-                ),
-                subject_type=NodeType.SECRET.value,
-                object_id=object_id,
-                object_type=object_type,
-                metadata={
-                    "matched_keys": cred_fact.matched_keys,
-                    "confidence": cred_fact.confidence,
-                },
-            ))
-        
-        return facts
-    
-    def _extract_iam_role_access_facts(self, aws_scan: Any) -> List[Fact]:
-        """Extract IAM role access facts"""
+
+            facts.append(
+                Fact(
+                    fact_type=fact_type,
+                    subject_id=self.id_gen.secret(
+                        cred_fact.secret_namespace,
+                        cred_fact.secret_name,
+                    ),
+                    subject_type=NodeType.SECRET.value,
+                    object_id=object_id,
+                    object_type=object_type,
+                    metadata={
+                        "matched_keys": cred_fact.matched_keys,
+                        "confidence": cred_fact.confidence,
+                    },
+                )
+            )
+
+        return facts, bridge_output
+
+    def _extract_iam_role_access_facts(self, aws_scan: AWSScanResult) -> List[Fact]:
         facts: List[Fact] = []
-        
-        account_id = aws_scan.get("aws_account_id", "")
-        iam_roles = aws_scan.get("iam_roles", [])
-        
+
+        account_id = aws_scan.aws_account_id
+        iam_roles = aws_scan.iam_roles
+
         if not iam_roles:
             return facts
-        
-        # Parse IAM policies using existing parser
+
         try:
-            from src.graph.builders.aws_scanner_types import IAMRoleScan
-            
-            role_scans = [IAMRoleScan(**role) if isinstance(role, dict) else role 
-                         for role in iam_roles]
-            policy_results = parse_all_roles(role_scans)
+            policy_results = parse_all_roles(iam_roles)
         except Exception as e:
             self.logger.error(f"Failed to parse IAM roles: {e}")
             return facts
-        
-        # Convert to facts
+
         for result in policy_results:
             role_id = self.id_gen.iam_role(account_id, result.role_name)
-            
+
             for access in result.resource_access:
-                # Determine target node ID
                 target_ids = self._resolve_resource_targets(
-                    access.service, access.resource_arns, account_id, aws_scan
+                    access.service,
+                    access.resource_arns,
+                    account_id,
+                    aws_scan,
                 )
-                
+
                 for target_id, target_type in target_ids:
-                    facts.append(Fact(
-                        fact_type=FactType.IAM_ROLE_ACCESS_RESOURCE.value,
-                        subject_id=role_id,
-                        subject_type=NodeType.IAM_ROLE.value,
-                        object_id=target_id,
-                        object_type=target_type,
-                        metadata={
-                            "actions": access.actions,
-                            "is_wildcard_action": access.is_wildcard_action,
-                            "is_wildcard_resource": access.is_wildcard_resource,
-                            "policy_name": access.policy_name,
-                            "policy_arn": access.policy_arn,
-                        },
-                    ))
-        
+                    facts.append(
+                        Fact(
+                            fact_type=FactType.IAM_ROLE_ACCESS_RESOURCE.value,
+                            subject_id=role_id,
+                            subject_type=NodeType.IAM_ROLE.value,
+                            object_id=target_id,
+                            object_type=target_type,
+                            metadata={
+                                "actions": access.actions,
+                                "is_wildcard_action": access.is_wildcard_action,
+                                "is_wildcard_resource": access.is_wildcard_resource,
+                                "policy_name": access.policy_name,
+                                "policy_arn": access.policy_arn,
+                            },
+                        )
+                    )
+
         return facts
-    
-    def _extract_iam_user_access_facts(self, aws_scan: Any) -> List[Fact]:
-        """Extract IAM user access facts"""
+
+    def _extract_iam_user_access_facts(self, aws_scan: AWSScanResult) -> List[Fact]:
         facts: List[Fact] = []
-        
-        account_id = aws_scan.get("aws_account_id", "")
-        iam_users = aws_scan.get("iam_users", [])
-        
+
+        account_id = aws_scan.aws_account_id
+        iam_users = aws_scan.iam_users
+
         if not iam_users:
             return facts
-        
-        # Parse IAM user policies
+
         try:
-            from src.graph.builders.aws_scanner_types import IAMUserScan
-            
-            user_scans = [IAMUserScan(**user) if isinstance(user, dict) else user 
-                         for user in iam_users]
-            user_policy_results = parse_all_users(user_scans)
+            user_policy_results = parse_all_users(iam_users)
         except Exception as e:
             self.logger.error(f"Failed to parse IAM users: {e}")
             return facts
-        
-        # Convert to facts
+
         for result in user_policy_results:
             user_id = self.id_gen.iam_user(account_id, result.username)
-            
+
             for access in result.resource_access:
                 target_ids = self._resolve_resource_targets(
-                    access.service, access.resource_arns, account_id, aws_scan
+                    access.service,
+                    access.resource_arns,
+                    account_id,
+                    aws_scan,
                 )
-                
+
                 for target_id, target_type in target_ids:
-                    facts.append(Fact(
-                        fact_type=FactType.IAM_USER_ACCESS_RESOURCE.value,
-                        subject_id=user_id,
-                        subject_type=NodeType.IAM_USER.value,
-                        object_id=target_id,
-                        object_type=target_type,
-                        metadata={
-                            "actions": access.actions,
-                            "is_wildcard_action": access.is_wildcard_action,
-                            "is_wildcard_resource": access.is_wildcard_resource,
-                            "policy_name": access.policy_name,
-                        },
-                    ))
-        
+                    facts.append(
+                        Fact(
+                            fact_type=FactType.IAM_USER_ACCESS_RESOURCE.value,
+                            subject_id=user_id,
+                            subject_type=NodeType.IAM_USER.value,
+                            object_id=target_id,
+                            object_type=target_type,
+                            metadata={
+                                "actions": access.actions,
+                                "is_wildcard_action": access.is_wildcard_action,
+                                "is_wildcard_resource": access.is_wildcard_resource,
+                                "policy_name": access.policy_name,
+                            },
+                        )
+                    )
+
         return facts
-    
-    def _extract_security_group_facts(self, aws_scan: Any) -> List[Fact]:
-        """Extract security group facts"""
+
+    def _extract_security_group_facts(self, aws_scan: AWSScanResult) -> List[Fact]:
         facts: List[Fact] = []
-        
-        account_id = aws_scan.get("aws_account_id", "")
-        
-        # RDS → Security Group
-        for rds in aws_scan.get("rds_instances", []):
-            rds_id = self.id_gen.rds(account_id, rds.get("identifier"))
-            
-            for sg_id in rds.get("vpc_security_groups", []):
-                facts.append(Fact(
-                    fact_type=FactType.SECURITY_GROUP_ALLOWS.value,
-                    subject_id=self.id_gen.security_group(account_id, sg_id),
-                    subject_type=NodeType.SECURITY_GROUP.value,
-                    object_id=rds_id,
-                    object_type=NodeType.RDS.value,
-                    metadata={"resource_type": "rds"},
-                ))
-        
-        # EC2 → Security Group
-        for ec2 in aws_scan.get("ec2_instances", []):
-            ec2_id = self.id_gen.ec2_instance(account_id, ec2.get("instance_id"))
-            
-            for sg_id in ec2.get("security_groups", []):
-                facts.append(Fact(
-                    fact_type=FactType.SECURITY_GROUP_ALLOWS.value,
-                    subject_id=self.id_gen.security_group(account_id, sg_id),
-                    subject_type=NodeType.SECURITY_GROUP.value,
-                    object_id=ec2_id,
-                    object_type=NodeType.EC2_INSTANCE.value,
-                    metadata={"resource_type": "ec2"},
-                ))
-        
+
+        account_id = aws_scan.aws_account_id
+
+        # RDS -> Security Group
+        for rds in aws_scan.rds_instances:
+            rds_id = self.id_gen.rds(account_id, rds.identifier)
+
+            for sg_id in rds.vpc_security_groups:
+                facts.append(
+                    Fact(
+                        fact_type=FactType.SECURITY_GROUP_ALLOWS.value,
+                        subject_id=self.id_gen.security_group(account_id, sg_id),
+                        subject_type=NodeType.SECURITY_GROUP.value,
+                        object_id=rds_id,
+                        object_type=NodeType.RDS.value,
+                        metadata={"resource_type": "rds"},
+                    )
+                )
+
+        # EC2 -> Security Group
+        for ec2 in aws_scan.ec2_instances:
+            ec2_id = self.id_gen.ec2_instance(account_id, ec2.instance_id)
+
+            for sg_id in ec2.security_groups:
+                facts.append(
+                    Fact(
+                        fact_type=FactType.SECURITY_GROUP_ALLOWS.value,
+                        subject_id=self.id_gen.security_group(account_id, sg_id),
+                        subject_type=NodeType.SECURITY_GROUP.value,
+                        object_id=ec2_id,
+                        object_type=NodeType.EC2_INSTANCE.value,
+                        metadata={"resource_type": "ec2"},
+                    )
+                )
+
         return facts
-    
-    def _extract_instance_profile_facts(self, aws_scan: Any) -> List[Fact]:
-        """Extract EC2 instance profile facts"""
+
+    def _extract_instance_profile_facts(self, aws_scan: AWSScanResult) -> List[Fact]:
         facts: List[Fact] = []
-        
-        account_id = aws_scan.get("aws_account_id", "")
-        
-        for ec2 in aws_scan.get("ec2_instances", []):
-            instance_profile = ec2.get("iam_instance_profile")
+
+        account_id = aws_scan.aws_account_id
+
+        for ec2 in aws_scan.ec2_instances:
+            instance_profile = ec2.iam_instance_profile
             if not instance_profile:
                 continue
-            
+
             profile_arn = instance_profile.get("Arn", "")
             if not profile_arn:
                 continue
-            
-            # Extract role name from ARN
+
             role_name = profile_arn.split("/")[-1]
-            
-            facts.append(Fact(
-                fact_type=FactType.INSTANCE_PROFILE_ASSUMES.value,
-                subject_id=self.id_gen.ec2_instance(account_id, ec2.get("instance_id")),
-                subject_type=NodeType.EC2_INSTANCE.value,
-                object_id=self.id_gen.iam_role(account_id, role_name),
-                object_type=NodeType.IAM_ROLE.value,
-                metadata={
-                    "profile_arn": profile_arn,
-                    "via": "instance_profile",
-                },
-            ))
-        
+
+            facts.append(
+                Fact(
+                    fact_type=FactType.INSTANCE_PROFILE_ASSUMES.value,
+                    subject_id=self.id_gen.ec2_instance(account_id, ec2.instance_id),
+                    subject_type=NodeType.EC2_INSTANCE.value,
+                    object_id=self.id_gen.iam_role(account_id, role_name),
+                    object_type=NodeType.IAM_ROLE.value,
+                    metadata={
+                        "profile_arn": profile_arn,
+                        "via": "instance_profile",
+                    },
+                )
+            )
+
         return facts
-    
+
     def _resolve_resource_targets(
         self,
         service: str,
         resource_arns: List[str],
         account_id: str,
-        aws_scan: Any,
+        aws_scan: AWSScanResult,
     ) -> List[tuple[str, str]]:
-        """Resolve resource ARNs to node IDs"""
         targets = []
-        
+
         if service == "s3":
-            # Wildcard or specific buckets
             if any("*" in arn for arn in resource_arns):
-                # Wildcard - include all scanned buckets
-                for bucket in aws_scan.get("s3_buckets", []):
-                    targets.append((
-                        self.id_gen.s3_bucket(account_id, bucket.get("name")),
-                        NodeType.S3_BUCKET.value
-                    ))
+                for bucket in aws_scan.s3_buckets:
+                    targets.append(
+                        (
+                            self.id_gen.s3_bucket(account_id, bucket.name),
+                            NodeType.S3_BUCKET.value,
+                        )
+                    )
             else:
-                # Specific ARNs
                 for arn in resource_arns:
                     bucket_name = arn.split(":::")[-1].split("/")[0]
-                    targets.append((
-                        self.id_gen.s3_bucket(account_id, bucket_name),
-                        NodeType.S3_BUCKET.value
-                    ))
-        
+                    targets.append(
+                        (
+                            self.id_gen.s3_bucket(account_id, bucket_name),
+                            NodeType.S3_BUCKET.value,
+                        )
+                    )
+
         elif service == "rds":
-            # Wildcard or specific instances
             if any("*" in arn for arn in resource_arns):
-                for rds in aws_scan.get("rds_instances", []):
-                    targets.append((
-                        self.id_gen.rds(account_id, rds.get("identifier")),
-                        NodeType.RDS.value
-                    ))
+                for rds in aws_scan.rds_instances:
+                    targets.append(
+                        (
+                            self.id_gen.rds(account_id, rds.identifier),
+                            NodeType.RDS.value,
+                        )
+                    )
             else:
                 for arn in resource_arns:
                     db_id = arn.split(":")[-1]
-                    targets.append((
-                        self.id_gen.rds(account_id, db_id),
-                        NodeType.RDS.value
-                    ))
-        
+                    targets.append(
+                        (
+                            self.id_gen.rds(account_id, db_id),
+                            NodeType.RDS.value,
+                        )
+                    )
+
         return targets
+
+    def _serialize_bridge_result(self, bridge_result: Any) -> Dict[str, Any]:
+        return {
+            "irsa_mappings": [
+                {
+                    "sa_namespace": x.sa_namespace,
+                    "sa_name": x.sa_name,
+                    "iam_role_arn": x.iam_role_arn,
+                    "iam_role_name": x.iam_role_name,
+                    "account_id": x.account_id,
+                }
+                for x in getattr(bridge_result, "irsa_mappings", [])
+            ],
+            "credential_facts": [
+                {
+                    "secret_namespace": x.secret_namespace,
+                    "secret_name": x.secret_name,
+                    "target_type": x.target_type,
+                    "target_id": x.target_id,
+                    "matched_keys": list(x.matched_keys),
+                    "confidence": x.confidence,
+                }
+                for x in getattr(bridge_result, "credential_facts", [])
+            ],
+            "warnings": getattr(bridge_result, "warnings", []),
+            "skipped_irsa": getattr(bridge_result, "skipped_irsa", None),
+            "skipped_credentials": getattr(bridge_result, "skipped_credentials", None),
+        }

@@ -13,7 +13,19 @@ from app.main import app
 
 
 class _FakeClusterRecord:
-    def __init__(self, id, name, cluster_type, description, api_token, created_at, updated_at):
+    def __init__(
+        self,
+        id,
+        name,
+        cluster_type,
+        description,
+        api_token,
+        created_at,
+        updated_at,
+        aws_account_id=None,
+        aws_role_arn=None,
+        aws_region=None,
+    ):
         self.id = id
         self.name = name
         self.cluster_type = cluster_type
@@ -21,6 +33,9 @@ class _FakeClusterRecord:
         self.api_token = api_token
         self.created_at = created_at
         self.updated_at = updated_at
+        self.aws_account_id = aws_account_id
+        self.aws_role_arn = aws_role_arn
+        self.aws_region = aws_region
 
 
 class FakeClusterRepository:
@@ -32,7 +47,16 @@ class FakeClusterRepository:
         self._counter += 1
         return f"cluster-{self._counter}"
 
-    async def create(self, name: str, cluster_type: str, description: Optional[str] = None, api_token: Optional[str] = None):
+    async def create(
+        self,
+        name: str,
+        cluster_type: str,
+        description: Optional[str] = None,
+        api_token: Optional[str] = None,
+        aws_account_id: Optional[str] = None,
+        aws_role_arn: Optional[str] = None,
+        aws_region: Optional[str] = None,
+    ):
         record = _FakeClusterRecord(
             id=self._make_id(),
             name=name,
@@ -41,6 +65,9 @@ class FakeClusterRepository:
             api_token=api_token,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            aws_account_id=aws_account_id,
+            aws_role_arn=aws_role_arn,
+            aws_region=aws_region,
         )
         self._store[record.id] = record
         return record

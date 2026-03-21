@@ -453,3 +453,160 @@ class AssetInventoryListResponse(BaseModel):
 
 class AssetDetailResponse(AssetInventoryItemResponse):
     pass
+
+
+# =============================================================================
+# 신규 Asset Inventory View API 스키마 (v1)
+# 기존 스키마와 완전 분리 — prefix: InventoryView*
+# 기존 InventorySummaryResponse, AssetInventoryItemResponse 등 수정 없음
+# =============================================================================
+
+class InvScannerCoverageStatus(str, Enum):
+    """scan_records 기반 근사 커버리지 상태 (MVP)"""
+    covered = "covered"
+    partial = "partial"
+    not_covered = "not_covered"
+
+
+# ---------- Scanner Status ----------
+
+class InvScannerItem(BaseModel):
+    """스캐너별 최신 스캔 상태"""
+    scanner_type: str = Field(..., description="k8s | aws | image")
+    display_name: str = Field(..., description="UI 표시명. 예: K8s Scanner (DG-K8s)")
+    status: str = Field(..., description="active | inactive")
+    last_scan_at: Optional[datetime] = Field(None, description="마지막 completed 스캔 시각 (scan_records 기준)")
+    scan_id: Optional[str] = Field(None, description="마지막 completed scan_id")
+    coverage_status: InvScannerCoverageStatus = Field(
+        ...,
+        description="covered: completed scan 존재 / not_covered: 없음 (MVP 근사값)",
+    )
+    resources_collected: Optional[int] = Field(
+        None,
+        description="수집된 리소스 수. 현재 단계에서는 null 허용 (TODO: scan result 연동 후 채움)",
+    )
+
+
+class InvScannerStatusResponse(BaseModel):
+    """GET /inventory/scanner-status 응답"""
+    scanners: List[InvScannerItem]
+
+
+# ---------- Summary ----------
+
+class InvScannerCoverageDetail(BaseModel):
+    """Summary 내 스캐너별 커버리지 상세"""
+    status: InvScannerCoverageStatus
+    last_scan_at: Optional[datetime] = None
+    scan_id: Optional[str] = None
+
+
+class InvRiskSummary(BaseModel):
+    """
+    위험 요약.
+    MVP: graph_nodes / attack_paths 테이블 미연동으로 전부 0.
+    TODO: GraphSnapshot → graph_nodes / attack_paths 연동 후 실값 채움.
+    """
+    entry_point_count: int = Field(0, description="[임시값] graph_nodes.is_entry_point=true 개수")
+    crown_jewel_count: int = Field(0, description="[임시값] graph_nodes.is_crown_jewel=true 개수")
+    critical_path_count: int = Field(0, description="[임시값] attack_paths critical 개수")
+
+
+class InvSummaryResponse(BaseModel):
+    """GET /inventory/summary 응답"""
+    cluster_id: str
+    cluster_name: str
+    last_analysis_at: Optional[datetime] = Field(
+        None,
+        description="최신 graph_snapshot 기준 분석 완료 시각. MVP: graph 미연동으로 null.",
+    )
+    total_node_count: int = Field(..., description="전체 자산 수 (snapshot 기반)")
+    k8s_resources: Dict[str, int] = Field(
+        default_factory=dict,
+        description="K8s 자산 타입별 카운트. MVP: snapshot 없으면 빈 dict.",
+    )
+    aws_resources: Dict[str, int] = Field(
+        default_factory=dict,
+        description="AWS 자산 타입별 카운트. snapshot raw_result_json 기반.",
+    )
+    scanner_coverage: Dict[str, InvScannerCoverageDetail] = Field(
+        default_factory=dict,
+        description="scanner_type → 커버리지 상세. scan_records 기반 근사값 (MVP).",
+    )
+    risk_summary: InvRiskSummary = Field(
+        default_factory=InvRiskSummary,
+        description="위험 요약. MVP: graph 미연동으로 전부 0 (임시값).",
+    )
+
+
+# ---------- Assets ----------
+
+class InvAssetItem(BaseModel):
+    """자산 목록 단일 아이템"""
+    node_id: str = Field(..., description="자산 식별자. 예: ec2:i-0abc123 / pod:prod/web-abc")
+    node_type: str = Field(..., description="ec2 | s3 | rds | iam_role | iam_user | pod | service | ...")
+    domain: str = Field(..., description="k8s | aws")
+    name: str
+    namespace: Optional[str] = Field(None, description="K8s 자산만 해당. AWS는 null.")
+    account_id: Optional[str] = Field(None, description="AWS 자산만 해당. K8s는 null.")
+    region: Optional[str] = Field(None, description="AWS 자산 중 region 있는 것만 해당.")
+    is_entry_point: bool = Field(False, description="[임시값] graph 미연동. 항상 false (MVP).")
+    is_crown_jewel: bool = Field(False, description="[임시값] graph 미연동. 항상 false (MVP).")
+    base_risk: Optional[int] = Field(None, description="[임시값] graph 미연동. null (MVP).")
+    scanner_coverage: Dict[str, str] = Field(
+        default_factory=dict,
+        description="scanner_type → covered | not_covered. node_type 기반 매핑 + scan_records 근사.",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="원본 API에서 가져온 자산 상세 속성 (raw_result_json 기반).",
+    )
+    timestamps: Dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        description="last_scan_at: scan_records 기준 / last_analysis_at: graph 기준 (MVP: null).",
+    )
+
+
+class InvAssetListResponse(BaseModel):
+    """GET /inventory/assets 응답"""
+    graph_id: Optional[str] = Field(
+        None,
+        description="기준 graph_snapshot id. MVP: graph 미연동으로 null.",
+    )
+    total_count: int
+    page: int
+    page_size: int
+    assets: List[InvAssetItem]
+
+
+# ---------- Risk Spotlight ----------
+
+class InvRiskSpotlightItem(BaseModel):
+    """Entry Point 또는 Crown Jewel 단일 아이템"""
+    node_id: str
+    node_type: str
+    domain: str
+    name: str
+    namespace: Optional[str] = None
+    base_risk: Optional[int] = Field(None, description="[임시값] graph 미연동. null (MVP).")
+    attack_path_count: int = Field(0, description="[임시값] attack_paths 미연동. 0 (MVP).")
+    reachable_crown_jewel_count: Optional[int] = Field(
+        None,
+        description="Entry Point 전용. Crown Jewel 미연동으로 null (MVP).",
+    )
+
+
+class InvRiskSpotlightResponse(BaseModel):
+    """GET /inventory/risk-spotlight 응답"""
+    graph_id: Optional[str] = Field(
+        None,
+        description="기준 graph_snapshot id. MVP: null.",
+    )
+    entry_points: List[InvRiskSpotlightItem] = Field(
+        default_factory=list,
+        description="[임시값] graph_nodes.is_entry_point 미연동. 빈 배열 (MVP).",
+    )
+    crown_jewels: List[InvRiskSpotlightItem] = Field(
+        default_factory=list,
+        description="[임시값] graph_nodes.is_crown_jewel 미연동. 빈 배열 (MVP).",
+    )

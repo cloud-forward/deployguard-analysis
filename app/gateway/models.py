@@ -152,7 +152,7 @@ class Cluster(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     api_token: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'eks' | 'self-managed' | 'aws'
+    cluster_type: Mapped[str] = mapped_column(String(50), nullable=False)
     aws_account_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     aws_role_arn: Mapped[str | None] = mapped_column(String, nullable=True)
     aws_region: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -227,7 +227,7 @@ class ScanRecord(Base):
     )
     scan_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     cluster_id: Mapped[str] = mapped_column(
-        UUID_COMPAT,
+        String(255),          # DB에 VARCHAR 로 저장되어 있으므로 String 으로 선언
         ForeignKey("clusters.id"),
         nullable=False,
     )
@@ -244,21 +244,32 @@ class ScanRecord(Base):
         default=list,
         server_default=text("'[]'"),
     )
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # DB 실제 컬럼 목록에 맞춰 선언
+    # error_message, updated_at 은 DB 에 없으므로 제거
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    request_source: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="manual",
+        server_default=text("'manual'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         default=datetime.utcnow,
         server_default=text("now()"),
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        server_default=text("now()"),
-    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    analysis_run_id: Mapped[str | None] = mapped_column(UUID_COMPAT, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __init__(self, **kwargs):
         kwargs.setdefault("status", SCAN_STATUS_CREATED)

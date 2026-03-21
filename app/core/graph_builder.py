@@ -1,18 +1,26 @@
-"""
-Graph builder module - converts Facts to NetworkX graph.
-"""
+"""NetworkX graph adapter for unified and legacy graph inputs."""
 import networkx as nx
 from typing import List, Dict, Any, Set
 
 from src.facts.canonical_fact import Fact
+from src.facts.id_generator import NodeIDGenerator
 from src.facts.types import NodeType
 from src.facts.logger import setup_logger
+from src.facts.validation.rules import ValidationRules
+from src.graph.builders.build_result_types import (
+    UnifiedGraphResult,
+    graph_edge_attrs,
+    graph_node_attrs,
+)
+
+PREFIX_TO_NODE_TYPE = {
+    prefix.rstrip(":"): node_type
+    for node_type, prefix in ValidationRules.TYPE_PREFIX_MAP.items()
+}
 
 
 class GraphBuilder:
-    """
-    Constructs a NetworkX graph from canonical facts.
-    """
+    """Adapts unified graph results to NetworkX, with facts as fallback only."""
     
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -21,7 +29,7 @@ class GraphBuilder:
     
     async def build_from_facts(self, facts: List[Fact]) -> nx.DiGraph:
         """
-        Build a directed graph from facts.
+        Transitional fallback: build a directed graph from canonical facts.
         
         Args:
             facts: List of canonical facts
@@ -29,8 +37,7 @@ class GraphBuilder:
         Returns:
             NetworkX DiGraph
         """
-        self.graph.clear()
-        self._created_nodes.clear()
+        self._reset_graph()
         
         self.logger.info(f"Building graph from {len(facts)} facts")
         
@@ -45,12 +52,36 @@ class GraphBuilder:
             f"{self.graph.number_of_edges()} edges"
         )
         
-        # Step 2: Classify nodes
-        self._mark_entry_points()
-        self._mark_crown_jewels()
-        self._update_base_risk()
-        
-        return self.graph
+        return self._finalize_graph()
+
+    async def build_from_unified_result(
+        self,
+        unified_result: UnifiedGraphResult,
+    ) -> nx.DiGraph:
+        """Primary path: translate a UnifiedGraphResult into NetworkX.
+
+        This adapter only:
+        - copies unified nodes into NetworkX node attributes
+        - copies unified edges into NetworkX edge attributes
+        - creates explicit placeholder nodes for dangling edge endpoints so
+          downstream NetworkX consumers still see a consistent graph shape
+
+        It does not discover new relationships or rebuild domain graphs.
+        """
+        self._reset_graph()
+
+        self.logger.info(
+            f"Building graph from unified result: {len(unified_result.nodes)} nodes, "
+            f"{len(unified_result.edges)} edges"
+        )
+
+        for node in unified_result.nodes:
+            self._add_unified_node(node)
+
+        for edge in unified_result.edges:
+            self._add_unified_edge(edge)
+
+        return self._finalize_graph()
     
     def _ensure_node(self, node_id: str, node_type: str):
         """Create node if it doesn't exist"""
@@ -67,15 +98,80 @@ class GraphBuilder:
             metadata={},
         )
         self._created_nodes.add(node_id)
+
+    def _add_unified_node(self, node) -> None:
+        """Copy a typed unified node into the NetworkX graph."""
+        node_attrs = graph_node_attrs(node)
+        self.graph.add_node(node.id, **node_attrs)
+        self._created_nodes.add(node.id)
+
+    def _add_unified_edge(self, edge) -> None:
+        """Copy a typed unified edge into the NetworkX graph."""
+        self._ensure_unified_endpoint_node(edge.source)
+        self._ensure_unified_endpoint_node(edge.target)
+        edge_attrs = graph_edge_attrs(edge)
+        self._add_edge_by_values(
+            source=edge_attrs["source"],
+            target=edge_attrs["target"],
+            edge_type=edge_attrs["type"],
+            metadata=edge_attrs["metadata"],
+        )
+
+    def _ensure_unified_endpoint_node(self, node_id: str) -> None:
+        """Add a placeholder node only when a unified edge references a missing endpoint."""
+        if node_id in self._created_nodes:
+            return
+
+        node_type = self._canonical_placeholder_node_type(node_id)
+        self.graph.add_node(
+            node_id,
+            id=node_id,
+            type=node_type,
+            is_entry_point=False,
+            is_crown_jewel=False,
+            base_risk=0.0,
+            metadata={"adapter_placeholder": True},
+        )
+        self._created_nodes.add(node_id)
+
+    def _canonical_placeholder_node_type(self, node_id: str) -> str:
+        parsed_type = NodeIDGenerator.parse_node_type(node_id)
+        if not parsed_type:
+            return "unknown"
+        return PREFIX_TO_NODE_TYPE.get(parsed_type, parsed_type)
     
     def _add_edge(self, fact: Fact):
         """Add edge from fact"""
-        self.graph.add_edge(
-            fact.subject_id,
-            fact.object_id,
-            type=fact.fact_type,
+        self._add_edge_by_values(
+            source=fact.subject_id,
+            target=fact.object_id,
+            edge_type=fact.fact_type,
             metadata=fact.metadata or {},
         )
+
+    def _add_edge_by_values(
+        self,
+        source: str,
+        target: str,
+        edge_type: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        self.graph.add_edge(
+            source,
+            target,
+            type=edge_type,
+            metadata=metadata,
+        )
+
+    def _reset_graph(self) -> None:
+        self.graph.clear()
+        self._created_nodes.clear()
+
+    def _finalize_graph(self) -> nx.DiGraph:
+        self._mark_entry_points()
+        self._mark_crown_jewels()
+        self._update_base_risk()
+        return self.graph
     
     # ========================================
     # Node Classification
@@ -210,12 +306,6 @@ class GraphBuilder:
         
         elif node_type == NodeType.NODE.value:
             return 0.5
-        
-        elif node_type == NodeType.NODE_CREDENTIAL.value:
-            base = 0.8
-            if metadata.get("grants_cluster_admin"):
-                base = 0.95
-            return base
         
         elif node_type == NodeType.CONTAINER_IMAGE.value:
             base = 0.2

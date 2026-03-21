@@ -2,6 +2,7 @@
 import pytest
 from datetime import datetime
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
+from src.graph.builders.build_result_types import AWSBuildResult
 from src.graph.builders.aws_scanner_types import (
     AccessKeyScan,
     AWSScanResult,
@@ -44,13 +45,14 @@ def build(scan: AWSScanResult, irsa_mappings=None, credential_facts=None, policy
         account_id=scan.aws_account_id,
         scan_id=scan.scan_id,
     )
-    return builder.build(
+    result = builder.build(
         scan,
         irsa_mappings=irsa_mappings or [],
         credential_facts=credential_facts or [],
         policy_results=policy_results,
         user_policy_results=user_policy_results,
     )
+    return result.nodes, result.edges
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +186,57 @@ def test_credential_edge():
     assert edge.metadata["source_type"] == "credential_matcher"
 
 
+def test_credential_edge_for_iam_user_uses_aws_specific_edge_type():
+    fact = SecretContainsCredentialsFact(
+        secret_namespace="namespace",
+        secret_name="aws-creds",
+        target_type="iam_user",
+        target_id="deployer",
+        matched_keys=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        confidence="high",
+    )
+    scan = make_scan()
+
+    _, edges = build(scan, credential_facts=[fact])
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.type == "secret_contains_aws_credentials"
+    assert edge.source == "secret:namespace:aws-creds"
+    assert edge.target == "iam_user:account:deployer"
+
+
+def test_credential_edge_for_s3_preserves_secret_contains_credentials_type():
+    fact = SecretContainsCredentialsFact(
+        secret_namespace="namespace",
+        secret_name="s3-config",
+        target_type="s3",
+        target_id="data-bucket",
+        matched_keys=["bucket", "region"],
+        confidence="medium",
+    )
+    scan = make_scan()
+
+    _, edges = build(scan, credential_facts=[fact])
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.type == "secret_contains_credentials"
+    assert edge.source == "secret:namespace:s3-config"
+    assert edge.target == "s3:account:data-bucket"
+
+
+def test_no_cross_domain_edges_emitted_when_typed_bridge_inputs_absent():
+    scan = make_scan()
+
+    _, edges = build(scan, irsa_mappings=[], credential_facts=[])
+
+    edge_types = {edge.type for edge in edges}
+    assert "service_account_assumes_iam_role" not in edge_types
+    assert "secret_contains_aws_credentials" not in edge_types
+    assert "secret_contains_credentials" not in edge_types
+
+
 # ---------------------------------------------------------------------------
 # Dangling edge allowed
 # ---------------------------------------------------------------------------
@@ -237,10 +290,16 @@ def test_build_result_includes_graph_metadata():
         scan_id=scan.scan_id,
     )
 
-    nodes, edges = builder.build(scan, [], [])
+    result = builder.build(scan, [], [])
 
-    assert nodes == []
-    assert edges == []
+    assert isinstance(result, AWSBuildResult)
+    assert result.nodes == []
+    assert result.edges == []
+    assert result.metadata == {
+        "graph_id": f"{scan.scan_id}-graph",
+        "scan_id": scan.scan_id,
+        "account_id": scan.aws_account_id,
+    }
     assert builder.graph_metadata is not None
     assert builder.graph_metadata.graph_id == f"{scan.scan_id}-graph"
     assert builder.graph_metadata.scan_id == scan.scan_id

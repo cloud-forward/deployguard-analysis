@@ -41,10 +41,6 @@ class NodeIDGenerator:
         return f"node:{node_name}"
     
     @staticmethod
-    def node_credential(node_name: str, credential_type: str) -> str:
-        return f"node_cred:{node_name}:{credential_type}"
-    
-    @staticmethod
     def container_image(image_ref: str) -> str:
         return f"container_image:{image_ref}"
     
@@ -83,8 +79,6 @@ class NodeIDGenerator:
         # Handle special cases
         if prefix == "sa":
             return "service_account"
-        elif prefix == "node_cred":
-            return "node_credential"
         elif prefix == "container_image":
             return "container_image"
         

@@ -1,6 +1,7 @@
 """Integration tests for AWS Graph Builder — complete flow validation."""
 import pytest
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
+from src.graph.builders.build_result_types import AWSBuildResult
 from src.graph.builders.aws_scanner_types import (
     AccessKeyScan,
     AWSScanResult,
@@ -76,7 +77,9 @@ def test_golden_path_002_partial():
 
     # --- Execute ---
     builder = AWSGraphBuilder(account_id, scan_id)
-    nodes, edges = builder.build(scan, [], [credential_fact])
+    result = builder.build(scan, [], [credential_fact])
+    assert isinstance(result, AWSBuildResult)
+    nodes, edges = result.nodes, result.edges
 
     # --- Helper lookups ---
     nodes_by_id = {n.id: n for n in nodes}
@@ -200,7 +203,8 @@ def test_golden_path_001_full():
     ]
 
     builder = AWSGraphBuilder(account_id, scan_id)
-    nodes, edges = builder.build(scan, irsa_mappings, [], policy_results)
+    result = builder.build(scan, irsa_mappings, [], policy_results)
+    nodes, edges = result.nodes, result.edges
 
     nodes_by_id = {n.id: n for n in nodes}
     edges_as_pairs = [(e.source, e.target, e.type) for e in edges]
@@ -315,7 +319,8 @@ def test_golden_path_004_full():
     ]
 
     builder = AWSGraphBuilder(account_id, scan_id)
-    nodes, edges = builder.build(scan, irsa_mappings, [], policy_results)
+    result = builder.build(scan, irsa_mappings, [], policy_results)
+    nodes, edges = result.nodes, result.edges
 
     nodes_by_id = {n.id: n for n in nodes}
     edges_as_pairs = [(e.source, e.target, e.type) for e in edges]
@@ -417,12 +422,13 @@ def test_iam_user_credential_secret_path():
 
     # --- Execute ---
     builder = AWSGraphBuilder(account_id, scan_id)
-    nodes, edges = builder.build(
+    result = builder.build(
         scan,
         irsa_mappings=[],
         credential_facts=[credential_fact],
         user_policy_results=[user_policy_result],
     )
+    nodes, edges = result.nodes, result.edges
 
     # --- Assert ---
     edges_as_pairs = [(e.source, e.target) for e in edges]
@@ -495,7 +501,8 @@ def test_irsa_extractor_output_integrates_with_aws_graph_builder():
     irsa_mappings = IRSAMappingExtractor().extract(service_accounts, scan.iam_roles)
 
     builder = AWSGraphBuilder(account_id, scan_id)
-    _, edges = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=[])
+    result = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=[])
+    edges = result.edges
 
     edge = next(e for e in edges if e.type == "service_account_assumes_iam_role")
     assert edge.source == "sa:production:api-sa"
@@ -550,7 +557,8 @@ def test_secret_credentials_extractor_output_integrates_with_aws_graph_builder()
     credential_facts = SecretCredentialsExtractor().extract(secrets, scan.iam_users)
 
     builder = AWSGraphBuilder(account_id, scan_id)
-    _, edges = builder.build(scan, irsa_mappings=[], credential_facts=credential_facts)
+    result = builder.build(scan, irsa_mappings=[], credential_facts=credential_facts)
+    edges = result.edges
 
     edge = next(e for e in edges if e.type == "secret_contains_aws_credentials")
     assert edge.source == "secret:production:aws-credentials"
@@ -646,7 +654,8 @@ def test_bridge_producer_outputs_coexist_in_single_aws_graph_build():
     credential_facts = SecretCredentialsExtractor().extract(secrets, scan.iam_users)
 
     builder = AWSGraphBuilder(account_id, scan_id)
-    _, edges = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=credential_facts)
+    result = builder.build(scan, irsa_mappings=irsa_mappings, credential_facts=credential_facts)
+    edges = result.edges
 
     edges_as_triplets = {(e.source, e.target, e.type) for e in edges}
     assert (

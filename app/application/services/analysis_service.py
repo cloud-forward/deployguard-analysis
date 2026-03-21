@@ -3,6 +3,7 @@ Application service orchestrating analysis use-cases.
 Coordinates domain/core algorithms and repositories.
 """
 from __future__ import annotations
+import asyncio
 import logging
 from typing import Dict, Any
 from uuid import UUID
@@ -12,15 +13,31 @@ from app.domain.entities.analysis import AnalysisRequest, AnalysisResponse
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
 from app.domain.repositories.scan_repository import ScanRepository
 
-# ✨ 새로 추가
-from src.facts.orchestrator import FactOrchestrator
 from app.core.graph_builder import GraphBuilder
 from app.core.path_finder import PathFinder
 from app.core.risk_engine import RiskEngine
+from src.facts.extractors.k8s_extractor import K8sFactExtractor
+from src.facts.extractors.lateral_move_extractor import LateralMoveExtractor
+from src.graph.builders.aws_graph_builder import AWSGraphBuilder
+from src.graph.builders.aws_scanner_types import (
+    AWSScanResult,
+    AccessKeyScan,
+    EC2InstanceScan,
+    IAMRoleScan,
+    IAMUserScan,
+    RDSInstanceScan,
+    S3BucketScan,
+    SecurityGroupScan,
+)
+from src.graph.builders.irsa_bridge_builder import IRSABridgeBuilder
+from src.graph.builders.iam_policy_parser import parse_all_roles, parse_all_users
+from src.graph.builders.k8s_graph_builder import K8sGraphBuilder
+from src.graph.builders.unified_graph_builder import UnifiedGraphBuilder
 
 logger = logging.getLogger(__name__)
 
 REQUIRED_SCAN_TYPES = {SCANNER_TYPE_K8S, SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE}
+MAX_HOPS = 7
 
 
 def _context(**kwargs):
@@ -35,10 +52,11 @@ class AnalysisService:
     ) -> None:
         self._jobs = jobs_repo
         self._scans = scan_repo
-        
-        # ✨ 새로 추가: Fact 파이프라인 컴포넌트
-        self._fact_orchestrator = FactOrchestrator()
+        self._k8s_extractor = K8sFactExtractor()
+        self._lateral_extractor = LateralMoveExtractor()
+        self._bridge_builder = IRSABridgeBuilder()
         self._graph_builder = GraphBuilder()
+        self._unified_graph_builder = UnifiedGraphBuilder()
         self._path_finder = PathFinder()
         self._risk_engine = RiskEngine()
 
@@ -83,18 +101,40 @@ class AnalysisService:
             aws_scan = await self._load_scan_data(cluster_id, aws_scan_id, SCANNER_TYPE_AWS)
             image_scan = await self._load_scan_data(cluster_id, image_scan_id, SCANNER_TYPE_IMAGE)
             
-            # Step 2: Extract facts
-            fact_collection = await self._fact_orchestrator.extract_all(
-                k8s_scan, aws_scan, image_scan
+            # Step 2: Build domain graph results and merge through UnifiedGraphBuilder
+            k8s_result = await asyncio.to_thread(
+                self._build_k8s_result,
+                k8s_scan,
+                k8s_scan_id,
             )
-            
+            aws_scan_result = await asyncio.to_thread(
+                self._coerce_aws_scan_result,
+                aws_scan,
+                aws_scan_id,
+            )
+            bridge_result = await asyncio.to_thread(
+                self._bridge_builder.build,
+                k8s_scan,
+                aws_scan_result,
+            )
+            aws_result = await asyncio.to_thread(
+                self._build_aws_result,
+                aws_scan_result,
+                bridge_result,
+            )
+            unified_result = self._unified_graph_builder.build(k8s_result, aws_result)
+
             logger.info(
-                f"Facts extracted: {len(fact_collection.facts)} valid facts",
+                "Unified graph assembled from domain results",
                 cluster_id=cluster_id,
+                k8s_nodes=len(k8s_result.nodes),
+                aws_nodes=len(aws_result.nodes),
+                unified_nodes=len(unified_result.nodes),
+                unified_edges=len(unified_result.edges),
             )
-            
-            # Step 3: Build graph
-            graph = await self._graph_builder.build_from_facts(fact_collection.facts)
+
+            # Step 3: Adapt unified graph for existing NetworkX consumers
+            graph = await self._graph_builder.build_from_unified_result(unified_result)
             
             # Step 4: Find attack paths
             entry_points = self._graph_builder.get_entry_points()
@@ -109,7 +149,7 @@ class AnalysisService:
                 graph,
                 entry_points,
                 crown_jewels,
-                max_path_length=10,
+                max_path_length=MAX_HOPS,
             )
             
             # Step 5: Calculate risk scores
@@ -140,9 +180,9 @@ class AnalysisService:
                 },
                 "stats": {
                     "facts": {
-                        "total": len(fact_collection.facts),
-                        "errors": fact_collection.error_count,
-                        "warnings": fact_collection.warning_count,
+                        "total": len(k8s_result.edges) + len(aws_result.edges),
+                        "errors": 0,
+                        "warnings": len(bridge_result.warnings) + len(unified_result.warnings),
                     },
                     "graph": {
                         "nodes": graph.number_of_nodes(),
@@ -172,6 +212,71 @@ class AnalysisService:
                 error_type=type(e).__name__,
             )
             raise
+
+    def _build_k8s_result(self, k8s_scan: Dict[str, Any], scan_id: str):
+        k8s_facts = self._k8s_extractor.extract(k8s_scan)
+        lateral_facts = self._lateral_extractor.extract(k8s_scan)
+        return K8sGraphBuilder().build(
+            [*k8s_facts, *lateral_facts],
+            k8s_scan,
+            scan_id=scan_id,
+        )
+
+    def _build_aws_result(self, aws_scan: AWSScanResult, bridge_result):
+        policy_results = parse_all_roles(aws_scan.iam_roles) if aws_scan.iam_roles else None
+        user_policy_results = parse_all_users(aws_scan.iam_users) if aws_scan.iam_users else None
+        return AWSGraphBuilder(
+            account_id=aws_scan.aws_account_id,
+            scan_id=aws_scan.scan_id,
+        ).build_with_bridge_result(
+            aws_scan,
+            bridge_result,
+            policy_results=policy_results,
+            user_policy_results=user_policy_results,
+        )
+
+    def _coerce_aws_scan_result(self, aws_scan: Dict[str, Any] | AWSScanResult, scan_id: str) -> AWSScanResult:
+        if isinstance(aws_scan, AWSScanResult):
+            return aws_scan
+
+        return AWSScanResult(
+            scan_id=aws_scan.get("scan_id", scan_id),
+            aws_account_id=aws_scan.get("aws_account_id", ""),
+            scanned_at=aws_scan.get("scanned_at", ""),
+            iam_roles=[
+                role if isinstance(role, IAMRoleScan) else IAMRoleScan(**role)
+                for role in aws_scan.get("iam_roles", [])
+            ],
+            s3_buckets=[
+                bucket if isinstance(bucket, S3BucketScan) else S3BucketScan(**bucket)
+                for bucket in aws_scan.get("s3_buckets", [])
+            ],
+            rds_instances=[
+                instance if isinstance(instance, RDSInstanceScan) else RDSInstanceScan(**instance)
+                for instance in aws_scan.get("rds_instances", [])
+            ],
+            ec2_instances=[
+                instance if isinstance(instance, EC2InstanceScan) else EC2InstanceScan(**instance)
+                for instance in aws_scan.get("ec2_instances", [])
+            ],
+            security_groups=[
+                sg if isinstance(sg, SecurityGroupScan) else SecurityGroupScan(**sg)
+                for sg in aws_scan.get("security_groups", [])
+            ],
+            region=aws_scan.get("region"),
+            iam_users=[
+                user if isinstance(user, IAMUserScan) else IAMUserScan(
+                    **{
+                        **user,
+                        "access_keys": [
+                            key if isinstance(key, AccessKeyScan) else AccessKeyScan(**key)
+                            for key in user.get("access_keys", [])
+                        ],
+                    }
+                )
+                for user in aws_scan.get("iam_users", [])
+            ],
+        )
 
     async def _load_scan_data(
         self, cluster_id: str, scan_id: str, scanner_type: str

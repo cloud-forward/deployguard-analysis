@@ -2,6 +2,7 @@
 import pytest
 
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
+from src.graph.builders.build_result_types import AWSBuildResult, unpack_build_result
 from src.graph.builders.aws_scanner_types import (
     AccessKeyScan,
     AWSScanResult,
@@ -43,13 +44,56 @@ def build(scan: AWSScanResult, policy_results=None, user_policy_results=None):
         account_id=scan.aws_account_id,
         scan_id=scan.scan_id,
     )
-    return builder.build(
+    result = builder.build(
         scan,
         irsa_mappings=[],
         credential_facts=[],
         policy_results=policy_results,
         user_policy_results=user_policy_results,
     )
+    return result.nodes, result.edges
+
+
+def test_build_returns_aws_build_result():
+    scan = make_scan()
+    builder = AWSGraphBuilder(
+        account_id=scan.aws_account_id,
+        scan_id=scan.scan_id,
+    )
+
+    result = builder.build(scan, irsa_mappings=[], credential_facts=[])
+
+    assert isinstance(result, AWSBuildResult)
+    assert result.nodes == []
+    assert result.edges == []
+    assert result.metadata == {
+        "graph_id": f"{scan.scan_id}-graph",
+        "scan_id": scan.scan_id,
+        "account_id": scan.aws_account_id,
+    }
+
+
+def test_transitional_unpack_adapter_works_with_aws_build_result():
+    bucket = S3BucketScan(
+        name="my-bucket",
+        arn="arn:aws:s3:::my-bucket",
+        public_access_block={"BlockPublicAcls": True},
+        encryption={"Rules": []},
+        versioning="Enabled",
+        logging_enabled=True,
+    )
+    scan = make_scan(s3_buckets=[bucket])
+    builder = AWSGraphBuilder(
+        account_id=scan.aws_account_id,
+        scan_id=scan.scan_id,
+    )
+
+    result = builder.build(scan, irsa_mappings=[], credential_facts=[])
+    nodes, edges = unpack_build_result(result)
+
+    assert nodes == result.nodes
+    assert edges == result.edges
+    assert [node.id for node in nodes] == [f"s3:{scan.aws_account_id}:my-bucket"]
 
 
 def make_iam_role(name="AdminRole") -> IAMRoleScan:

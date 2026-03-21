@@ -249,11 +249,12 @@ def test_bridge_builder_outputs_feed_directly_into_aws_graph_builder():
 
     bridge_result = bridge_builder.build(k8s_scan, aws_scan)
     aws_builder = AWSGraphBuilder(aws_scan.aws_account_id, aws_scan.scan_id)
-    _, edges = aws_builder.build(
+    build_result = aws_builder.build(
         aws_scan,
         irsa_mappings=bridge_result.irsa_mappings,
         credential_facts=bridge_result.credential_facts,
     )
+    edges = build_result.edges
 
     edge_triplets = {(edge.source, edge.target, edge.type) for edge in edges}
     assert (
@@ -265,6 +266,70 @@ def test_bridge_builder_outputs_feed_directly_into_aws_graph_builder():
         "secret:production:aws-credentials",
         f"iam_user:{aws_scan.aws_account_id}:web-app-deployer",
         "secret_contains_aws_credentials",
+    ) in edge_triplets
+
+
+def test_bridge_builder_outputs_feed_directly_into_aws_builder_bridge_composition():
+    bridge_builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "api-sa",
+                    "annotations": {
+                        "eks.amazonaws.com/role-arn": aws_scan.iam_roles[0].arn,
+                    },
+                }
+            }
+        ],
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "aws-credentials",
+                },
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            },
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "db-credentials",
+                },
+                "stringData": {
+                    "host": "prod-db.example.us-east-1.rds.amazonaws.com",
+                    "username": "appuser",
+                    "password": "super-secret",
+                },
+            },
+        ],
+    }
+
+    bridge_result = bridge_builder.build(k8s_scan, aws_scan)
+    build_result = AWSGraphBuilder(
+        aws_scan.aws_account_id,
+        aws_scan.scan_id,
+    ).build_with_bridge_result(aws_scan, bridge_result)
+
+    edge_triplets = {(edge.source, edge.target, edge.type) for edge in build_result.edges}
+    assert (
+        "sa:production:api-sa",
+        f"iam:{aws_scan.aws_account_id}:WebAppRole",
+        "service_account_assumes_iam_role",
+    ) in edge_triplets
+    assert (
+        "secret:production:aws-credentials",
+        f"iam_user:{aws_scan.aws_account_id}:web-app-deployer",
+        "secret_contains_aws_credentials",
+    ) in edge_triplets
+    assert (
+        "secret:production:db-credentials",
+        f"rds:{aws_scan.aws_account_id}:production-db",
+        "secret_contains_credentials",
     ) in edge_triplets
 
 

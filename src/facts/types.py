@@ -52,7 +52,6 @@ class NodeType(str, Enum):
     SERVICE = "service"
     INGRESS = "ingress"
     NODE = "node"
-    NODE_CREDENTIAL = "node_credential"
     CONTAINER_IMAGE = "container_image"
     
     # AWS resources
@@ -68,5 +67,5 @@ class NodeType(str, Enum):
 AccountID = str
 Namespace = str
 ResourceName = str
-Confidence = Literal["high", "medium", "low"]
+Confidence = Literal["high", "medium"]
 ValidationLevel = Literal["strict", "normal", "permissive"]

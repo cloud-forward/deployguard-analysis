@@ -13,11 +13,11 @@ from app.domain.entities.analysis import AnalysisRequest, AnalysisResponse
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
 from app.domain.repositories.scan_repository import ScanRepository
 
-# ✨ 새로 추가
-from src.facts.orchestrator import FactOrchestrator
 from app.core.graph_builder import GraphBuilder
 from app.core.path_finder import PathFinder
 from app.core.risk_engine import RiskEngine
+from src.facts.extractors.k8s_extractor import K8sFactExtractor
+from src.facts.extractors.lateral_move_extractor import LateralMoveExtractor
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
 from src.graph.builders.aws_scanner_types import (
     AWSScanResult,
@@ -37,6 +37,7 @@ from src.graph.builders.unified_graph_builder import UnifiedGraphBuilder
 logger = logging.getLogger(__name__)
 
 REQUIRED_SCAN_TYPES = {SCANNER_TYPE_K8S, SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE}
+MAX_HOPS = 7
 
 
 def _context(**kwargs):
@@ -51,9 +52,8 @@ class AnalysisService:
     ) -> None:
         self._jobs = jobs_repo
         self._scans = scan_repo
-        
-        # ✨ 새로 추가: Fact 파이프라인 컴포넌트
-        self._fact_orchestrator = FactOrchestrator()
+        self._k8s_extractor = K8sFactExtractor()
+        self._lateral_extractor = LateralMoveExtractor()
         self._bridge_builder = IRSABridgeBuilder()
         self._graph_builder = GraphBuilder()
         self._unified_graph_builder = UnifiedGraphBuilder()
@@ -149,7 +149,7 @@ class AnalysisService:
                 graph,
                 entry_points,
                 crown_jewels,
-                max_path_length=10,
+                max_path_length=MAX_HOPS,
             )
             
             # Step 5: Calculate risk scores
@@ -214,8 +214,8 @@ class AnalysisService:
             raise
 
     def _build_k8s_result(self, k8s_scan: Dict[str, Any], scan_id: str):
-        k8s_facts = self._fact_orchestrator.k8s_extractor.extract(k8s_scan)
-        lateral_facts = self._fact_orchestrator.lateral_extractor.extract(k8s_scan)
+        k8s_facts = self._k8s_extractor.extract(k8s_scan)
+        lateral_facts = self._lateral_extractor.extract(k8s_scan)
         return K8sGraphBuilder().build(
             [*k8s_facts, *lateral_facts],
             k8s_scan,

@@ -38,8 +38,10 @@ class ValidationRules:
         FactType.ROLE_GRANTS_RESOURCE.value: {
             (NodeType.ROLE.value, NodeType.SECRET.value),
             (NodeType.ROLE.value, NodeType.POD.value),
+            (NodeType.ROLE.value, NodeType.SERVICE_ACCOUNT.value),
             (NodeType.CLUSTER_ROLE.value, NodeType.SECRET.value),
             (NodeType.CLUSTER_ROLE.value, NodeType.POD.value),
+            (NodeType.CLUSTER_ROLE.value, NodeType.SERVICE_ACCOUNT.value),
         },
         FactType.ROLE_GRANTS_POD_EXEC.value: {
             (NodeType.ROLE.value, NodeType.POD.value),
@@ -91,7 +93,6 @@ class ValidationRules:
         NodeType.SERVICE.value: "service:",
         NodeType.INGRESS.value: "ingress:",
         NodeType.NODE.value: "node:",
-        NodeType.NODE_CREDENTIAL.value: "node_cred:",
         NodeType.CONTAINER_IMAGE.value: "container_image:",
         NodeType.IAM_ROLE.value: "iam:",
         NodeType.IAM_USER.value: "iam_user:",
@@ -102,4 +103,4 @@ class ValidationRules:
     }
     
     # Allowed confidence values
-    ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+    ALLOWED_CONFIDENCE = {"high", "medium"}

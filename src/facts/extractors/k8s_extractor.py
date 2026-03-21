@@ -420,7 +420,7 @@ class K8sFactExtractor(BaseExtractor):
             
             # Filter relevant resources
             for resource in resources:
-                if resource not in ["secrets", "configmaps", "pods", "serviceaccounts"]:
+                if resource not in ["secrets", "pods", "serviceaccounts"]:
                     continue
                 
                 # Determine target type
@@ -626,7 +626,6 @@ class K8sFactExtractor(BaseExtractor):
         """Convert K8s resource type to node type"""
         mapping = {
             "secrets": NodeType.SECRET.value,
-            "configmaps": "configmap",
             "pods": NodeType.POD.value,
             "serviceaccounts": NodeType.SERVICE_ACCOUNT.value,
         }
@@ -656,8 +655,12 @@ class K8sFactExtractor(BaseExtractor):
         
         if resource_type == "secrets":
             for secret in scan.get("secrets", []):
-                secret_ns = secret.get("namespace")
-                secret_name = secret.get("name")
+                metadata = secret.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+
+                secret_ns = metadata.get("namespace")
+                secret_name = metadata.get("name")
                 
                 if not secret_ns or not secret_name:
                     continue

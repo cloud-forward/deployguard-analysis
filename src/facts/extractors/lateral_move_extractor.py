@@ -53,19 +53,6 @@ class LateralMoveExtractor(BaseExtractor):
         facts: List[Fact] = []
         
         try:
-            # Check if NetworkPolicy exists
-            network_policies = scan_data.get("network_policies", [])
-            
-            if network_policies:
-                # NetworkPolicy exists - no lateral movement allowed
-                self.logger.info(
-                    "NetworkPolicy detected, skipping lateral movement",
-                    scan_id=scan_id,
-                    policy_count=len(network_policies),
-                )
-                return facts
-            
-            # No NetworkPolicy - generate lateral_move facts
             facts.extend(self._extract_lateral_moves(scan_data))
             
             self._log_extraction_complete(scan_id, len(facts))
@@ -77,11 +64,12 @@ class LateralMoveExtractor(BaseExtractor):
         return facts
     
     def _extract_lateral_moves(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract lateral movement facts when no NetworkPolicy exists"""
+        """Extract lateral movement facts with namespace-scoped NetworkPolicy suppression."""
         facts: List[Fact] = []
         
         pods = scan.get("pods", [])
         services = scan.get("services", [])
+        protected_namespaces = self._protected_namespaces(scan.get("network_policies", []))
         
         # Filter security-relevant services
         security_services = [
@@ -96,6 +84,7 @@ class LateralMoveExtractor(BaseExtractor):
         for pod in pods:
             pod_namespace = pod.get("namespace")
             pod_name = pod.get("name")
+            pod_labels = pod.get("labels", {})
             
             if not pod_namespace or not pod_name:
                 continue
@@ -106,6 +95,20 @@ class LateralMoveExtractor(BaseExtractor):
                 svc_port = service.get("port")
                 
                 if not svc_namespace or not svc_name:
+                    continue
+
+                if (
+                    pod_namespace in protected_namespaces
+                    or svc_namespace in protected_namespaces
+                ):
+                    continue
+
+                if self._is_same_workload_service_target(
+                    pod_namespace,
+                    pod_labels,
+                    svc_namespace,
+                    service,
+                ):
                     continue
                 
                 # Cross-namespace or same-namespace security service
@@ -126,6 +129,27 @@ class LateralMoveExtractor(BaseExtractor):
                 ))
         
         return facts
+
+    def _protected_namespaces(
+        self,
+        network_policies: List[Dict[str, Any]],
+    ) -> set[str]:
+        namespaces: set[str] = set()
+
+        for policy in network_policies:
+            if not isinstance(policy, dict):
+                continue
+
+            namespace = policy.get("namespace")
+            if not namespace:
+                metadata = policy.get("metadata")
+                if isinstance(metadata, dict):
+                    namespace = metadata.get("namespace")
+
+            if isinstance(namespace, str) and namespace:
+                namespaces.add(namespace)
+
+        return namespaces
     
     def _is_security_relevant_service(self, service: Dict[str, Any]) -> bool:
         """Check if service is security-relevant"""
@@ -142,3 +166,26 @@ class LateralMoveExtractor(BaseExtractor):
                 return True
         
         return False
+
+    def _is_same_workload_service_target(
+        self,
+        pod_namespace: str,
+        pod_labels: Dict[str, Any],
+        service_namespace: str,
+        service: Dict[str, Any],
+    ) -> bool:
+        if pod_namespace != service_namespace:
+            return False
+
+        selector = service.get("selector")
+        if not isinstance(selector, dict) or not selector:
+            return False
+
+        if not isinstance(pod_labels, dict) or not pod_labels:
+            return False
+
+        for key, value in selector.items():
+            if pod_labels.get(key) != value:
+                return False
+
+        return True

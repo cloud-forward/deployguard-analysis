@@ -6,11 +6,17 @@ from src.facts.canonical_fact import Fact
 from src.facts.id_generator import NodeIDGenerator
 from src.facts.types import NodeType
 from src.facts.logger import setup_logger
+from src.facts.validation.rules import ValidationRules
 from src.graph.builders.build_result_types import (
     UnifiedGraphResult,
     graph_edge_attrs,
     graph_node_attrs,
 )
+
+PREFIX_TO_NODE_TYPE = {
+    prefix.rstrip(":"): node_type
+    for node_type, prefix in ValidationRules.TYPE_PREFIX_MAP.items()
+}
 
 
 class GraphBuilder:
@@ -116,7 +122,7 @@ class GraphBuilder:
         if node_id in self._created_nodes:
             return
 
-        node_type = NodeIDGenerator.parse_node_type(node_id) or "unknown"
+        node_type = self._canonical_placeholder_node_type(node_id)
         self.graph.add_node(
             node_id,
             id=node_id,
@@ -127,6 +133,12 @@ class GraphBuilder:
             metadata={"adapter_placeholder": True},
         )
         self._created_nodes.add(node_id)
+
+    def _canonical_placeholder_node_type(self, node_id: str) -> str:
+        parsed_type = NodeIDGenerator.parse_node_type(node_id)
+        if not parsed_type:
+            return "unknown"
+        return PREFIX_TO_NODE_TYPE.get(parsed_type, parsed_type)
     
     def _add_edge(self, fact: Fact):
         """Add edge from fact"""
@@ -294,12 +306,6 @@ class GraphBuilder:
         
         elif node_type == NodeType.NODE.value:
             return 0.5
-        
-        elif node_type == NodeType.NODE_CREDENTIAL.value:
-            base = 0.8
-            if metadata.get("grants_cluster_admin"):
-                base = 0.95
-            return base
         
         elif node_type == NodeType.CONTAINER_IMAGE.value:
             base = 0.2

@@ -34,6 +34,12 @@ def service(jobs_repo, scan_repo):
     return AnalysisService(jobs_repo=jobs_repo, scan_repo=scan_repo)
 
 
+def test_analysis_service_uses_direct_fact_extractors_instead_of_orchestrator(service):
+    assert hasattr(service, "_k8s_extractor")
+    assert hasattr(service, "_lateral_extractor")
+    assert not hasattr(service, "_fact_orchestrator")
+
+
 @pytest.mark.asyncio
 async def test_maybe_trigger_analysis_creates_job_when_all_scans_present(service, jobs_repo, scan_repo):
     cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -127,6 +133,12 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
     service._unified_graph_builder.build.assert_called_once_with(k8s_result, aws_result)
     service._graph_builder.build_from_unified_result.assert_awaited_once_with(unified_result)
     service._graph_builder.build_from_facts.assert_not_called()
+    service._path_finder.find_all_paths.assert_called_once_with(
+        graph,
+        ["pod:prod:api"],
+        ["iam:123456789012:AppRole"],
+        max_path_length=7,
+    )
     assert result["stats"]["graph"]["nodes"] == 2
     assert result["stats"]["paths"]["total"] == 1
 

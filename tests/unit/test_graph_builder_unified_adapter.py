@@ -101,7 +101,7 @@ async def test_build_from_unified_result_adds_only_placeholder_nodes_for_danglin
     assert graph.number_of_nodes() == 2
     assert graph.has_edge("pod:prod:api", "iam:123456789012:MissingRole")
     assert graph.nodes["iam:123456789012:MissingRole"]["metadata"] == {"adapter_placeholder": True}
-    assert graph.nodes["iam:123456789012:MissingRole"]["type"] == "iam"
+    assert graph.nodes["iam:123456789012:MissingRole"]["type"] == "iam_role"
 
 
 @pytest.mark.asyncio

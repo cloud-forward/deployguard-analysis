@@ -53,19 +53,6 @@ class LateralMoveExtractor(BaseExtractor):
         facts: List[Fact] = []
         
         try:
-            # Check if NetworkPolicy exists
-            network_policies = scan_data.get("network_policies", [])
-            
-            if network_policies:
-                # NetworkPolicy exists - no lateral movement allowed
-                self.logger.info(
-                    "NetworkPolicy detected, skipping lateral movement",
-                    scan_id=scan_id,
-                    policy_count=len(network_policies),
-                )
-                return facts
-            
-            # No NetworkPolicy - generate lateral_move facts
             facts.extend(self._extract_lateral_moves(scan_data))
             
             self._log_extraction_complete(scan_id, len(facts))
@@ -77,11 +64,12 @@ class LateralMoveExtractor(BaseExtractor):
         return facts
     
     def _extract_lateral_moves(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract lateral movement facts when no NetworkPolicy exists"""
+        """Extract bounded lateral movement facts."""
         facts: List[Fact] = []
         
         pods = scan.get("pods", [])
         services = scan.get("services", [])
+        protected_namespaces = self._protected_namespaces(scan.get("network_policies", []))
         
         # Filter security-relevant services
         security_services = [
@@ -99,13 +87,16 @@ class LateralMoveExtractor(BaseExtractor):
             
             if not pod_namespace or not pod_name:
                 continue
+
+            if pod_namespace in protected_namespaces:
+                continue
             
             for service in security_services:
                 svc_namespace = service.get("namespace")
                 svc_name = service.get("name")
                 svc_port = service.get("port")
                 
-                if not svc_namespace or not svc_name:
+                if not svc_namespace or not svc_name or not isinstance(svc_port, int):
                     continue
                 
                 # Cross-namespace or same-namespace security service
@@ -118,7 +109,7 @@ class LateralMoveExtractor(BaseExtractor):
                     object_id=self.id_gen.service(svc_namespace, svc_name),
                     object_type=NodeType.SERVICE.value,
                     metadata={
-                        "reason": "no_network_policy",
+                        "reason": "no_namespace_network_policy",
                         "cross_namespace": is_cross_namespace,
                         "target_port": svc_port,
                         "compliance_violation": "PRCC-024",
@@ -142,3 +133,17 @@ class LateralMoveExtractor(BaseExtractor):
                 return True
         
         return False
+
+    def _protected_namespaces(self, network_policies: List[Dict[str, Any]]) -> set[str]:
+        """Return namespaces that have at least one NetworkPolicy defined."""
+        namespaces: set[str] = set()
+
+        for policy in network_policies:
+            namespace = policy.get("namespace")
+            if not namespace:
+                metadata = policy.get("metadata", {})
+                namespace = metadata.get("namespace")
+            if namespace:
+                namespaces.add(namespace)
+
+        return namespaces

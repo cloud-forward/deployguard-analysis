@@ -17,6 +17,8 @@ from src.facts.orchestrator import FactOrchestrator
 from app.core.graph_builder import GraphBuilder
 from app.core.path_finder import PathFinder
 from app.core.risk_engine import RiskEngine
+from src.graph.builders.aws_scanner_types import IAMRoleScan, IAMUserScan
+from src.graph.builders.iam_policy_parser import parse_all_roles, parse_all_users
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +96,15 @@ class AnalysisService:
             )
             
             # Step 3: Build graph
-            graph = await self._graph_builder.build_from_facts(fact_collection.facts)
+            policy_results, user_policy_results = self._build_aws_policy_analysis(aws_scan)
+            graph = await self._graph_builder.build_from_facts(
+                fact_collection.facts,
+                k8s_scan=k8s_scan,
+                scan_id=k8s_scan_id,
+                aws_scan=aws_scan,
+                policy_results=policy_results,
+                user_policy_results=user_policy_results,
+            )
             
             # Step 4: Find attack paths
             entry_points = self._graph_builder.get_entry_points()
@@ -185,6 +195,30 @@ class AnalysisService:
             "scanner_type": scanner_type,
             # Scanner-specific data will be loaded from S3
         }
+
+    def _build_aws_policy_analysis(self, aws_scan: Dict[str, Any]):
+        """Build optional IAM policy analysis inputs for AWS typed graph seeding."""
+        iam_roles = self._typed_scan_list(aws_scan.get("iam_roles"), IAMRoleScan)
+        iam_users = self._typed_scan_list(aws_scan.get("iam_users"), IAMUserScan)
+
+        policy_results = parse_all_roles(iam_roles) if iam_roles else None
+        user_policy_results = parse_all_users(iam_users) if iam_users else None
+        return policy_results, user_policy_results
+
+    def _typed_scan_list(self, items, cls):
+        if not isinstance(items, list):
+            return []
+
+        typed_items = []
+        for item in items:
+            if isinstance(item, cls):
+                typed_items.append(item)
+            elif isinstance(item, dict):
+                try:
+                    typed_items.append(cls(**item))
+                except TypeError:
+                    continue
+        return typed_items
 
     async def maybe_trigger_analysis(self, cluster_id: str | UUID, request_id: str | None = None) -> None:
         cluster_id_str = str(cluster_id)

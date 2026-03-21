@@ -1,6 +1,7 @@
 import re
 import logging
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from app.application.services.scan_service import ScanService
 
@@ -420,6 +421,25 @@ class TestScanServiceGetStatus:
 
         assert exc_info.value.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_get_status_falls_back_to_requested_at_when_created_at_missing(self):
+        from datetime import datetime
+        svc, repo, _ = make_service()
+        requested_at = datetime(2024, 1, 15, 10, 0, 0)
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="created",
+            requested_at=requested_at,
+        )
+
+        result = await svc.get_scan_status("s1")
+
+        assert result.created_at == requested_at
+        assert result.completed_at is None
+        assert result.files == []
+
 
 class TestScanServiceGetDetail:
 
@@ -455,6 +475,25 @@ class TestScanServiceGetDetail:
             await svc.get_scan_detail("nonexistent")
 
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_detail_falls_back_to_requested_at_and_empty_s3_keys(self):
+        from datetime import datetime
+        svc, repo, _ = make_service()
+        requested_at = datetime(2024, 1, 15, 10, 0, 0)
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="aws",
+            status="created",
+            requested_at=requested_at,
+        )
+
+        result = await svc.get_scan_detail("s1")
+
+        assert result.created_at == requested_at
+        assert result.completed_at is None
+        assert result.s3_keys == []
 
 
 class TestScanServiceListClusterScans:
@@ -500,6 +539,38 @@ class TestScanServiceListClusterScans:
 
         assert result.total == 0
         assert result.items == []
+
+    @pytest.mark.asyncio
+    async def test_list_cluster_scans_uses_requested_at_when_created_at_missing(self):
+        from datetime import datetime
+        svc, repo, _ = make_service()
+        older_requested_at = datetime(2024, 1, 15, 10, 0, 0)
+        newer_requested_at = datetime(2024, 1, 16, 10, 0, 0)
+        repo.list_by_cluster.return_value = [
+            SimpleNamespace(
+                scan_id="older",
+                scanner_type="k8s",
+                status="completed",
+                requested_at=older_requested_at,
+                completed_at=datetime(2024, 1, 15, 10, 30, 0),
+                s3_keys=["scans/c1/older/k8s/scan.json"],
+            ),
+            SimpleNamespace(
+                scan_id="newer",
+                scanner_type="aws",
+                status="created",
+                requested_at=newer_requested_at,
+            ),
+        ]
+
+        result = await svc.list_cluster_scans("c1")
+
+        assert result.total == 2
+        assert [item.scan_id for item in result.items] == ["newer", "older"]
+        assert result.items[0].created_at == newer_requested_at
+        assert result.items[0].file_count == 0
+        assert result.items[1].created_at == older_requested_at
+        assert result.items[1].file_count == 1
 
 
 class TestScanServiceGetRawResultDownloadUrl:

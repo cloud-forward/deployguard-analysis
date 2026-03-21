@@ -5,6 +5,7 @@ Extracts facts from K8s scanner output (Phase 1-4).
 from typing import Any, Dict, List
 
 from src.facts.extractors.base_extractor import BaseExtractor
+from src.facts.extractors.k8s_rbac_parser import K8sRBACParser
 from src.facts.canonical_fact import Fact
 from src.facts.types import FactType, NodeType
 from src.facts.id_generator import NodeIDGenerator
@@ -16,6 +17,7 @@ class K8sFactExtractor(BaseExtractor):
     def __init__(self):
         super().__init__("k8s")
         self.id_gen = NodeIDGenerator()
+        self.rbac_parser = K8sRBACParser()
     
     def extract(self, scan_data: Dict[str, Any], **kwargs) -> List[Fact]:
         """
@@ -62,7 +64,7 @@ class K8sFactExtractor(BaseExtractor):
         facts: List[Fact] = []
         
         facts.extend(self._extract_pod_uses_sa(scan))
-        facts.extend(self._extract_rbac_bindings(scan))
+        facts.extend(self.rbac_parser.extract_bindings(scan))
         facts.extend(self._extract_service_targets_pod(scan))
         facts.extend(self._extract_ingress_exposes_service(scan))
         facts.extend(self._extract_pod_mounts_secret(scan))
@@ -94,81 +96,6 @@ class K8sFactExtractor(BaseExtractor):
                 object_type=NodeType.SERVICE_ACCOUNT.value,
                 metadata={},
             ))
-        
-        return facts
-    
-    def _extract_rbac_bindings(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract RBAC binding facts"""
-        facts: List[Fact] = []
-        
-        # RoleBindings (namespace scoped)
-        for binding in scan.get("role_bindings", []):
-            role_ref_kind = binding.get("role_ref_kind")
-            role_ref_name = binding.get("role_ref_name")
-            binding_namespace = binding.get("namespace")
-            
-            if not all([role_ref_kind, role_ref_name, binding_namespace]):
-                continue
-            
-            for subject in binding.get("subjects", []):
-                if subject.get("kind") != "ServiceAccount":
-                    continue
-                
-                sa_name = subject.get("name")
-                sa_namespace = subject.get("namespace", binding_namespace)
-                
-                if not sa_name:
-                    continue
-                
-                # Determine fact type and object ID
-                if role_ref_kind == "ClusterRole":
-                    fact_type = FactType.SERVICE_ACCOUNT_BOUND_CLUSTER_ROLE.value
-                    object_id = self.id_gen.cluster_role(role_ref_name)
-                    object_type = NodeType.CLUSTER_ROLE.value
-                else:
-                    fact_type = FactType.SERVICE_ACCOUNT_BOUND_ROLE.value
-                    object_id = self.id_gen.role(binding_namespace, role_ref_name)
-                    object_type = NodeType.ROLE.value
-                
-                facts.append(Fact(
-                    fact_type=fact_type,
-                    subject_id=self.id_gen.service_account(sa_namespace, sa_name),
-                    subject_type=NodeType.SERVICE_ACCOUNT.value,
-                    object_id=object_id,
-                    object_type=object_type,
-                    metadata={
-                        "binding_name": binding.get("name"),
-                        "binding_namespace": binding_namespace,
-                    },
-                ))
-        
-        # ClusterRoleBindings (cluster scoped)
-        for binding in scan.get("cluster_role_bindings", []):
-            role_ref_name = binding.get("role_ref_name")
-            
-            if not role_ref_name:
-                continue
-            
-            for subject in binding.get("subjects", []):
-                if subject.get("kind") != "ServiceAccount":
-                    continue
-                
-                sa_name = subject.get("name")
-                sa_namespace = subject.get("namespace")
-                
-                if not sa_name or not sa_namespace:
-                    continue
-                
-                facts.append(Fact(
-                    fact_type=FactType.SERVICE_ACCOUNT_BOUND_CLUSTER_ROLE.value,
-                    subject_id=self.id_gen.service_account(sa_namespace, sa_name),
-                    subject_type=NodeType.SERVICE_ACCOUNT.value,
-                    object_id=self.id_gen.cluster_role(role_ref_name),
-                    object_type=NodeType.CLUSTER_ROLE.value,
-                    metadata={
-                        "binding_name": binding.get("name"),
-                    },
-                ))
         
         return facts
     
@@ -352,160 +279,7 @@ class K8sFactExtractor(BaseExtractor):
         """Phase 2: Extract permission facts"""
         facts: List[Fact] = []
         
-        facts.extend(self._extract_role_grants_resource(scan))
-        facts.extend(self._extract_role_grants_pod_exec(scan))
-        
-        return facts
-    
-    def _extract_role_grants_resource(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract role_grants_resource facts"""
-        facts: List[Fact] = []
-        
-        # Process Roles
-        for role in scan.get("roles", []):
-            role_namespace = role.get("namespace")
-            role_name = role.get("name")
-            
-            if not role_namespace or not role_name:
-                continue
-            
-            facts.extend(
-                self._process_role_rules(
-                    self.id_gen.role(role_namespace, role_name),
-                    NodeType.ROLE.value,
-                    role.get("rules", []),
-                    role_namespace,
-                    scan,
-                )
-            )
-        
-        # Process ClusterRoles
-        for cluster_role in scan.get("cluster_roles", []):
-            role_name = cluster_role.get("name")
-            
-            if not role_name:
-                continue
-            
-            facts.extend(
-                self._process_role_rules(
-                    self.id_gen.cluster_role(role_name),
-                    NodeType.CLUSTER_ROLE.value,
-                    cluster_role.get("rules", []),
-                    None,  # ClusterRole has no namespace
-                    scan,
-                )
-            )
-        
-        return facts
-    
-    def _process_role_rules(
-        self,
-        role_id: str,
-        role_type: str,
-        rules: List[Dict[str, Any]],
-        role_namespace: str | None,
-        scan: Dict[str, Any],
-    ) -> List[Fact]:
-        """Process role rules and generate facts"""
-        facts: List[Fact] = []
-        
-        for rule in rules:
-            resources = rule.get("resources", [])
-            verbs = rule.get("verbs", [])
-            api_groups = rule.get("api_groups", [])
-            resource_names = rule.get("resource_names", [])
-            
-            if not resources or not verbs:
-                continue
-            
-            # Filter relevant resources
-            for resource in resources:
-                if resource not in ["secrets", "configmaps", "pods", "serviceaccounts"]:
-                    continue
-                
-                # Determine target type
-                target_type = self._resource_to_node_type(resource)
-                if not target_type:
-                    continue
-                
-                # Generate facts for each target
-                if resource_names:
-                    # Specific resources
-                    for resource_name in resource_names:
-                        target_id = self._generate_resource_id(
-                            target_type, role_namespace, resource_name
-                        )
-                        if target_id:
-                            facts.append(
-                                self._create_role_grants_fact(
-                                    role_id, role_type, target_id, target_type,
-                                    verbs, api_groups, [resource_name]
-                                )
-                            )
-                else:
-                    # All resources in namespace (or cluster for ClusterRole)
-                    targets = self._find_all_resources(
-                        scan, resource, role_namespace
-                    )
-                    for target_id, target_ns, target_name in targets:
-                        facts.append(
-                            self._create_role_grants_fact(
-                                role_id, role_type, target_id, target_type,
-                                verbs, api_groups, []
-                            )
-                        )
-        
-        return facts
-    
-    def _extract_role_grants_pod_exec(self, scan: Dict[str, Any]) -> List[Fact]:
-        """Extract role_grants_pod_exec facts"""
-        facts: List[Fact] = []
-        
-        # Process Roles
-        for role in scan.get("roles", []):
-            role_namespace = role.get("namespace")
-            role_name = role.get("name")
-            
-            if not role_namespace or not role_name:
-                continue
-            
-            if self._role_has_pod_exec(role.get("rules", [])):
-                # Generate facts for all pods in namespace
-                for pod in scan.get("pods", []):
-                    if pod.get("namespace") == role_namespace:
-                        facts.append(Fact(
-                            fact_type=FactType.ROLE_GRANTS_POD_EXEC.value,
-                            subject_id=self.id_gen.role(role_namespace, role_name),
-                            subject_type=NodeType.ROLE.value,
-                            object_id=self.id_gen.pod(role_namespace, pod.get("name")),
-                            object_type=NodeType.POD.value,
-                            metadata={
-                                "verbs": ["create"],
-                                "resources": ["pods/exec"],
-                            },
-                        ))
-        
-        # Process ClusterRoles
-        for cluster_role in scan.get("cluster_roles", []):
-            role_name = cluster_role.get("name")
-            
-            if not role_name:
-                continue
-            
-            if self._role_has_pod_exec(cluster_role.get("rules", [])):
-                # Generate facts for all pods (cluster-wide)
-                for pod in scan.get("pods", []):
-                    facts.append(Fact(
-                        fact_type=FactType.ROLE_GRANTS_POD_EXEC.value,
-                        subject_id=self.id_gen.cluster_role(role_name),
-                        subject_type=NodeType.CLUSTER_ROLE.value,
-                        object_id=self.id_gen.pod(pod.get("namespace"), pod.get("name")),
-                        object_type=NodeType.POD.value,
-                        metadata={
-                            "verbs": ["create"],
-                            "resources": ["pods/exec"],
-                        },
-                    ))
+        facts.extend(self.rbac_parser.extract_permissions(scan))
         
         return facts
     
@@ -622,109 +396,6 @@ class K8sFactExtractor(BaseExtractor):
         
         return True
     
-    def _resource_to_node_type(self, resource: str) -> str | None:
-        """Convert K8s resource type to node type"""
-        mapping = {
-            "secrets": NodeType.SECRET.value,
-            "configmaps": "configmap",
-            "pods": NodeType.POD.value,
-            "serviceaccounts": NodeType.SERVICE_ACCOUNT.value,
-        }
-        return mapping.get(resource)
-    
-    def _generate_resource_id(
-        self, node_type: str, namespace: str | None, name: str
-    ) -> str | None:
-        """Generate node ID for resource"""
-        if not name:
-            return None
-        
-        if node_type == NodeType.SECRET.value and namespace:
-            return self.id_gen.secret(namespace, name)
-        elif node_type == NodeType.POD.value and namespace:
-            return self.id_gen.pod(namespace, name)
-        elif node_type == NodeType.SERVICE_ACCOUNT.value and namespace:
-            return self.id_gen.service_account(namespace, name)
-        
-        return None
-    
-    def _find_all_resources(
-        self, scan: Dict[str, Any], resource_type: str, namespace: str | None
-    ) -> List[tuple[str, str, str]]:
-        """Find all resources of given type in namespace (or cluster-wide)"""
-        results = []
-        
-        if resource_type == "secrets":
-            for secret in scan.get("secrets", []):
-                secret_ns = secret.get("namespace")
-                secret_name = secret.get("name")
-                
-                if not secret_ns or not secret_name:
-                    continue
-                
-                # Filter by namespace if specified
-                if namespace and secret_ns != namespace:
-                    continue
-                
-                results.append((
-                    self.id_gen.secret(secret_ns, secret_name),
-                    secret_ns,
-                    secret_name,
-                ))
-        
-        elif resource_type == "pods":
-            for pod in scan.get("pods", []):
-                pod_ns = pod.get("namespace")
-                pod_name = pod.get("name")
-                
-                if not pod_ns or not pod_name:
-                    continue
-                
-                if namespace and pod_ns != namespace:
-                    continue
-                
-                results.append((
-                    self.id_gen.pod(pod_ns, pod_name),
-                    pod_ns,
-                    pod_name,
-                ))
-        
-        return results
-    
-    def _create_role_grants_fact(
-        self,
-        role_id: str,
-        role_type: str,
-        target_id: str,
-        target_type: str,
-        verbs: List[str],
-        api_groups: List[str],
-        resource_names: List[str],
-    ) -> Fact:
-        """Create a role_grants_resource fact"""
-        return Fact(
-            fact_type=FactType.ROLE_GRANTS_RESOURCE.value,
-            subject_id=role_id,
-            subject_type=role_type,
-            object_id=target_id,
-            object_type=target_type,
-            metadata={
-                "verbs": verbs,
-                "api_groups": api_groups,
-                "resource_names": resource_names,
-            },
-        )
-    
-    def _role_has_pod_exec(self, rules: List[Dict[str, Any]]) -> bool:
-        """Check if role has pod exec permission"""
-        for rule in rules:
-            resources = rule.get("resources", [])
-            verbs = rule.get("verbs", [])
-            
-            if "pods/exec" in resources and "create" in verbs:
-                return True
-        
-        return False
     
     def _detect_escape_methods(self, pod: Dict[str, Any]) -> List[str]:
         """Detect container escape methods"""

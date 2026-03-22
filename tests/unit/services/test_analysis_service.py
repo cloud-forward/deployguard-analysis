@@ -125,6 +125,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
     service._path_finder.find_all_paths = MagicMock(return_value=[["pod:prod:api", "iam:123456789012:AppRole"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("pod:prod:api", "iam:123456789012:AppRole", "service_account_assumes_iam_role")])
     service._risk_engine.calculate_path_risk = MagicMock(return_value=0.9)
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
@@ -139,8 +140,18 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
         ["iam:123456789012:AppRole"],
         max_path_length=7,
     )
+    service._remediation_optimizer.optimize.assert_called_once_with(
+        [{
+            "path": ["pod:prod:api", "iam:123456789012:AppRole"],
+            "risk_score": 0.9,
+            "length": 2,
+            "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
+        }],
+        graph,
+    )
     assert result["stats"]["graph"]["nodes"] == 2
     assert result["stats"]["paths"]["total"] == 1
+    assert result["remediation_optimization"] == {"summary": {"selected_count": 1}, "recommendations": []}
 
 
 @pytest.mark.asyncio
@@ -166,6 +177,7 @@ async def test_execute_analysis_preserves_downstream_networkx_compatibility(serv
     service._path_finder.find_all_paths = MagicMock(return_value=[["ingress:prod:web", "s3:123:data"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("ingress:prod:web", "s3:123:data", "path")])
     service._risk_engine.calculate_path_risk = MagicMock(return_value=0.5)
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
@@ -175,3 +187,4 @@ async def test_execute_analysis_preserves_downstream_networkx_compatibility(serv
         "length": 2,
         "edges": [{"source": "ingress:prod:web", "target": "s3:123:data", "type": "path"}],
     }]
+    assert result["remediation_optimization"] == {"summary": {"selected_count": 1}, "recommendations": []}

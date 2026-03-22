@@ -15,6 +15,7 @@ from app.domain.repositories.scan_repository import ScanRepository
 
 from app.core.graph_builder import GraphBuilder
 from app.core.path_finder import PathFinder
+from app.core.remediation_optimizer import RemediationOptimizer
 from app.core.risk_engine import RiskEngine
 from src.facts.extractors.k8s_extractor import K8sFactExtractor
 from src.facts.extractors.lateral_move_extractor import LateralMoveExtractor
@@ -59,6 +60,7 @@ class AnalysisService:
         self._unified_graph_builder = UnifiedGraphBuilder()
         self._path_finder = PathFinder()
         self._risk_engine = RiskEngine()
+        self._remediation_optimizer = RemediationOptimizer()
 
     async def analyze(self, request: AnalysisRequest) -> AnalysisResponse:
         job_id = await self._jobs.create_job(request.target_id, _params_dict(request))
@@ -170,6 +172,7 @@ class AnalysisService:
             
             # Sort by risk score
             enriched_paths.sort(key=lambda x: x["risk_score"], reverse=True)
+            remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
             
             result = {
                 "cluster_id": cluster_id,
@@ -196,6 +199,7 @@ class AnalysisService:
                     },
                 },
                 "attack_paths": enriched_paths,
+                "remediation_optimization": remediation_optimization,
             }
             
             logger.info(

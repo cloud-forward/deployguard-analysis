@@ -3,7 +3,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
-from app.gateway.models import AnalysisJob, AttackPath, AttackPathEdge, GraphSnapshot
+from app.gateway.models import (
+    AnalysisJob,
+    AttackPath,
+    AttackPathEdge,
+    GraphSnapshot,
+    RemediationRecommendation,
+)
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 
 
@@ -119,3 +125,78 @@ class TestSqlAlchemyAnalysisJobRepository:
             "ingress_exposes_service",
             "iam_role_access_resource",
         ]
+
+    @pytest.mark.asyncio
+    async def test_persist_remediation_recommendations_stores_ranked_rows_for_graph(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        graph_id = "k8s-1-graph"
+        job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+        )
+
+        await repo.persist_remediation_recommendations(
+            cluster_id=cluster_id,
+            graph_id=graph_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            remediation_optimization={
+                "summary": {"selected_count": 2},
+                "recommendations": [
+                    {
+                        "id": "restrict_ingress:ingress:prod:web:service:prod:web:ingress_exposes_service",
+                        "edge_source": "ingress:prod:web",
+                        "edge_target": "service:prod:web",
+                        "edge_type": "ingress_exposes_service",
+                        "fix_type": "restrict_ingress",
+                        "fix_description": "Restrict ingress exposure.",
+                        "blocked_path_ids": ["path-a", "path-b"],
+                        "blocked_path_indices": [0, 1],
+                        "fix_cost": 1.0,
+                        "edge_score": 1.5,
+                        "covered_risk": 1.5,
+                        "cumulative_risk_reduction": 1.5,
+                        "metadata": {"edge_source_type": "ingress"},
+                    },
+                    {
+                        "id": "remove_privileged:pod:prod:escape:node:worker-1:escapes_to",
+                        "edge_source": "pod:prod:escape",
+                        "edge_target": "node:worker-1",
+                        "edge_type": "escapes_to",
+                        "fix_type": "remove_privileged",
+                        "fix_description": "Remove the privileged pod config.",
+                        "blocked_path_ids": ["path-c"],
+                        "blocked_path_indices": [2],
+                        "fix_cost": 2.2,
+                        "edge_score": 0.7,
+                        "covered_risk": 0.7,
+                        "cumulative_risk_reduction": 2.2,
+                        "metadata": {"edge_source_type": "pod"},
+                    },
+                ],
+            },
+        )
+
+        snapshot = await session.get(GraphSnapshot, graph_id)
+        job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
+        rows = (
+            await session.execute(
+                select(RemediationRecommendation)
+                .where(RemediationRecommendation.graph_id == graph_id)
+                .order_by(RemediationRecommendation.recommendation_rank)
+            )
+        ).scalars().all()
+
+        assert snapshot is not None
+        assert job is not None
+        assert job.graph_id == graph_id
+        assert [row.recommendation_rank for row in rows] == [0, 1]
+        assert [row.fix_type for row in rows] == ["restrict_ingress", "remove_privileged"]
+        assert rows[0].blocked_path_ids == ["path-a", "path-b"]
+        assert rows[0].covered_risk == 1.5
+        assert rows[0].cumulative_risk_reduction == 1.5
+        assert rows[1].cumulative_risk_reduction == 2.2

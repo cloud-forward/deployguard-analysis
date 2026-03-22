@@ -191,6 +191,14 @@ class AnalysisService:
                 attack_paths=enriched_paths,
             )
             remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
+            await self._jobs.persist_remediation_recommendations(
+                cluster_id=cluster_id,
+                graph_id=graph_id,
+                k8s_scan_id=k8s_scan_id,
+                aws_scan_id=aws_scan_id,
+                image_scan_id=image_scan_id,
+                remediation_optimization=remediation_optimization,
+            )
             
             result = {
                 "cluster_id": cluster_id,

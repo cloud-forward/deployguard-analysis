@@ -156,6 +156,14 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
             "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
         }],
     )
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="k8s-1-graph",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        remediation_optimization={"summary": {"selected_count": 1}, "recommendations": []},
+    )
     service._remediation_optimizer.optimize.assert_called_once_with(
         [{
             "path_id": "path:0:pod:prod:api->iam:123456789012:AppRole",
@@ -200,6 +208,7 @@ async def test_execute_analysis_preserves_downstream_networkx_compatibility(serv
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
     jobs_repo.persist_attack_paths.assert_awaited_once()
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once()
     assert result["attack_paths"] == [{
         "path_id": "path:0:ingress:prod:web->s3:123:data",
         "path": ["ingress:prod:web", "s3:123:data"],

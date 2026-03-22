@@ -7,7 +7,13 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
-from app.gateway.models import AnalysisJob, AttackPath, AttackPathEdge, GraphSnapshot
+from app.gateway.models import (
+    AnalysisJob,
+    AttackPath,
+    AttackPathEdge,
+    GraphSnapshot,
+    RemediationRecommendation,
+)
 
 
 class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
@@ -112,6 +118,65 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
 
         await self._session.commit()
 
+    async def persist_remediation_recommendations(
+        self,
+        *,
+        cluster_id: str | UUID,
+        graph_id: str,
+        k8s_scan_id: str,
+        aws_scan_id: str,
+        image_scan_id: str,
+        remediation_optimization: Dict[str, Any],
+    ) -> None:
+        normalized_cluster_id = str(UUID(str(cluster_id)))
+
+        snapshot = await self._session.get(GraphSnapshot, graph_id)
+        if snapshot is None:
+            self._session.add(GraphSnapshot(id=graph_id))
+            await self._session.flush()
+
+        matching_job = await self._session.scalar(
+            select(AnalysisJob)
+            .where(
+                AnalysisJob.cluster_id == normalized_cluster_id,
+                AnalysisJob.k8s_scan_id == k8s_scan_id,
+                AnalysisJob.aws_scan_id == aws_scan_id,
+                AnalysisJob.image_scan_id == image_scan_id,
+            )
+            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+            .limit(1)
+        )
+        if matching_job is not None:
+            matching_job.graph_id = graph_id
+
+        await self._session.execute(
+            delete(RemediationRecommendation).where(RemediationRecommendation.graph_id == graph_id)
+        )
+
+        recommendations = list(remediation_optimization.get("recommendations", []))
+        for rank, recommendation in enumerate(recommendations):
+            self._session.add(
+                RemediationRecommendation(
+                    graph_id=graph_id,
+                    recommendation_id=str(recommendation.get("id", f"recommendation:{rank}")),
+                    recommendation_rank=rank,
+                    edge_source=self._as_str(recommendation.get("edge_source")),
+                    edge_target=self._as_str(recommendation.get("edge_target")),
+                    edge_type=self._as_str(recommendation.get("edge_type")),
+                    fix_type=self._as_str(recommendation.get("fix_type")),
+                    fix_description=self._as_str(recommendation.get("fix_description")),
+                    blocked_path_ids=self._as_str_list(recommendation.get("blocked_path_ids")),
+                    blocked_path_indices=self._as_int_list(recommendation.get("blocked_path_indices")),
+                    fix_cost=self._as_float(recommendation.get("fix_cost")),
+                    edge_score=self._as_float(recommendation.get("edge_score")),
+                    covered_risk=self._as_float(recommendation.get("covered_risk")),
+                    cumulative_risk_reduction=self._as_float(recommendation.get("cumulative_risk_reduction")),
+                    metadata_json=self._as_dict(recommendation.get("metadata")),
+                )
+            )
+
+        await self._session.commit()
+
     @staticmethod
     def _risk_level(value: Any) -> str:
         score = SqlAlchemyAnalysisJobRepository._as_float(value) or 0.0
@@ -142,3 +207,31 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _as_str(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return dict(value) if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _as_str_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    @staticmethod
+    def _as_int_list(value: Any) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[int] = []
+        for item in value:
+            try:
+                normalized.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return normalized

@@ -202,6 +202,41 @@ class AttackPathEdge(Base):
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
 
 
+class RemediationRecommendation(Base):
+    __tablename__ = "remediation_recommendations"
+    __table_args__ = (
+        Index("idx_remediation_recommendations_graph_id", "graph_id"),
+        Index("idx_remediation_recommendations_graph_rank", "graph_id", "recommendation_rank"),
+        Index("idx_remediation_recommendations_graph_fix_type", "graph_id", "fix_type"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    graph_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=False,
+    )
+    recommendation_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recommendation_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    edge_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    edge_target: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    edge_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fix_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fix_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blocked_path_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
+    blocked_path_indices: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
+    fix_cost: Mapped[float | None] = mapped_column(nullable=True)
+    edge_score: Mapped[float | None] = mapped_column(nullable=True)
+    covered_risk: Mapped[float | None] = mapped_column(nullable=True)
+    cumulative_risk_reduction: Mapped[float | None] = mapped_column(nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+
+
 class Cluster(Base):
     """
     Model representing a cluster in DeployGuard.

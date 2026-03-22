@@ -24,64 +24,82 @@ FIX_COST_BY_TYPE: dict[str, float] = {
 EDGE_FIX_TYPE_MAP: dict[str, tuple[str, str]] = {
     "ingress_exposes_service": (
         "restrict_ingress",
-        "Restrict the ingress route to remove this exposure path.",
+        "restrict ingress exposure",
     ),
     "service_account_bound_role": (
         "remove_role_binding",
-        "Remove or narrow the role binding that grants this service account access.",
+        "remove or narrow the role binding",
     ),
     "service_account_bound_cluster_role": (
         "remove_role_binding",
-        "Remove or narrow the cluster role binding that grants this service account access.",
+        "remove or narrow the cluster role binding",
     ),
     "lateral_move": (
         "apply_network_policy",
-        "Apply network controls to block this lateral movement step.",
+        "apply network controls",
     ),
     "service_account_assumes_iam_role": (
         "restrict_iam_policy",
-        "Restrict the IAM trust or attached policy enabling this cross-domain access.",
+        "restrict the IAM trust or attached policy",
     ),
     "instance_profile_assumes": (
         "restrict_iam_policy",
-        "Restrict the IAM trust or attached policy enabling this instance profile access.",
+        "restrict the instance profile trust or attached policy",
     ),
     "iam_role_access_resource": (
         "restrict_iam_policy",
-        "Restrict the IAM policy that grants this resource access.",
+        "restrict the IAM policy",
     ),
     "iam_user_access_resource": (
         "restrict_iam_policy",
-        "Restrict the IAM policy that grants this resource access.",
+        "restrict the IAM policy",
     ),
     "pod_uses_service_account": (
         "change_service_account",
-        "Change the pod to use a less-privileged service account.",
+        "change the workload service account",
     ),
     "pod_mounts_secret": (
         "remove_secret_mount",
-        "Remove the secret mount or replace it with a safer delivery mechanism.",
+        "remove the secret mount",
     ),
     "pod_uses_env_from_secret": (
         "remove_secret_mount",
-        "Remove secret-backed environment injection from this path.",
+        "remove secret-backed environment injection",
     ),
     "escapes_to": (
         "remove_privileged",
-        "Remove the privileged or escape-capable pod configuration enabling this node escape.",
+        "remove privileged or escape-capable pod settings",
     ),
     "exposes_token": (
         "rotate_credentials",
-        "Rotate the exposed credential and remove the access path that leaks it.",
+        "rotate the exposed credential",
     ),
     "secret_contains_credentials": (
         "rotate_credentials",
-        "Rotate the embedded credential and remove the secret-based credential exposure.",
+        "rotate the exposed credential",
     ),
     "secret_contains_aws_credentials": (
         "rotate_credentials",
-        "Rotate the exposed AWS credential and remove the secret-based credential exposure.",
+        "rotate the exposed AWS credential",
     ),
+}
+
+EDGE_IMPACT_REASON_MAP: dict[str, str] = {
+    "ingress_exposes_service": "this public ingress step exposes an internal service",
+    "service_account_bound_role": "this binding grants the service account additional permissions",
+    "service_account_bound_cluster_role": "this cluster-wide binding grants the service account additional permissions",
+    "lateral_move": "this edge allows lateral movement between workloads or network zones",
+    "service_account_assumes_iam_role": "this trust path lets a Kubernetes identity assume an IAM role",
+    "instance_profile_assumes": "this trust path lets the instance profile assume broader IAM access",
+    "iam_role_access_resource": "this policy edge grants direct resource access",
+    "iam_user_access_resource": "this policy edge grants direct resource access",
+    "pod_uses_service_account": "this workload inherits the service account permissions on the path",
+    "pod_mounts_secret": "this workload can read mounted secret material",
+    "pod_uses_env_from_secret": "this workload can read secret-backed environment values",
+    "escapes_to": "this edge represents a container escape step to the node",
+    "exposes_token": "this edge leaks a credential that can be reused later in the path",
+    "secret_contains_credentials": "this secret contains reusable credentials",
+    "secret_contains_aws_credentials": "this secret contains reusable AWS credentials",
 }
 
 
@@ -227,13 +245,15 @@ class RemediationOptimizer:
 
         source = edge["source"]
         target = edge["target"]
-        fix_type, fix_description = mapping
+        fix_type, base_action = mapping
 
         metadata: dict[str, Any] = {}
         if source in graph:
             metadata["edge_source_type"] = graph.nodes[source].get("type")
         if target in graph:
             metadata["edge_target_type"] = graph.nodes[target].get("type")
+        metadata["base_action"] = base_action
+        metadata["impact_reason"] = EDGE_IMPACT_REASON_MAP.get(edge_type, "this edge keeps the attack path open")
 
         return RemediationCandidate(
             id=self._candidate_id(source, target, edge_type, fix_type),
@@ -241,7 +261,7 @@ class RemediationOptimizer:
             edge_target=target,
             edge_type=edge_type,
             fix_type=fix_type,
-            fix_description=fix_description,
+            fix_description="",
             fix_cost=FIX_COST_BY_TYPE[fix_type],
             metadata=metadata,
         )
@@ -293,6 +313,12 @@ class RemediationOptimizer:
                 6,
             )
             cumulative_risk_reduction = round(cumulative_risk_reduction + covered_risk, 6)
+            fix_description = self._build_fix_description(
+                best,
+                blocked_path_count=len(best_uncovered),
+                covered_risk=covered_risk,
+                cumulative_risk_reduction=cumulative_risk_reduction,
+            )
             selected.append(
                 {
                     "id": best.id,
@@ -300,7 +326,7 @@ class RemediationOptimizer:
                     "edge_target": best.edge_target,
                     "edge_type": best.edge_type,
                     "fix_type": best.fix_type,
-                    "fix_description": best.fix_description,
+                    "fix_description": fix_description,
                     "fix_cost": best.fix_cost,
                     "blocked_path_ids": sorted(best_uncovered),
                     "blocked_path_indices": sorted(
@@ -320,6 +346,38 @@ class RemediationOptimizer:
             uncovered -= best_uncovered
 
         return selected
+
+    def _build_fix_description(
+        self,
+        candidate: RemediationCandidate,
+        *,
+        blocked_path_count: int,
+        covered_risk: float,
+        cumulative_risk_reduction: float,
+    ) -> str:
+        base_action = str(candidate.metadata.get("base_action") or self._fallback_action(candidate.fix_type))
+        impact_reason = str(candidate.metadata.get("impact_reason") or "this edge keeps the attack path open")
+        source_ref = self._describe_node_ref(candidate.edge_source, candidate.metadata.get("edge_source_type"))
+        target_ref = self._describe_node_ref(candidate.edge_target, candidate.metadata.get("edge_target_type"))
+        path_label = "path" if blocked_path_count == 1 else "paths"
+
+        return (
+            f"Change {source_ref} -> {target_ref}: {base_action}. "
+            f"This matters because {impact_reason}. "
+            f"Expected effect: block {blocked_path_count} risky {path_label} and reduce raw risk by {covered_risk:.2f} "
+            f"(cumulative {cumulative_risk_reduction:.2f})."
+        )
+
+    @staticmethod
+    def _describe_node_ref(node_id: str, node_type: Any) -> str:
+        normalized_type = str(node_type or "").replace("_", " ").strip()
+        if normalized_type:
+            return f"{normalized_type} `{node_id}`"
+        return f"`{node_id}`"
+
+    @staticmethod
+    def _fallback_action(fix_type: str) -> str:
+        return fix_type.replace("_", " ")
 
     @staticmethod
     def _candidate_id(source: str, target: str, edge_type: str, fix_type: str) -> str:

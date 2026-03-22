@@ -47,6 +47,11 @@ def test_optimizer_prefers_shared_low_cost_edge_fix_that_blocks_multiple_paths()
     assert result["recommendations"][0]["blocked_path_ids"] == ["path-a", "path-b"]
     assert result["recommendations"][0]["covered_risk"] == 1.5
     assert result["recommendations"][0]["cumulative_risk_reduction"] == 1.5
+    assert result["recommendations"][0]["fix_description"] == (
+        "Change ingress `ingress:prod:web` -> service `service:prod:web`: restrict ingress exposure. "
+        "This matters because this public ingress step exposes an internal service. "
+        "Expected effect: block 2 risky paths and reduce raw risk by 1.50 (cumulative 1.50)."
+    )
 
 
 def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when_needed():
@@ -95,3 +100,8 @@ def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when
     assert result["recommendations"][1]["cumulative_risk_reduction"] == 1.5
     assert any(item.startswith("restrict_ingress:") for item in recommendation_ids)
     assert any(item.startswith("remove_privileged:") for item in recommendation_ids)
+    assert result["recommendations"][1]["fix_description"] == (
+        "Change pod `pod:prod:escape` -> node `node:worker-1`: remove privileged or escape-capable pod settings. "
+        "This matters because this edge represents a container escape step to the node. "
+        "Expected effect: block 1 risky path and reduce raw risk by 0.70 (cumulative 1.50)."
+    )

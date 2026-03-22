@@ -3,9 +3,16 @@ Cluster management API endpoints.
 """
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
-from app.application.di import get_cluster_service
+from app.application.di import get_attack_graph_service, get_cluster_service
+from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
-from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest, ClusterResponse, ClusterCreateResponse
+from app.models.schemas import (
+    AttackGraphResponse,
+    ClusterCreateRequest,
+    ClusterUpdateRequest,
+    ClusterResponse,
+    ClusterCreateResponse,
+)
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
 
@@ -65,6 +72,26 @@ async def get_cluster(
     service: ClusterService = Depends(get_cluster_service)
 ):
     return await service.get_cluster(id)
+
+
+@router.get(
+    "/{cluster_id}/attack-graph",
+    response_model=AttackGraphResponse,
+    summary="[신규] Attack Graph 조회",
+    description=(
+        "Attack Graph 화면의 그래프, 경로 목록, 상세 패널을 한 번에 구동하기 위한 MVP 응답입니다.\n\n"
+        "초기 단계에서는 backend가 `label`, `severity`, boolean 기본값, 빈 `metadata`를 직접 정규화해서 반환합니다."
+    ),
+    responses={
+        200: {"description": "클러스터 기준 최신 attack graph"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+    },
+)
+async def get_attack_graph(
+    cluster_id: str,
+    service: AttackGraphService = Depends(get_attack_graph_service),
+):
+    return await service.get_attack_graph(cluster_id)
 
 
 @router.patch(

@@ -419,6 +419,82 @@ class ClusterListResponse(BaseModel):
     clusters: list[ClusterResponse] = Field(default_factory=list)
 
 
+class AttackGraphSeverity(str, Enum):
+    critical = "critical"
+    high = "high"
+    medium = "medium"
+    low = "low"
+    none = "none"
+
+
+class AttackGraphNodeType(str, Enum):
+    pod = "pod"
+    service_account = "service_account"
+    role = "role"
+    cluster_role = "cluster_role"
+    secret = "secret"
+    service = "service"
+    ingress = "ingress"
+    node = "node"
+    container_image = "container_image"
+    iam_role = "iam_role"
+    iam_user = "iam_user"
+    s3_bucket = "s3_bucket"
+    rds = "rds"
+    security_group = "security_group"
+    ec2_instance = "ec2_instance"
+    unknown = "unknown"
+
+
+class AttackGraphEdgeType(str, Enum):
+    uses = "uses"
+    bound_to = "bound_to"
+    grants = "grants"
+    escapes_to = "escapes_to"
+    assumes = "assumes"
+    accesses = "accesses"
+    allows = "allows"
+    runs = "runs"
+
+
+class AttackGraphNodeResponse(BaseModel):
+    id: str = Field(..., description="Stable node identifier")
+    type: AttackGraphNodeType = Field(..., description="Canonical node type")
+    label: str = Field(..., description="Backend-provided display label")
+    severity: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    has_runtime_evidence: bool = Field(False, description="Runtime evidence attached")
+    is_entry_point: bool = Field(False, description="Entry point flag")
+    is_crown_jewel: bool = Field(False, description="Crown jewel flag")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional node metadata")
+
+
+class AttackGraphEdgeResponse(BaseModel):
+    id: str = Field(..., description="Stable edge identifier")
+    source: str = Field(..., description="Source node id")
+    target: str = Field(..., description="Target node id")
+    type: AttackGraphEdgeType = Field(..., description="uses | bound_to | grants | escapes_to | assumes | accesses | allows | runs")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional edge metadata")
+
+
+class AttackGraphPathResponse(BaseModel):
+    id: str = Field(..., description="Stable path identifier")
+    title: str = Field(..., description="Backend-provided path title")
+    summary: str = Field("", description="Short human-readable path summary")
+    severity: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    evidence_count: int = Field(0, description="Count of nodes or edges on the path with runtime evidence")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered node ids in the path")
+    edge_ids: list[str] = Field(default_factory=list, description="Ordered edge ids in the path")
+
+
+class AttackGraphResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this graph")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned graph")
+    nodes: list[AttackGraphNodeResponse] = Field(default_factory=list)
+    edges: list[AttackGraphEdgeResponse] = Field(default_factory=list)
+    paths: list[AttackGraphPathResponse] = Field(default_factory=list)
+
+
 class SyncResponse(BaseModel):
     status: str
     cluster_id: str

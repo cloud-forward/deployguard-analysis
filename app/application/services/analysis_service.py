@@ -177,6 +177,19 @@ class AnalysisService:
             
             # Sort by risk score
             enriched_paths.sort(key=lambda x: x["raw_final_risk"], reverse=True)
+            graph_id = str(
+                unified_result.metadata.get("k8s", {}).get("graph_id")
+                or k8s_result.metadata.get("graph_id")
+                or f"{k8s_scan_id}-graph"
+            )
+            await self._jobs.persist_attack_paths(
+                cluster_id=cluster_id,
+                graph_id=graph_id,
+                k8s_scan_id=k8s_scan_id,
+                aws_scan_id=aws_scan_id,
+                image_scan_id=image_scan_id,
+                attack_paths=enriched_paths,
+            )
             remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
             
             result = {

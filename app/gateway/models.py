@@ -142,6 +142,66 @@ class AnalysisJob(Base):
     )
 
 
+class AttackPath(Base):
+    __tablename__ = "attack_paths"
+    __table_args__ = (
+        Index("idx_attack_paths_graph_id", "graph_id"),
+        Index("idx_attack_paths_entry_node_id", "entry_node_id"),
+        Index("idx_attack_paths_target_node_id", "target_node_id"),
+        Index("idx_attack_paths_graph_path_id", "graph_id", "path_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    graph_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=False,
+    )
+    path_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    risk_score: Mapped[float | None] = mapped_column(nullable=True)
+    raw_final_risk: Mapped[float | None] = mapped_column(nullable=True)
+    hop_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    node_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
+    edge_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
+
+
+class AttackPathEdge(Base):
+    __tablename__ = "attack_path_edges"
+    __table_args__ = (
+        Index("idx_attack_path_edges_graph_id", "graph_id"),
+        Index("idx_attack_path_edges_graph_path_id", "graph_id", "path_id"),
+        Index("idx_attack_path_edges_graph_path_order", "graph_id", "path_id", "edge_index"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    graph_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=False,
+    )
+    path_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    edge_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    edge_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    edge_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+
+
 class Cluster(Base):
     """
     Model representing a cluster in DeployGuard.

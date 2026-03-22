@@ -3,7 +3,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
-from app.gateway.models import AnalysisJob
+from app.gateway.models import AnalysisJob, AttackPath, AttackPathEdge, GraphSnapshot
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 
 
@@ -56,3 +56,66 @@ class TestSqlAlchemyAnalysisJobRepository:
 
         total = await session.scalar(select(func.count()).select_from(AnalysisJob))
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_persist_attack_paths_creates_graph_snapshot_links_job_and_stores_edges(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        graph_id = "k8s-1-graph"
+        job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+        )
+
+        await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id=graph_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:ingress:prod:web->s3:123:data",
+                    "path": ["ingress:prod:web", "pod:prod:api", "s3:123:data"],
+                    "raw_final_risk": 0.91,
+                    "risk_score": 0.91,
+                    "length": 3,
+                    "edges": [
+                        {"source": "ingress:prod:web", "target": "pod:prod:api", "type": "ingress_exposes_service"},
+                        {"source": "pod:prod:api", "target": "s3:123:data", "type": "iam_role_access_resource"},
+                    ],
+                }
+            ],
+        )
+
+        snapshot = await session.get(GraphSnapshot, graph_id)
+        job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
+        path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
+        edge_rows = (
+            await session.execute(
+                select(AttackPathEdge)
+                .where(AttackPathEdge.graph_id == graph_id)
+                .order_by(AttackPathEdge.edge_index)
+            )
+        ).scalars().all()
+
+        assert snapshot is not None
+        assert job is not None
+        assert job.graph_id == graph_id
+        assert path is not None
+        assert path.path_id == "path:0:ingress:prod:web->s3:123:data"
+        assert path.risk_level == "critical"
+        assert path.entry_node_id == "ingress:prod:web"
+        assert path.target_node_id == "s3:123:data"
+        assert path.node_ids == ["ingress:prod:web", "pod:prod:api", "s3:123:data"]
+        assert path.edge_ids == [
+            "path:0:ingress:prod:web->s3:123:data:edge:0",
+            "path:0:ingress:prod:web->s3:123:data:edge:1",
+        ]
+        assert [edge.edge_index for edge in edge_rows] == [0, 1]
+        assert [edge.edge_type for edge in edge_rows] == [
+            "ingress_exposes_service",
+            "iam_role_access_resource",
+        ]

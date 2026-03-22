@@ -139,6 +139,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
         ["pod:prod:api"],
         ["iam:123456789012:AppRole"],
         max_path_length=7,
+        max_paths=100,
     )
     service._remediation_optimizer.optimize.assert_called_once_with(
         [{

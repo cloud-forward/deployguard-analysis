@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_SCAN_TYPES = {SCANNER_TYPE_K8S, SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE}
 MAX_HOPS = 7
+MAX_ATTACK_PATHS = 100
 
 
 def _context(**kwargs):
@@ -152,11 +153,12 @@ class AnalysisService:
                 entry_points,
                 crown_jewels,
                 max_path_length=MAX_HOPS,
+                max_paths=MAX_ATTACK_PATHS,
             )
             
             # Step 5: Calculate risk scores
             enriched_paths = []
-            for path in paths[:100]:  # Limit to top 100
+            for path in paths:
                 path_id = f"path:{len(enriched_paths)}:{'->'.join(path)}"
                 risk_details = self._risk_engine.calculate_path_risk_details(graph, path)
                 edges = self._path_finder.get_path_edges(graph, path)

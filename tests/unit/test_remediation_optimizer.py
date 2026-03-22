@@ -45,6 +45,8 @@ def test_optimizer_prefers_shared_low_cost_edge_fix_that_blocks_multiple_paths()
     assert result["recommendations"][0]["edge_type"] == "ingress_exposes_service"
     assert result["recommendations"][0]["fix_type"] == "restrict_ingress"
     assert result["recommendations"][0]["blocked_path_ids"] == ["path-a", "path-b"]
+    assert result["recommendations"][0]["covered_risk"] == 1.5
+    assert result["recommendations"][0]["cumulative_risk_reduction"] == 1.5
 
 
 def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when_needed():
@@ -87,5 +89,9 @@ def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when
     assert result["summary"]["selected_count"] == 2
     assert result["recommendations"][0]["fix_type"] == "restrict_ingress"
     assert result["recommendations"][1]["fix_type"] == "remove_privileged"
+    assert result["recommendations"][0]["covered_risk"] == 0.8
+    assert result["recommendations"][0]["cumulative_risk_reduction"] == 0.8
+    assert result["recommendations"][1]["covered_risk"] == 0.7
+    assert result["recommendations"][1]["cumulative_risk_reduction"] == 1.5
     assert any(item.startswith("restrict_ingress:") for item in recommendation_ids)
     assert any(item.startswith("remove_privileged:") for item in recommendation_ids)

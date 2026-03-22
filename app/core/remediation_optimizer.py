@@ -257,6 +257,7 @@ class RemediationOptimizer:
         }
         uncovered = set(path_risk_by_id.keys())
         selected: list[dict[str, Any]] = []
+        cumulative_risk_reduction = 0.0
 
         while uncovered:
             best: RemediationCandidate | None = None
@@ -287,10 +288,11 @@ class RemediationOptimizer:
             if best is None:
                 break
 
-            cumulative_risk_reduction = round(
+            covered_risk = round(
                 sum(path_risk_by_id[path_id] for path_id in best_uncovered),
                 6,
             )
+            cumulative_risk_reduction = round(cumulative_risk_reduction + covered_risk, 6)
             selected.append(
                 {
                     "id": best.id,
@@ -306,9 +308,10 @@ class RemediationOptimizer:
                         for path in risky_paths
                         if path["path_id"] in best_uncovered
                     ),
+                    "covered_risk": covered_risk,
                     "cumulative_risk_reduction": cumulative_risk_reduction,
                     "edge_score": round(
-                        cumulative_risk_reduction / (best.fix_cost ** 1.2),
+                        covered_risk / (best.fix_cost ** 1.2),
                         6,
                     ),
                     "metadata": dict(best.metadata),

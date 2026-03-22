@@ -4,9 +4,16 @@ SQLAlchemy implementation of AnalysisJobRepository.
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
-from app.gateway.models import AnalysisJob
+from app.gateway.models import (
+    AnalysisJob,
+    AttackPath,
+    AttackPathEdge,
+    GraphSnapshot,
+    RemediationRecommendation,
+)
 
 
 class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
@@ -38,3 +45,193 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         await self._session.commit()
         await self._session.refresh(job)
         return job.id
+
+    async def persist_attack_paths(
+        self,
+        *,
+        cluster_id: str | UUID,
+        graph_id: str,
+        k8s_scan_id: str,
+        aws_scan_id: str,
+        image_scan_id: str,
+        attack_paths: list[Dict[str, Any]],
+    ) -> None:
+        normalized_cluster_id = str(UUID(str(cluster_id)))
+
+        snapshot = await self._session.get(GraphSnapshot, graph_id)
+        if snapshot is None:
+            self._session.add(GraphSnapshot(id=graph_id))
+            await self._session.flush()
+
+        await self._session.execute(delete(AttackPathEdge).where(AttackPathEdge.graph_id == graph_id))
+        await self._session.execute(delete(AttackPath).where(AttackPath.graph_id == graph_id))
+
+        matching_job = await self._session.scalar(
+            select(AnalysisJob)
+            .where(
+                AnalysisJob.cluster_id == normalized_cluster_id,
+                AnalysisJob.k8s_scan_id == k8s_scan_id,
+                AnalysisJob.aws_scan_id == aws_scan_id,
+                AnalysisJob.image_scan_id == image_scan_id,
+            )
+            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+            .limit(1)
+        )
+        if matching_job is not None:
+            matching_job.graph_id = graph_id
+
+        for path in attack_paths:
+            path_id = str(path["path_id"])
+            node_ids = [str(node_id) for node_id in path.get("path", [])]
+            edges = list(path.get("edges", []))
+            edge_ids = [self._edge_id(path_id, index) for index, _ in enumerate(edges)]
+
+            self._session.add(
+                AttackPath(
+                    graph_id=graph_id,
+                    path_id=path_id,
+                    title=self._path_title(path),
+                    risk_level=self._risk_level(path.get("raw_final_risk", path.get("risk_score"))),
+                    risk_score=self._as_float(path.get("risk_score")),
+                    raw_final_risk=self._as_float(path.get("raw_final_risk", path.get("risk_score"))),
+                    hop_count=max(len(node_ids) - 1, 0),
+                    entry_node_id=node_ids[0] if node_ids else None,
+                    target_node_id=node_ids[-1] if node_ids else None,
+                    node_ids=node_ids,
+                    edge_ids=edge_ids,
+                )
+            )
+
+            for index, edge in enumerate(edges):
+                self._session.add(
+                    AttackPathEdge(
+                        graph_id=graph_id,
+                        path_id=path_id,
+                        edge_id=edge_ids[index],
+                        edge_index=index,
+                        source_node_id=str(edge.get("source", "")),
+                        target_node_id=str(edge.get("target", "")),
+                        edge_type=str(edge.get("type", "")),
+                        metadata_json={},
+                    )
+                )
+
+        await self._session.commit()
+
+    async def persist_remediation_recommendations(
+        self,
+        *,
+        cluster_id: str | UUID,
+        graph_id: str,
+        k8s_scan_id: str,
+        aws_scan_id: str,
+        image_scan_id: str,
+        remediation_optimization: Dict[str, Any],
+    ) -> None:
+        normalized_cluster_id = str(UUID(str(cluster_id)))
+
+        snapshot = await self._session.get(GraphSnapshot, graph_id)
+        if snapshot is None:
+            self._session.add(GraphSnapshot(id=graph_id))
+            await self._session.flush()
+
+        matching_job = await self._session.scalar(
+            select(AnalysisJob)
+            .where(
+                AnalysisJob.cluster_id == normalized_cluster_id,
+                AnalysisJob.k8s_scan_id == k8s_scan_id,
+                AnalysisJob.aws_scan_id == aws_scan_id,
+                AnalysisJob.image_scan_id == image_scan_id,
+            )
+            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+            .limit(1)
+        )
+        if matching_job is not None:
+            matching_job.graph_id = graph_id
+
+        await self._session.execute(
+            delete(RemediationRecommendation).where(RemediationRecommendation.graph_id == graph_id)
+        )
+
+        recommendations = list(remediation_optimization.get("recommendations", []))
+        for rank, recommendation in enumerate(recommendations):
+            self._session.add(
+                RemediationRecommendation(
+                    graph_id=graph_id,
+                    recommendation_id=str(recommendation.get("id", f"recommendation:{rank}")),
+                    recommendation_rank=rank,
+                    edge_source=self._as_str(recommendation.get("edge_source")),
+                    edge_target=self._as_str(recommendation.get("edge_target")),
+                    edge_type=self._as_str(recommendation.get("edge_type")),
+                    fix_type=self._as_str(recommendation.get("fix_type")),
+                    fix_description=self._as_str(recommendation.get("fix_description")),
+                    blocked_path_ids=self._as_str_list(recommendation.get("blocked_path_ids")),
+                    blocked_path_indices=self._as_int_list(recommendation.get("blocked_path_indices")),
+                    fix_cost=self._as_float(recommendation.get("fix_cost")),
+                    edge_score=self._as_float(recommendation.get("edge_score")),
+                    covered_risk=self._as_float(recommendation.get("covered_risk")),
+                    cumulative_risk_reduction=self._as_float(recommendation.get("cumulative_risk_reduction")),
+                    metadata_json=self._as_dict(recommendation.get("metadata")),
+                )
+            )
+
+        await self._session.commit()
+
+    @staticmethod
+    def _risk_level(value: Any) -> str:
+        score = SqlAlchemyAnalysisJobRepository._as_float(value) or 0.0
+        if score >= 0.9:
+            return "critical"
+        if score >= 0.7:
+            return "high"
+        if score >= 0.4:
+            return "medium"
+        if score > 0:
+            return "low"
+        return "none"
+
+    @staticmethod
+    def _path_title(path: Dict[str, Any]) -> str:
+        nodes = [str(node_id) for node_id in path.get("path", [])]
+        if len(nodes) >= 2:
+            return f"{nodes[0]} -> {nodes[-1]}"
+        return str(path.get("path_id", "attack-path"))
+
+    @staticmethod
+    def _edge_id(path_id: str, edge_index: int) -> str:
+        return f"{path_id}:edge:{edge_index}"
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_str(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return dict(value) if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _as_str_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    @staticmethod
+    def _as_int_list(value: Any) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[int] = []
+        for item in value:
+            try:
+                normalized.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return normalized

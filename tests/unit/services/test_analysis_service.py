@@ -81,7 +81,7 @@ async def test_maybe_trigger_analysis_skips_when_no_scans(service, jobs_repo, sc
 
 
 @pytest.mark.asyncio
-async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
+async def test_execute_analysis_uses_domain_results_and_unified_merge(service, jobs_repo):
     service._load_scan_data = AsyncMock(side_effect=[
         {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
         {"scan_id": "aws-1", "aws_account_id": "123456789012"},
@@ -124,7 +124,8 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
     service._graph_builder.get_crown_jewels = MagicMock(return_value=["iam:123456789012:AppRole"])
     service._path_finder.find_all_paths = MagicMock(return_value=[["pod:prod:api", "iam:123456789012:AppRole"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("pod:prod:api", "iam:123456789012:AppRole", "service_account_assumes_iam_role")])
-    service._risk_engine.calculate_path_risk = MagicMock(return_value=0.9)
+    service._risk_engine.calculate_path_risk_details = MagicMock(return_value={"risk_score": 0.9, "raw_final_risk": 0.9})
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
@@ -138,13 +139,49 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
         ["pod:prod:api"],
         ["iam:123456789012:AppRole"],
         max_path_length=7,
+        max_paths=100,
+    )
+    jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="k8s-1-graph",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        attack_paths=[{
+            "path_id": "path:0:pod:prod:api->iam:123456789012:AppRole",
+            "path": ["pod:prod:api", "iam:123456789012:AppRole"],
+            "risk_score": 0.9,
+            "raw_final_risk": 0.9,
+            "length": 2,
+            "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
+        }],
+    )
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="k8s-1-graph",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        remediation_optimization={"summary": {"selected_count": 1}, "recommendations": []},
+    )
+    service._remediation_optimizer.optimize.assert_called_once_with(
+        [{
+            "path_id": "path:0:pod:prod:api->iam:123456789012:AppRole",
+            "path": ["pod:prod:api", "iam:123456789012:AppRole"],
+            "risk_score": 0.9,
+            "raw_final_risk": 0.9,
+            "length": 2,
+            "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
+        }],
+        graph,
     )
     assert result["stats"]["graph"]["nodes"] == 2
     assert result["stats"]["paths"]["total"] == 1
+    assert result["remediation_optimization"] == {"summary": {"selected_count": 1}, "recommendations": []}
 
 
 @pytest.mark.asyncio
-async def test_execute_analysis_preserves_downstream_networkx_compatibility(service):
+async def test_execute_analysis_preserves_downstream_networkx_compatibility(service, jobs_repo):
     service._load_scan_data = AsyncMock(side_effect=[
         {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
         {"scan_id": "aws-1", "aws_account_id": "123456789012"},
@@ -165,13 +202,119 @@ async def test_execute_analysis_preserves_downstream_networkx_compatibility(serv
     service._graph_builder.get_crown_jewels = MagicMock(return_value=["s3:123:data"])
     service._path_finder.find_all_paths = MagicMock(return_value=[["ingress:prod:web", "s3:123:data"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("ingress:prod:web", "s3:123:data", "path")])
-    service._risk_engine.calculate_path_risk = MagicMock(return_value=0.5)
+    service._risk_engine.calculate_path_risk_details = MagicMock(return_value={"risk_score": 0.5, "raw_final_risk": 0.5})
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
+    jobs_repo.persist_attack_paths.assert_awaited_once()
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once()
     assert result["attack_paths"] == [{
+        "path_id": "path:0:ingress:prod:web->s3:123:data",
         "path": ["ingress:prod:web", "s3:123:data"],
         "risk_score": 0.5,
+        "raw_final_risk": 0.5,
         "length": 2,
         "edges": [{"source": "ingress:prod:web", "target": "s3:123:data", "type": "path"}],
     }]
+    assert result["remediation_optimization"] == {"summary": {"selected_count": 1}, "recommendations": []}
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_prunes_dominated_same_entry_target_variants_and_ranks_remaining_paths(service, jobs_repo):
+    service._load_scan_data = AsyncMock(side_effect=[
+        {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
+        {"scan_id": "aws-1", "aws_account_id": "123456789012"},
+        {"scan_id": "img-1"},
+    ])
+    service._build_k8s_result = MagicMock(return_value=K8sBuildResult(nodes=[], edges=[], metadata={"graph_id": "k8s-1-graph"}))
+    service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
+    service._bridge_builder.build = MagicMock(return_value=MagicMock(warnings=[]))
+    service._build_aws_result = MagicMock(return_value=AWSBuildResult(nodes=[], edges=[], metadata={}))
+    service._unified_graph_builder.build = MagicMock(return_value=UnifiedGraphResult(nodes=[], edges=[], metadata={}, warnings=[]))
+
+    graph = nx.DiGraph()
+    for node_id, node_type, entry, crown, risk in [
+        ("ingress:prod:web", "ingress", True, False, 0.2),
+        ("service:prod:web", "service", False, False, 0.2),
+        ("pod:prod:api", "pod", False, False, 0.3),
+        ("role:prod:reader", "role", False, False, 0.4),
+        ("secret:prod:db", "secret", False, True, 0.9),
+    ]:
+        graph.add_node(
+            node_id,
+            id=node_id,
+            type=node_type,
+            is_entry_point=entry,
+            is_crown_jewel=crown,
+            base_risk=risk,
+            metadata={},
+        )
+    service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
+    service._graph_builder.get_entry_points = MagicMock(return_value=["ingress:prod:web"])
+    service._graph_builder.get_crown_jewels = MagicMock(return_value=["secret:prod:db"])
+    service._path_finder.find_all_paths = MagicMock(return_value=[
+        ["ingress:prod:web", "pod:prod:api", "secret:prod:db"],
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "secret:prod:db"],
+        ["ingress:prod:web", "role:prod:reader", "secret:prod:db"],
+    ])
+    service._path_finder.get_path_edges = MagicMock(side_effect=[
+        [("ingress:prod:web", "pod:prod:api", "ingress_exposes_service"), ("pod:prod:api", "secret:prod:db", "pod_mounts_secret")],
+        [
+            ("ingress:prod:web", "service:prod:web", "allows"),
+            ("service:prod:web", "pod:prod:api", "service_targets_pod"),
+            ("pod:prod:api", "secret:prod:db", "pod_mounts_secret"),
+        ],
+        [("ingress:prod:web", "role:prod:reader", "ingress_exposes_service"), ("role:prod:reader", "secret:prod:db", "role_grants_resource")],
+    ])
+    service._risk_engine.calculate_path_risk_details = MagicMock(side_effect=[
+        {"risk_score": 0.8, "raw_final_risk": 0.8},
+        {"risk_score": 0.8, "raw_final_risk": 0.8},
+        {"risk_score": 0.7, "raw_final_risk": 0.7},
+    ])
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
+
+    result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
+
+    persisted_paths = jobs_repo.persist_attack_paths.await_args.kwargs["attack_paths"]
+    assert [item["path"] for item in persisted_paths] == [
+        ["ingress:prod:web", "pod:prod:api", "secret:prod:db"],
+        ["ingress:prod:web", "role:prod:reader", "secret:prod:db"],
+    ]
+    assert result["attack_paths"] == persisted_paths
+    assert result["stats"]["paths"] == {"total": 3, "returned": 2}
+
+
+def test_refine_attack_paths_prefers_shorter_higher_signal_variants_deterministically(service):
+    refined = service._refine_attack_paths([
+        {
+            "path_id": "path:z",
+            "path": ["entry", "service", "pod", "target"],
+            "raw_final_risk": 0.8,
+            "edges": [
+                {"type": "allows"},
+                {"type": "service_targets_pod"},
+                {"type": "pod_mounts_secret"},
+            ],
+        },
+        {
+            "path_id": "path:a",
+            "path": ["entry", "pod", "target"],
+            "raw_final_risk": 0.8,
+            "edges": [
+                {"type": "ingress_exposes_service"},
+                {"type": "pod_mounts_secret"},
+            ],
+        },
+        {
+            "path_id": "path:b",
+            "path": ["entry", "role", "target"],
+            "raw_final_risk": 0.7,
+            "edges": [
+                {"type": "role_grants_resource"},
+                {"type": "pod_mounts_secret"},
+            ],
+        },
+    ])
+
+    assert [item["path_id"] for item in refined] == ["path:a", "path:b"]

@@ -109,8 +109,8 @@ class K8sGraphBuilder:
 
         for service_account in k8s_scan.get("service_accounts", []):
             metadata = service_account.get("metadata", {})
-            namespace = metadata.get("namespace")
-            name = metadata.get("name")
+            namespace = service_account.get("namespace") or metadata.get("namespace")
+            name = service_account.get("name") or metadata.get("name")
             if not namespace or not name:
                 continue
             self._add_node(
@@ -119,7 +119,7 @@ class K8sGraphBuilder:
                     type=NodeType.SERVICE_ACCOUNT.value,
                     metadata={
                         "namespace": namespace,
-                        "annotations": metadata.get("annotations", {}),
+                        "annotations": service_account.get("annotations", metadata.get("annotations", {})),
                     },
                 )
             )
@@ -151,8 +151,8 @@ class K8sGraphBuilder:
 
         for secret in k8s_scan.get("secrets", []):
             metadata = secret.get("metadata", {})
-            namespace = metadata.get("namespace")
-            name = metadata.get("name")
+            namespace = secret.get("namespace") or metadata.get("namespace")
+            name = secret.get("name") or metadata.get("name")
             if not namespace or not name:
                 continue
             self._add_node(

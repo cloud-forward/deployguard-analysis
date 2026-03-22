@@ -419,6 +419,181 @@ class ClusterListResponse(BaseModel):
     clusters: list[ClusterResponse] = Field(default_factory=list)
 
 
+class AttackGraphSeverity(str, Enum):
+    critical = "critical"
+    high = "high"
+    medium = "medium"
+    low = "low"
+    none = "none"
+
+
+class AttackGraphNodeType(str, Enum):
+    pod = "pod"
+    service_account = "service_account"
+    role = "role"
+    cluster_role = "cluster_role"
+    secret = "secret"
+    service = "service"
+    ingress = "ingress"
+    node = "node"
+    container_image = "container_image"
+    iam_role = "iam_role"
+    iam_user = "iam_user"
+    s3_bucket = "s3_bucket"
+    rds = "rds"
+    security_group = "security_group"
+    ec2_instance = "ec2_instance"
+    unknown = "unknown"
+
+
+class AttackGraphEdgeType(str, Enum):
+    uses = "uses"
+    bound_to = "bound_to"
+    grants = "grants"
+    escapes_to = "escapes_to"
+    assumes = "assumes"
+    accesses = "accesses"
+    allows = "allows"
+    runs = "runs"
+
+
+class AttackGraphNodeResponse(BaseModel):
+    id: str = Field(..., description="Stable node identifier")
+    type: AttackGraphNodeType = Field(..., description="Canonical node type")
+    label: str = Field(..., description="Backend-provided display label")
+    severity: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    has_runtime_evidence: bool = Field(False, description="Runtime evidence attached")
+    is_entry_point: bool = Field(False, description="Entry point flag")
+    is_crown_jewel: bool = Field(False, description="Crown jewel flag")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional node metadata")
+
+
+class AttackGraphEdgeResponse(BaseModel):
+    id: str = Field(..., description="Stable edge identifier")
+    source: str = Field(..., description="Source node id")
+    target: str = Field(..., description="Target node id")
+    type: AttackGraphEdgeType = Field(..., description="uses | bound_to | grants | escapes_to | assumes | accesses | allows | runs")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional edge metadata")
+
+
+class AttackGraphPathResponse(BaseModel):
+    id: str = Field(..., description="Stable path identifier")
+    title: str = Field(..., description="Backend-provided path title")
+    summary: str = Field("", description="Short human-readable path summary")
+    severity: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    evidence_count: int = Field(0, description="Count of nodes or edges on the path with runtime evidence")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered node ids in the path")
+    edge_ids: list[str] = Field(default_factory=list, description="Ordered edge ids in the path")
+
+
+class AttackGraphResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this graph")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned graph")
+    nodes: list[AttackGraphNodeResponse] = Field(default_factory=list)
+    edges: list[AttackGraphEdgeResponse] = Field(default_factory=list)
+    paths: list[AttackGraphPathResponse] = Field(default_factory=list)
+
+
+class AttackPathEdgeSequenceResponse(BaseModel):
+    edge_id: str = Field(..., description="Stable persisted edge sequence id")
+    edge_index: int = Field(..., description="0-based edge order within the attack path")
+    source_node_id: str = Field(..., description="Source node id")
+    target_node_id: str = Field(..., description="Target node id")
+    edge_type: str = Field(..., description="Canonical persisted edge type")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted edge metadata")
+
+
+class AttackPathListItemResponse(BaseModel):
+    path_id: str = Field(..., description="Stable path id")
+    title: str = Field(..., description="Persisted path title")
+    risk_level: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    risk_score: float | None = Field(None, description="Persisted normalized path risk score")
+    raw_final_risk: float | None = Field(None, description="Persisted raw final path risk")
+    hop_count: int = Field(0, description="Number of hops in the path")
+    entry_node_id: str | None = Field(None, description="Entry point node id")
+    target_node_id: str | None = Field(None, description="Crown jewel / target node id")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered path node ids")
+
+
+class AttackPathDetailResponse(BaseModel):
+    path_id: str = Field(..., description="Stable path id")
+    title: str = Field(..., description="Persisted path title")
+    risk_level: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    risk_score: float | None = Field(None, description="Persisted normalized path risk score")
+    raw_final_risk: float | None = Field(None, description="Persisted raw final path risk")
+    hop_count: int = Field(0, description="Number of hops in the path")
+    entry_node_id: str | None = Field(None, description="Entry point node id")
+    target_node_id: str | None = Field(None, description="Crown jewel / target node id")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered path node ids")
+    edge_ids: list[str] = Field(default_factory=list, description="Ordered persisted edge ids")
+    edges: list[AttackPathEdgeSequenceResponse] = Field(default_factory=list, description="Ordered persisted path edges")
+
+
+class AttackPathListResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing these paths")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned paths")
+    items: list[AttackPathListItemResponse] = Field(default_factory=list)
+
+
+class AttackPathDetailEnvelopeResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this path")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned path")
+    path: Optional[AttackPathDetailResponse] = Field(None, description="Requested attack path detail")
+
+
+class RemediationRecommendationListItemResponse(BaseModel):
+    recommendation_id: str = Field(..., description="Stable recommendation id")
+    recommendation_rank: int = Field(..., description="0-based greedy selection order")
+    edge_source: str | None = Field(None, description="Source node id for the removable edge")
+    edge_target: str | None = Field(None, description="Target node id for the removable edge")
+    edge_type: str | None = Field(None, description="Persisted edge type")
+    fix_type: str | None = Field(None, description="Persisted remediation fix type")
+    fix_description: str | None = Field(None, description="Human-readable remediation description")
+    blocked_path_ids: list[str] = Field(default_factory=list, description="Persisted blocked path ids")
+    blocked_path_indices: list[int] = Field(default_factory=list, description="Persisted blocked path indices")
+    fix_cost: float | None = Field(None, description="Persisted fix cost")
+    edge_score: float | None = Field(None, description="Persisted greedy edge score")
+    covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
+    cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+
+
+class RemediationRecommendationDetailResponse(BaseModel):
+    recommendation_id: str = Field(..., description="Stable recommendation id")
+    recommendation_rank: int = Field(..., description="0-based greedy selection order")
+    edge_source: str | None = Field(None, description="Source node id for the removable edge")
+    edge_target: str | None = Field(None, description="Target node id for the removable edge")
+    edge_type: str | None = Field(None, description="Persisted edge type")
+    fix_type: str | None = Field(None, description="Persisted remediation fix type")
+    fix_description: str | None = Field(None, description="Human-readable remediation description")
+    blocked_path_ids: list[str] = Field(default_factory=list, description="Persisted blocked path ids")
+    blocked_path_indices: list[int] = Field(default_factory=list, description="Persisted blocked path indices")
+    fix_cost: float | None = Field(None, description="Persisted fix cost")
+    edge_score: float | None = Field(None, description="Persisted greedy edge score")
+    covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
+    cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+
+
+class RemediationRecommendationListResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing these recommendations")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned recommendations")
+    items: list[RemediationRecommendationListItemResponse] = Field(default_factory=list)
+
+
+class RemediationRecommendationDetailEnvelopeResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this recommendation")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned recommendation")
+    recommendation: Optional[RemediationRecommendationDetailResponse] = Field(
+        None, description="Requested remediation recommendation detail"
+    )
+
+
 class SyncResponse(BaseModel):
     status: str
     cluster_id: str

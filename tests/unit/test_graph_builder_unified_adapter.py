@@ -31,6 +31,7 @@ async def test_build_from_unified_result_supports_k8s_only_graph():
     assert graph.number_of_nodes() == 2
     assert graph.number_of_edges() == 1
     assert graph.nodes["ingress:prod:web"]["is_entry_point"] is True
+    assert graph.nodes["service:prod:web"]["is_entry_point"] is True
 
 
 @pytest.mark.asyncio
@@ -53,6 +54,64 @@ async def test_build_from_unified_result_supports_aws_only_graph():
     assert graph.number_of_edges() == 0
     assert graph.nodes["s3:123456789012:data-bucket"]["is_entry_point"] is True
     assert graph.nodes["s3:123456789012:data-bucket"]["is_crown_jewel"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_from_unified_result_marks_ingress_exposed_pod_as_entry_point():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(id="ingress:prod:web", type="ingress"),
+                K8sGraphNode(id="service:prod:web", type="service"),
+                K8sGraphNode(id="pod:prod:api", type="pod"),
+            ],
+            edges=[
+                K8sGraphEdge(
+                    source="ingress:prod:web",
+                    target="service:prod:web",
+                    type="ingress_exposes_service",
+                ),
+                K8sGraphEdge(
+                    source="service:prod:web",
+                    target="pod:prod:api",
+                    type="service_targets_pod",
+                ),
+            ],
+        )
+    )
+
+    assert graph.nodes["pod:prod:api"]["is_entry_point"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_from_unified_result_marks_sensitive_targets_as_crown_jewels():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(
+                    id="secret:prod:db-creds",
+                    type="secret",
+                    metadata={"contains_db_credentials": True},
+                ),
+                AWSGraphNode(
+                    id="rds:123456789012:prod-db",
+                    type="rds",
+                    namespace="123456789012",
+                ),
+                AWSGraphNode(
+                    id="iam:123456789012:AdminRole",
+                    type="iam_role",
+                    namespace="123456789012",
+                    metadata={"tier": 1},
+                ),
+            ],
+            edges=[],
+        )
+    )
+
+    assert graph.nodes["secret:prod:db-creds"]["is_crown_jewel"] is True
+    assert graph.nodes["rds:123456789012:prod-db"]["is_crown_jewel"] is True
+    assert graph.nodes["iam:123456789012:AdminRole"]["is_crown_jewel"] is True
 
 
 @pytest.mark.asyncio

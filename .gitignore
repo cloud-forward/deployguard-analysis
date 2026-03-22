@@ -48,3 +48,6 @@ htmlcov/
 # Runtime artifacts
 *.pid
 *.lock
+
+tests/fixtures/fact_pipeline/real_case_01/
+artifacts/

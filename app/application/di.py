@@ -49,3 +49,25 @@ def get_inventory_service(
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     snapshot_repo = SQLAlchemyInventorySnapshotRepository(session=db)
     return InventoryService(cluster_repository=cluster_repo, inventory_snapshot_repository=snapshot_repo)
+
+
+# ---------------------------------------------------------------------------
+# 신규: Asset Inventory View Service (v1)
+# 기존 get_inventory_service와 완전히 분리된 별도 provider
+# ---------------------------------------------------------------------------
+
+from app.application.services.inventory_view_service import InventoryViewService  # noqa: E402
+
+
+def get_inventory_view_service(
+    db: AsyncSession = Depends(get_db),
+) -> InventoryViewService:
+    cluster_repo = SQLAlchemyClusterRepository(session=db)
+    scan_repo = SQLAlchemyScanRepository(session=db)
+    snapshot_repo = SQLAlchemyInventorySnapshotRepository(session=db)
+    return InventoryViewService(
+        cluster_repository=cluster_repo,
+        scan_repository=scan_repo,
+        snapshot_repository=snapshot_repo,
+        db=db,  # graph_snapshots / graph_nodes / attack_paths 직접 쿼리용
+    )

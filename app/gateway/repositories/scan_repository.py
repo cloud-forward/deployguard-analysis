@@ -86,7 +86,6 @@ class SQLAlchemyScanRepository(ScanRepository):
         )
         record = result.scalars().first()
         record.status = status
-        record.updated_at = datetime.utcnow()
         if "completed_at" in kwargs:
             record.completed_at = kwargs["completed_at"]
         try:
@@ -119,7 +118,6 @@ class SQLAlchemyScanRepository(ScanRepository):
         record = result.scalars().first()
         record.status = status
         record.s3_keys = s3_keys
-        record.updated_at = datetime.utcnow()
         if completed_at is not None:
             record.completed_at = completed_at
         try:
@@ -151,7 +149,6 @@ class SQLAlchemyScanRepository(ScanRepository):
         )
         record = result.scalars().first()
         record.s3_keys = s3_keys
-        record.updated_at = datetime.utcnow()
         try:
             await self._session.commit()
             await self._session.refresh(record)
@@ -175,14 +172,19 @@ class SQLAlchemyScanRepository(ScanRepository):
 
     async def list_by_cluster(self, cluster_id: str) -> list[ScanRecord]:
         result = await self._session.execute(
-            select(ScanRecord).where(ScanRecord.cluster_id == cluster_id)
+            select(ScanRecord).where(ScanRecord.cluster_id == str(cluster_id))
         )
         return list(result.scalars().all())
 
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
+        # scan_records.cluster_id 가 VARCHAR 로 저장되어 있으므로 str 로 비교
+        cluster_id_str = str(cluster_id)
         subq = (
             select(ScanRecord.scanner_type, func.max(ScanRecord.created_at).label("max_created_at"))
-            .where(ScanRecord.cluster_id == cluster_id, ScanRecord.status == "completed")
+            .where(
+                ScanRecord.cluster_id == cluster_id_str,
+                ScanRecord.status == "completed",
+            )
             .group_by(ScanRecord.scanner_type)
             .subquery()
         )
@@ -191,17 +193,16 @@ class SQLAlchemyScanRepository(ScanRepository):
                 subq,
                 (ScanRecord.scanner_type == subq.c.scanner_type) &
                 (ScanRecord.created_at == subq.c.max_created_at),
-            ).where(ScanRecord.cluster_id == cluster_id)
+            ).where(ScanRecord.cluster_id == cluster_id_str)
         )
         return {record.scanner_type: record for record in result.scalars().all()}
 
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> Optional[ScanRecord]:
-        active_statuses = ACTIVE_SCAN_STATUSES
         result = await self._session.execute(
             select(ScanRecord).where(
-                ScanRecord.cluster_id == cluster_id,
+                ScanRecord.cluster_id == str(cluster_id),
                 ScanRecord.scanner_type == scanner_type,
-                ScanRecord.status.in_(active_statuses),
+                ScanRecord.status.in_(ACTIVE_SCAN_STATUSES),
             )
         )
         return result.scalars().first()
@@ -217,7 +218,7 @@ class SQLAlchemyScanRepository(ScanRepository):
         result = await self._session.execute(
             select(ScanRecord)
             .where(
-                ScanRecord.cluster_id == cluster_id,
+                ScanRecord.cluster_id == str(cluster_id),
                 ScanRecord.scanner_type == scanner_type,
                 ScanRecord.status == SCAN_STATUS_QUEUED,
             )
@@ -229,7 +230,6 @@ class SQLAlchemyScanRepository(ScanRepository):
         if record is None:
             return None
         record.status = SCAN_STATUS_RUNNING
-        record.updated_at = started_at
         try:
             await self._session.commit()
             await self._session.refresh(record)

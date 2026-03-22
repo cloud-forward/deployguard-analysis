@@ -121,3 +121,25 @@ async def test_build_from_facts_remains_available_as_transitional_fallback():
     assert graph.number_of_edges() == 1
     assert graph.nodes["ingress:prod:web"]["is_entry_point"] is True
     assert graph["ingress:prod:web"]["service:prod:web"]["metadata"] == {"host": "app.example.com"}
+
+
+@pytest.mark.asyncio
+async def test_build_from_unified_result_preserves_node_credential_type():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(id="node:worker-1", type="node"),
+                K8sGraphNode(id="node_cred:worker-1:kubelet_cert", type="node_credential"),
+            ],
+            edges=[
+                K8sGraphEdge(
+                    source="node:worker-1",
+                    target="node_cred:worker-1:kubelet_cert",
+                    type="exposes_token",
+                )
+            ],
+        )
+    )
+
+    assert graph.nodes["node_cred:worker-1:kubelet_cert"]["type"] == "node_credential"
+    assert graph.has_edge("node:worker-1", "node_cred:worker-1:kubelet_cert")

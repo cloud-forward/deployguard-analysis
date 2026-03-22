@@ -207,6 +207,31 @@ def test_cross_domain_edges_are_excluded_even_when_present_in_fact_input():
     assert "rds:123456789012:production-db" not in node_ids
 
 
+def test_node_credential_facts_are_preserved_as_internal_k8s_graph_nodes():
+    builder = K8sGraphBuilder()
+    facts = make_internal_facts() + [
+        Fact(
+            fact_type=FactType.EXPOSES_TOKEN.value,
+            subject_id="node:worker-1",
+            subject_type=NodeType.NODE.value,
+            object_id="node_cred:worker-1:kubelet_cert",
+            object_type=NodeType.NODE_CREDENTIAL.value,
+            metadata={"credential_type": "kubelet_cert"},
+        )
+    ]
+
+    result = build(builder, facts, make_k8s_scan())
+    edge_triplets = {(edge.source, edge.target, edge.type) for edge in result.edges}
+    node_ids = {node.id for node in result.nodes}
+
+    assert "node_cred:worker-1:kubelet_cert" in node_ids
+    assert (
+        "node:worker-1",
+        "node_cred:worker-1:kubelet_cert",
+        FactType.EXPOSES_TOKEN.value,
+    ) in edge_triplets
+
+
 def test_node_metadata_is_enriched_from_raw_k8s_scan():
     builder = K8sGraphBuilder()
 

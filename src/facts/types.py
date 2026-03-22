@@ -52,6 +52,7 @@ class NodeType(str, Enum):
     SERVICE = "service"
     INGRESS = "ingress"
     NODE = "node"
+    NODE_CREDENTIAL = "node_credential"
     CONTAINER_IMAGE = "container_image"
     
     # AWS resources

@@ -19,6 +19,7 @@ INTERNAL_NODE_TYPES = {
     NodeType.SERVICE.value,
     NodeType.INGRESS.value,
     NodeType.NODE.value,
+    NodeType.NODE_CREDENTIAL.value,
     NodeType.CONTAINER_IMAGE.value,
 }
 

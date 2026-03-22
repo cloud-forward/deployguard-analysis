@@ -52,6 +52,7 @@ class ValidationRules:
         },
         FactType.EXPOSES_TOKEN.value: {
             (NodeType.NODE.value, NodeType.SERVICE_ACCOUNT.value),
+            (NodeType.NODE.value, NodeType.NODE_CREDENTIAL.value),
         },
         FactType.LATERAL_MOVE.value: {
             (NodeType.POD.value, NodeType.SERVICE.value),
@@ -93,6 +94,7 @@ class ValidationRules:
         NodeType.SERVICE.value: "service:",
         NodeType.INGRESS.value: "ingress:",
         NodeType.NODE.value: "node:",
+        NodeType.NODE_CREDENTIAL.value: "node_cred:",
         NodeType.CONTAINER_IMAGE.value: "container_image:",
         NodeType.IAM_ROLE.value: "iam:",
         NodeType.IAM_USER.value: "iam_user:",

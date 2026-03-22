@@ -495,6 +495,55 @@ class AttackGraphResponse(BaseModel):
     paths: list[AttackGraphPathResponse] = Field(default_factory=list)
 
 
+class AttackPathEdgeSequenceResponse(BaseModel):
+    edge_id: str = Field(..., description="Stable persisted edge sequence id")
+    edge_index: int = Field(..., description="0-based edge order within the attack path")
+    source_node_id: str = Field(..., description="Source node id")
+    target_node_id: str = Field(..., description="Target node id")
+    edge_type: str = Field(..., description="Canonical persisted edge type")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted edge metadata")
+
+
+class AttackPathListItemResponse(BaseModel):
+    path_id: str = Field(..., description="Stable path id")
+    title: str = Field(..., description="Persisted path title")
+    risk_level: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    risk_score: float | None = Field(None, description="Persisted normalized path risk score")
+    raw_final_risk: float | None = Field(None, description="Persisted raw final path risk")
+    hop_count: int = Field(0, description="Number of hops in the path")
+    entry_node_id: str | None = Field(None, description="Entry point node id")
+    target_node_id: str | None = Field(None, description="Crown jewel / target node id")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered path node ids")
+
+
+class AttackPathDetailResponse(BaseModel):
+    path_id: str = Field(..., description="Stable path id")
+    title: str = Field(..., description="Persisted path title")
+    risk_level: AttackGraphSeverity = Field(..., description="critical | high | medium | low | none")
+    risk_score: float | None = Field(None, description="Persisted normalized path risk score")
+    raw_final_risk: float | None = Field(None, description="Persisted raw final path risk")
+    hop_count: int = Field(0, description="Number of hops in the path")
+    entry_node_id: str | None = Field(None, description="Entry point node id")
+    target_node_id: str | None = Field(None, description="Crown jewel / target node id")
+    node_ids: list[str] = Field(default_factory=list, description="Ordered path node ids")
+    edge_ids: list[str] = Field(default_factory=list, description="Ordered persisted edge ids")
+    edges: list[AttackPathEdgeSequenceResponse] = Field(default_factory=list, description="Ordered persisted path edges")
+
+
+class AttackPathListResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing these paths")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned paths")
+    items: list[AttackPathListItemResponse] = Field(default_factory=list)
+
+
+class AttackPathDetailEnvelopeResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this path")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned path")
+    path: Optional[AttackPathDetailResponse] = Field(None, description="Requested attack path detail")
+
+
 class SyncResponse(BaseModel):
     status: str
     cluster_id: str

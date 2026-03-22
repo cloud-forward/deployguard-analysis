@@ -7,6 +7,8 @@ from app.application.di import get_attack_graph_service, get_cluster_service
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
 from app.models.schemas import (
+    AttackPathDetailEnvelopeResponse,
+    AttackPathListResponse,
     AttackGraphResponse,
     ClusterCreateRequest,
     ClusterUpdateRequest,
@@ -92,6 +94,41 @@ async def get_attack_graph(
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     return await service.get_attack_graph(cluster_id)
+
+
+@router.get(
+    "/{cluster_id}/attack-paths",
+    response_model=AttackPathListResponse,
+    summary="[신규] Persisted Attack Paths 조회",
+    description="클러스터 기준 최신 분석에 연결된 persisted attack path 목록을 반환합니다.",
+    responses={
+        200: {"description": "클러스터 기준 최신 attack path 목록"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+    },
+)
+async def get_attack_paths(
+    cluster_id: str,
+    service: AttackGraphService = Depends(get_attack_graph_service),
+):
+    return await service.get_attack_paths(cluster_id)
+
+
+@router.get(
+    "/{cluster_id}/attack-paths/{path_id}",
+    response_model=AttackPathDetailEnvelopeResponse,
+    summary="[신규] Persisted Attack Path 상세 조회",
+    description="클러스터 기준 최신 분석에 연결된 특정 persisted attack path 상세를 반환합니다.",
+    responses={
+        200: {"description": "클러스터 기준 attack path 상세"},
+        404: {"description": "클러스터 또는 attack path를 찾을 수 없습니다"},
+    },
+)
+async def get_attack_path_detail(
+    cluster_id: str,
+    path_id: str,
+    service: AttackGraphService = Depends(get_attack_graph_service),
+):
+    return await service.get_attack_path_detail(cluster_id, path_id)
 
 
 @router.patch(

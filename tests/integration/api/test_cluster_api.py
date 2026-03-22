@@ -151,6 +151,8 @@ async def attack_graph_client(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("DROP TABLE IF EXISTS attack_path_edges"))
+        await conn.execute(text("DROP TABLE IF EXISTS attack_paths"))
         await conn.execute(text("""
             CREATE TABLE graph_nodes (
                 graph_id TEXT NOT NULL,
@@ -180,8 +182,25 @@ async def attack_graph_client(tmp_path):
                 path_id TEXT NOT NULL,
                 title TEXT,
                 risk_level TEXT,
+                risk_score REAL,
+                raw_final_risk REAL,
+                hop_count INTEGER,
+                entry_node_id TEXT,
+                target_node_id TEXT,
                 node_ids TEXT,
                 edge_ids TEXT
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE attack_path_edges (
+                graph_id TEXT NOT NULL,
+                path_id TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                edge_index INTEGER,
+                source_node_id TEXT,
+                target_node_id TEXT,
+                edge_type TEXT,
+                metadata TEXT
             )
         """))
 
@@ -309,6 +328,144 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
             "target": "s3:prod-secrets",
             "type": "accesses",
             "metadata": {"reason": "An access relationship exists between these nodes."},
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-paths-1"
+    analysis_run_id = "analysis-paths-1"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 12:00:00', '2026-03-22 12:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (
+                    graph_id, path_id, title, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids, edge_ids
+                )
+                VALUES
+                    (:graph_id, 'path-high', 'Internet to Secrets', 'high', 0.8, 0.8, 2, 'ingress:prod:web', 's3:prod-secrets',
+                     '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]',
+                     '["path-high:edge:0","path-high:edge:1"]'),
+                    (:graph_id, 'path-medium', 'Pod to RDS', 'medium', 0.5, 0.5, 1, 'pod:prod:api', 'rds:prod-db',
+                     '["pod:prod:api","rds:prod-db"]',
+                     '["path-medium:edge:0"]')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T12:05:00"
+    assert [item["path_id"] for item in body["items"]] == ["path-high", "path-medium"]
+    assert body["items"][0] == {
+        "path_id": "path-high",
+        "title": "Internet to Secrets",
+        "risk_level": "high",
+        "risk_score": 0.8,
+        "raw_final_risk": 0.8,
+        "hop_count": 2,
+        "entry_node_id": "ingress:prod:web",
+        "target_node_id": "s3:prod-secrets",
+        "node_ids": ["ingress:prod:web", "pod:prod:api", "s3:prod-secrets"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-paths-2"
+    analysis_run_id = "analysis-paths-2"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 13:00:00', '2026-03-22 13:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (
+                    graph_id, path_id, title, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids, edge_ids
+                )
+                VALUES (
+                    :graph_id, 'path-detail', 'Internet to Secrets', 'critical', 0.95, 0.95, 2,
+                    'ingress:prod:web', 's3:prod-secrets',
+                    '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]',
+                    '["path-detail:edge:0","path-detail:edge:1"]'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_path_edges (
+                    graph_id, path_id, edge_id, edge_index, source_node_id, target_node_id, edge_type, metadata
+                )
+                VALUES
+                    (:graph_id, 'path-detail', 'path-detail:edge:0', 0, 'ingress:prod:web', 'pod:prod:api', 'ingress_exposes_service', '{"protocol":"http"}'),
+                    (:graph_id, 'path-detail', 'path-detail:edge:1', 1, 'pod:prod:api', 's3:prod-secrets', 'iam_role_access_resource', '{"service":"s3"}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths/path-detail")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T13:05:00"
+    assert body["path"]["path_id"] == "path-detail"
+    assert body["path"]["risk_level"] == "critical"
+    assert body["path"]["raw_final_risk"] == 0.95
+    assert body["path"]["edge_ids"] == ["path-detail:edge:0", "path-detail:edge:1"]
+    assert body["path"]["edges"] == [
+        {
+            "edge_id": "path-detail:edge:0",
+            "edge_index": 0,
+            "source_node_id": "ingress:prod:web",
+            "target_node_id": "pod:prod:api",
+            "edge_type": "ingress_exposes_service",
+            "metadata": {"protocol": "http"},
+        },
+        {
+            "edge_id": "path-detail:edge:1",
+            "edge_index": 1,
+            "source_node_id": "pod:prod:api",
+            "target_node_id": "s3:prod-secrets",
+            "edge_type": "iam_role_access_resource",
+            "metadata": {"service": "s3"},
         },
     ]
 

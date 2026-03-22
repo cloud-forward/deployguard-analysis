@@ -8,6 +8,11 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schemas import (
+    AttackPathDetailEnvelopeResponse,
+    AttackPathDetailResponse,
+    AttackPathEdgeSequenceResponse,
+    AttackPathListItemResponse,
+    AttackPathListResponse,
     AttackGraphEdgeResponse,
     AttackGraphEdgeType,
     AttackGraphNodeResponse,
@@ -122,6 +127,52 @@ class AttackGraphService:
             paths=paths,
         )
 
+    async def get_attack_paths(self, cluster_id: str) -> AttackPathListResponse:
+        cluster = await self._clusters.get_by_id(cluster_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        analysis = await self._get_latest_analysis_context(cluster_id)
+        if analysis is None or not analysis.get("graph_id"):
+            return AttackPathListResponse(
+                cluster_id=cluster_id,
+                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                generated_at=analysis.get("generated_at") if analysis else None,
+            )
+
+        items = await self._get_attack_path_items(str(analysis["graph_id"]))
+        return AttackPathListResponse(
+            cluster_id=cluster_id,
+            analysis_run_id=analysis.get("analysis_run_id"),
+            generated_at=analysis.get("generated_at"),
+            items=items,
+        )
+
+    async def get_attack_path_detail(self, cluster_id: str, path_id: str) -> AttackPathDetailEnvelopeResponse:
+        cluster = await self._clusters.get_by_id(cluster_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        analysis = await self._get_latest_analysis_context(cluster_id)
+        if analysis is None or not analysis.get("graph_id"):
+            return AttackPathDetailEnvelopeResponse(
+                cluster_id=cluster_id,
+                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                generated_at=analysis.get("generated_at") if analysis else None,
+                path=None,
+            )
+
+        path = await self._get_attack_path_detail(str(analysis["graph_id"]), path_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Attack path not found")
+
+        return AttackPathDetailEnvelopeResponse(
+            cluster_id=cluster_id,
+            analysis_run_id=analysis.get("analysis_run_id"),
+            generated_at=analysis.get("generated_at"),
+            path=path,
+        )
+
     async def _get_latest_analysis_context(self, cluster_id: str) -> Optional[dict[str, Any]]:
         query_with_graph = text(
             """
@@ -165,6 +216,204 @@ class AttackGraphService:
             return {column["name"] for column in inspector.get_columns(table_name)}
 
         return await conn.run_sync(_inspect_columns)
+
+    async def _get_attack_path_items(self, graph_id: str) -> list[AttackPathListItemResponse]:
+        columns = await self._get_table_columns("attack_paths")
+        if not columns:
+            return []
+
+        id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
+        if not id_col:
+            return []
+
+        title_col = self._pick_column(columns, "title", "name")
+        severity_col = self._pick_column(columns, "severity", "risk_level")
+        risk_score_col = self._pick_column(columns, "risk_score")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        hop_count_col = self._pick_column(columns, "hop_count")
+        entry_col = self._pick_column(columns, "entry_node_id")
+        target_col = self._pick_column(columns, "target_node_id")
+        node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
+
+        select_parts = [
+            f"{id_col} AS path_id",
+            f"{title_col} AS title" if title_col else "NULL AS title",
+            f"{severity_col} AS risk_level" if severity_col else "NULL AS risk_level",
+            f"{risk_score_col} AS risk_score" if risk_score_col else "NULL AS risk_score",
+            f"{raw_final_risk_col} AS raw_final_risk" if raw_final_risk_col else "NULL AS raw_final_risk",
+            f"{hop_count_col} AS hop_count" if hop_count_col else "NULL AS hop_count",
+            f"{entry_col} AS entry_node_id" if entry_col else "NULL AS entry_node_id",
+            f"{target_col} AS target_node_id" if target_col else "NULL AS target_node_id",
+            f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
+        ]
+
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM attack_paths
+                WHERE graph_id = :graph_id
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+
+        items = [
+            AttackPathListItemResponse(
+                path_id=str(row["path_id"]),
+                title=self._normalize_path_title(row.get("title"), row.get("path_id"), self._normalize_string_list(row.get("node_ids")), {}),
+                risk_level=self._normalize_severity(row.get("risk_level")),
+                risk_score=self._normalize_float(row.get("risk_score")),
+                raw_final_risk=self._normalize_float(row.get("raw_final_risk")),
+                hop_count=self._normalize_int(row.get("hop_count")) or max(len(self._normalize_string_list(row.get("node_ids"))) - 1, 0),
+                entry_node_id=self._normalize_optional_str(row.get("entry_node_id")),
+                target_node_id=self._normalize_optional_str(row.get("target_node_id")),
+                node_ids=self._normalize_string_list(row.get("node_ids")),
+            )
+            for row in result.mappings().all()
+        ]
+
+        return sorted(
+            items,
+            key=lambda item: (
+                SEVERITY_ORDER.get(item.risk_level, 99),
+                -(item.raw_final_risk or -1.0),
+                item.hop_count,
+                item.path_id,
+            ),
+        )
+
+    async def _get_attack_path_detail(self, graph_id: str, path_id: str) -> AttackPathDetailResponse | None:
+        columns = await self._get_table_columns("attack_paths")
+        if not columns:
+            return None
+
+        id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
+        if not id_col:
+            return None
+
+        title_col = self._pick_column(columns, "title", "name")
+        severity_col = self._pick_column(columns, "severity", "risk_level")
+        risk_score_col = self._pick_column(columns, "risk_score")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        hop_count_col = self._pick_column(columns, "hop_count")
+        entry_col = self._pick_column(columns, "entry_node_id")
+        target_col = self._pick_column(columns, "target_node_id")
+        node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
+        edge_ids_col = self._pick_column(columns, "edge_ids", "path_edges", "path_edge_ids")
+
+        select_parts = [
+            f"{id_col} AS path_id",
+            f"{title_col} AS title" if title_col else "NULL AS title",
+            f"{severity_col} AS risk_level" if severity_col else "NULL AS risk_level",
+            f"{risk_score_col} AS risk_score" if risk_score_col else "NULL AS risk_score",
+            f"{raw_final_risk_col} AS raw_final_risk" if raw_final_risk_col else "NULL AS raw_final_risk",
+            f"{hop_count_col} AS hop_count" if hop_count_col else "NULL AS hop_count",
+            f"{entry_col} AS entry_node_id" if entry_col else "NULL AS entry_node_id",
+            f"{target_col} AS target_node_id" if target_col else "NULL AS target_node_id",
+            f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
+            f"{edge_ids_col} AS edge_ids" if edge_ids_col else "NULL AS edge_ids",
+        ]
+
+        row = (
+            await self._db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM attack_paths
+                    WHERE graph_id = :graph_id AND {id_col} = :path_id
+                    LIMIT 1
+                    """
+                ),
+                {"graph_id": graph_id, "path_id": path_id},
+            )
+        ).mappings().first()
+        if row is None:
+            return None
+
+        node_ids = self._normalize_string_list(row.get("node_ids"))
+        edge_ids = self._normalize_string_list(row.get("edge_ids"))
+        edges = await self._get_attack_path_edge_sequence(graph_id, path_id, edge_ids)
+
+        return AttackPathDetailResponse(
+            path_id=str(row["path_id"]),
+            title=self._normalize_path_title(row.get("title"), row.get("path_id"), node_ids, {}),
+            risk_level=self._normalize_severity(row.get("risk_level")),
+            risk_score=self._normalize_float(row.get("risk_score")),
+            raw_final_risk=self._normalize_float(row.get("raw_final_risk")),
+            hop_count=self._normalize_int(row.get("hop_count")) or max(len(node_ids) - 1, 0),
+            entry_node_id=self._normalize_optional_str(row.get("entry_node_id")),
+            target_node_id=self._normalize_optional_str(row.get("target_node_id")),
+            node_ids=node_ids,
+            edge_ids=edge_ids,
+            edges=edges,
+        )
+
+    async def _get_attack_path_edge_sequence(
+        self,
+        graph_id: str,
+        path_id: str,
+        fallback_edge_ids: list[str],
+    ) -> list[AttackPathEdgeSequenceResponse]:
+        columns = await self._get_table_columns("attack_path_edges")
+        if not columns:
+            return []
+
+        edge_id_col = self._pick_column(columns, "edge_id", "id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        if not edge_id_col or not source_col or not target_col or not type_col:
+            return []
+
+        index_col = self._pick_column(columns, "edge_index", "path_edge_index", "sequence")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+
+        select_parts = [
+            f"{edge_id_col} AS edge_id",
+            f"{index_col} AS edge_index" if index_col else "NULL AS edge_index",
+            f"{source_col} AS source_node_id",
+            f"{target_col} AS target_node_id",
+            f"{type_col} AS edge_type",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+        ]
+
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM attack_path_edges
+                WHERE graph_id = :graph_id AND path_id = :path_id
+                """
+            ),
+            {"graph_id": graph_id, "path_id": path_id},
+        )
+
+        edges = [
+            AttackPathEdgeSequenceResponse(
+                edge_id=str(row["edge_id"]),
+                edge_index=self._normalize_int(row.get("edge_index")) or 0,
+                source_node_id=str(row["source_node_id"]),
+                target_node_id=str(row["target_node_id"]),
+                edge_type=str(row["edge_type"]),
+                metadata=self._normalize_object(row.get("metadata")),
+            )
+            for row in result.mappings().all()
+        ]
+        if edges:
+            return sorted(edges, key=lambda edge: (edge.edge_index, edge.edge_id))
+
+        return [
+            AttackPathEdgeSequenceResponse(
+                edge_id=edge_id,
+                edge_index=index,
+                source_node_id="",
+                target_node_id="",
+                edge_type="unknown",
+                metadata={},
+            )
+            for index, edge_id in enumerate(fallback_edge_ids)
+        ]
 
     async def _get_nodes(self, graph_id: str) -> list[AttackGraphNodeResponse]:
         columns = await self._get_table_columns("graph_nodes")
@@ -399,6 +648,31 @@ class AttackGraphService:
             if isinstance(parsed, list):
                 return [str(item) for item in parsed]
         return []
+
+    @staticmethod
+    def _normalize_float(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_int(value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_optional_str(value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value)
+        return normalized if normalized else None
 
     @staticmethod
     def _normalize_label(value: Any, node_id: str) -> str:

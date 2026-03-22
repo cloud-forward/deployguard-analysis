@@ -31,13 +31,11 @@ def make_k8s_scan() -> dict:
         ],
         "service_accounts": [
             {
-                "metadata": {
-                    "namespace": "production",
-                    "name": "api-sa",
-                    "annotations": {
-                        "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole",
-                    },
-                }
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole",
+                },
             }
         ],
         "roles": [
@@ -55,7 +53,8 @@ def make_k8s_scan() -> dict:
         ],
         "secrets": [
             {
-                "metadata": {"namespace": "production", "name": "db-creds"},
+                "namespace": "production",
+                "name": "db-creds",
                 "type": "Opaque",
                 "data": {"username": "dXNlcg=="},
                 "stringData": {"password": "plaintext"},
@@ -205,31 +204,6 @@ def test_cross_domain_edges_are_excluded_even_when_present_in_fact_input():
     assert ("secret:production:db-creds", "rds:123456789012:production-db", FactType.SECRET_CONTAINS_CREDENTIALS.value) not in edge_triplets
     assert "iam:123456789012:WebAppRole" not in node_ids
     assert "rds:123456789012:production-db" not in node_ids
-
-
-def test_node_credential_facts_are_preserved_as_internal_k8s_graph_nodes():
-    builder = K8sGraphBuilder()
-    facts = make_internal_facts() + [
-        Fact(
-            fact_type=FactType.EXPOSES_TOKEN.value,
-            subject_id="node:worker-1",
-            subject_type=NodeType.NODE.value,
-            object_id="node_cred:worker-1:kubelet_cert",
-            object_type=NodeType.NODE_CREDENTIAL.value,
-            metadata={"credential_type": "kubelet_cert"},
-        )
-    ]
-
-    result = build(builder, facts, make_k8s_scan())
-    edge_triplets = {(edge.source, edge.target, edge.type) for edge in result.edges}
-    node_ids = {node.id for node in result.nodes}
-
-    assert "node_cred:worker-1:kubelet_cert" in node_ids
-    assert (
-        "node:worker-1",
-        "node_cred:worker-1:kubelet_cert",
-        FactType.EXPOSES_TOKEN.value,
-    ) in edge_triplets
 
 
 def test_node_metadata_is_enriched_from_raw_k8s_scan():

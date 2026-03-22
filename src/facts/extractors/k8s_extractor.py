@@ -561,7 +561,7 @@ class K8sFactExtractor(BaseExtractor):
     def _extract_exposes_token(
         self, scan: Dict[str, Any], existing_facts: List[Fact]
     ) -> List[Fact]:
-        """Extract node credential and token exposure facts from escape-capable nodes."""
+        """Extract token exposure facts from escape-capable nodes."""
         facts: List[Fact] = []
         
         # Find all nodes with escape paths
@@ -579,18 +579,6 @@ class K8sFactExtractor(BaseExtractor):
         # Generate exposes_token facts
         for node_id in escape_nodes:
             node_name = node_id.split(":", 1)[1]
-
-            facts.append(Fact(
-                fact_type=FactType.EXPOSES_TOKEN.value,
-                subject_id=node_id,
-                subject_type=NodeType.NODE.value,
-                object_id=self.id_gen.node_credential(node_name, "kubelet_cert"),
-                object_type=NodeType.NODE_CREDENTIAL.value,
-                metadata={
-                    "credential_type": "kubelet_cert",
-                    "source": "escape_path",
-                },
-            ))
             
             # Find pods on this node
             for pod in scan.get("pods", []):

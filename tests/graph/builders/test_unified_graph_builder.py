@@ -202,31 +202,3 @@ def test_duplicate_nodes_and_edges_are_deduplicated_by_identity_triplets():
         (edge.source, edge.target, edge.type)
         for edge in result.edges
     ].count(("iam:123456789012:AppRole", "s3:123456789012:data-bucket", "iam_role_access_resource")) == 1
-
-
-def test_unified_merge_preserves_node_credential_nodes_and_edges_from_k8s_result():
-    k8s_result = make_k8s_result()
-    k8s_result.nodes.append(K8sGraphNode(id="node:worker-1", type="node"))
-    k8s_result.nodes.append(
-        K8sGraphNode(
-            id="node_cred:worker-1:kubelet_cert",
-            type="node_credential",
-        )
-    )
-    k8s_result.edges.append(
-        K8sGraphEdge(
-            source="node:worker-1",
-            target="node_cred:worker-1:kubelet_cert",
-            type="exposes_token",
-            metadata={"credential_type": "kubelet_cert"},
-        )
-    )
-
-    result = UnifiedGraphBuilder().build(k8s_result, make_aws_result())
-
-    assert "node_cred:worker-1:kubelet_cert" in {node.id for node in result.nodes}
-    assert (
-        "node:worker-1",
-        "node_cred:worker-1:kubelet_cert",
-        "exposes_token",
-    ) in {(edge.source, edge.target, edge.type) for edge in result.edges}

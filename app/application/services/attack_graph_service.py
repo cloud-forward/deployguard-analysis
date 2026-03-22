@@ -21,7 +21,6 @@ SEVERITY_ORDER = {severity.value: idx for idx, severity in enumerate(AttackGraph
 NODE_TYPE_ALIASES = {
     "sa": AttackGraphNodeType.service_account,
     "serviceaccount": AttackGraphNodeType.service_account,
-    "node_cred": AttackGraphNodeType.node_credential,
     "iam-role": AttackGraphNodeType.iam_role,
     "iam_role": AttackGraphNodeType.iam_role,
     "iam": AttackGraphNodeType.iam_role,
@@ -65,7 +64,6 @@ KIND_DISPLAY = {
     AttackGraphNodeType.service: "Service",
     AttackGraphNodeType.ingress: "Ingress",
     AttackGraphNodeType.node: "Node",
-    AttackGraphNodeType.node_credential: "Node Credential",
     AttackGraphNodeType.container_image: "Container Image",
     AttackGraphNodeType.iam_role: "IAM Role",
     AttackGraphNodeType.iam_user: "IAM User",

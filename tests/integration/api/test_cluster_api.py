@@ -234,7 +234,6 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
                 VALUES
                     (:graph_id, 'ingress:prod:web', 'ingress', 'Public Web Ingress', 'critical', 1, 1, 0, '{"namespace":"prod"}'),
                     (:graph_id, 'pod:prod:api', 'pod', 'API Pod', NULL, NULL, NULL, NULL, NULL),
-                    (:graph_id, 'node_cred:worker-1:kubelet_cert', 'node_credential', 'Kubelet Cert', 'medium', 1, 0, 0, '{"credential_type":"kubelet_cert","node_name":"worker-1"}'),
                     (:graph_id, 's3:prod-secrets', 's3_bucket', 'Secrets Bucket', 'high', 0, 0, 1, '{"account_id":"123456789012"}')
                 """
             ),
@@ -292,10 +291,6 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
         "is_crown_jewel": False,
         "metadata": {"kind_display": "Pod"},
     }
-
-    node_credential = next(node for node in body["nodes"] if node["id"] == "node_cred:worker-1:kubelet_cert")
-    assert node_credential["type"] == "node_credential"
-    assert node_credential["metadata"]["kind_display"] == "Node Credential"
 
     assert body["edges"] == [
         {

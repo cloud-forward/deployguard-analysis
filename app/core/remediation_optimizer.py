@@ -15,7 +15,6 @@ CONTROL_NODE_TYPES = {
     "role",
     "cluster_role",
     "node",
-    "node_credential",
     "iam_role",
 }
 
@@ -25,7 +24,6 @@ FIX_COST_BY_NODE_TYPE: dict[str, float] = {
     "role": 2.0,
     "cluster_role": 3.0,
     "node": 3.0,
-    "node_credential": 2.5,
     "iam_role": 2.0,
 }
 
@@ -35,7 +33,6 @@ ACTION_BY_NODE_TYPE: dict[str, str] = {
     "role": "tighten_role",
     "cluster_role": "tighten_cluster_role",
     "node": "harden_node",
-    "node_credential": "rotate_node_credential",
     "iam_role": "tighten_iam_role",
 }
 
@@ -45,7 +42,6 @@ TITLE_BY_NODE_TYPE: dict[str, str] = {
     "role": "Tighten role permissions",
     "cluster_role": "Tighten cluster role permissions",
     "node": "Harden node access",
-    "node_credential": "Rotate node credential",
     "iam_role": "Tighten IAM role permissions",
 }
 

@@ -436,7 +436,6 @@ class AttackGraphNodeType(str, Enum):
     service = "service"
     ingress = "ingress"
     node = "node"
-    node_credential = "node_credential"
     container_image = "container_image"
     iam_role = "iam_role"
     iam_user = "iam_user"

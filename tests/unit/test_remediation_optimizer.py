@@ -46,11 +46,12 @@ def test_optimizer_prefers_shared_low_cost_edge_fix_that_blocks_multiple_paths()
     assert result["recommendations"][0]["fix_type"] == "restrict_ingress"
     assert result["recommendations"][0]["blocked_path_ids"] == ["path-a", "path-b"]
     assert result["recommendations"][0]["covered_risk"] == 1.5
-    assert result["recommendations"][0]["cumulative_risk_reduction"] == 1.5
+    assert result["recommendations"][0]["cumulative_risk_reduction"] == 1.0
+    assert result["recommendations"][0]["fix_cost"] == 3.2
     assert result["recommendations"][0]["fix_description"] == (
         "Change ingress `ingress:prod:web` -> service `service:prod:web`: restrict ingress exposure. "
         "This matters because this public ingress step exposes an internal service. "
-        "Expected effect: block 2 risky paths and reduce raw risk by 1.50 (cumulative 1.50)."
+        "Expected effect: block 2 risky paths and reduce raw risk by 1.50 (cumulative reduction ratio 1.00)."
     )
 
 
@@ -94,14 +95,49 @@ def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when
     assert result["summary"]["selected_count"] == 2
     assert result["recommendations"][0]["fix_type"] == "restrict_ingress"
     assert result["recommendations"][1]["fix_type"] == "remove_privileged"
+    assert result["recommendations"][0]["fix_cost"] == 3.2
+    assert result["recommendations"][1]["fix_cost"] == 3.0
     assert result["recommendations"][0]["covered_risk"] == 0.8
-    assert result["recommendations"][0]["cumulative_risk_reduction"] == 0.8
+    assert result["recommendations"][0]["cumulative_risk_reduction"] == 0.533333
     assert result["recommendations"][1]["covered_risk"] == 0.7
-    assert result["recommendations"][1]["cumulative_risk_reduction"] == 1.5
+    assert result["recommendations"][1]["cumulative_risk_reduction"] == 1.0
     assert any(item.startswith("restrict_ingress:") for item in recommendation_ids)
     assert any(item.startswith("remove_privileged:") for item in recommendation_ids)
     assert result["recommendations"][1]["fix_description"] == (
         "Change pod `pod:prod:escape` -> node `node:worker-1`: remove privileged or escape-capable pod settings. "
         "This matters because this edge represents a container escape step to the node. "
-        "Expected effect: block 1 risky path and reduce raw risk by 0.70 (cumulative 1.50)."
+        "Expected effect: block 1 risky path and reduce raw risk by 0.70 (cumulative reduction ratio 1.00)."
     )
+
+
+def test_optimizer_uses_higher_effective_cost_for_cluster_role_bindings_than_role_bindings():
+    graph = nx.DiGraph()
+    graph.add_node("sa:prod:api", type="service_account")
+    graph.add_node("role:prod:reader", type="role")
+    graph.add_node("cluster_role:admin", type="cluster_role")
+    graph.add_node("secret:prod:db", type="secret")
+
+    enriched_paths = [
+        {
+            "path_id": "path-role",
+            "path": ["sa:prod:api", "role:prod:reader", "secret:prod:db"],
+            "raw_final_risk": 0.6,
+            "edges": [
+                {"source": "sa:prod:api", "target": "role:prod:reader", "type": "service_account_bound_role"},
+            ],
+        },
+        {
+            "path_id": "path-cluster-role",
+            "path": ["sa:prod:api", "cluster_role:admin", "secret:prod:db"],
+            "raw_final_risk": 0.6,
+            "edges": [
+                {"source": "sa:prod:api", "target": "cluster_role:admin", "type": "service_account_bound_cluster_role"},
+            ],
+        },
+    ]
+
+    result = RemediationOptimizer().optimize(enriched_paths, graph)
+
+    costs_by_edge_type = {item["edge_type"]: item["fix_cost"] for item in result["recommendations"]}
+    assert costs_by_edge_type["service_account_bound_role"] == 1.8
+    assert costs_by_edge_type["service_account_bound_cluster_role"] == 2.8

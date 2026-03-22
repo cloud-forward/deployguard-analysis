@@ -11,14 +11,19 @@ import networkx as nx
 
 FIX_COST_BY_TYPE: dict[str, float] = {
     "delete_resource": 3.5,
-    "remove_role_binding": 1.5,
-    "apply_network_policy": 1.8,
-    "restrict_iam_policy": 2.0,
-    "change_service_account": 1.7,
-    "remove_secret_mount": 1.6,
-    "restrict_ingress": 1.0,
-    "remove_privileged": 2.2,
-    "rotate_credentials": 1.9,
+    "remove_role_binding": 1.8,
+    "apply_network_policy": 2.2,
+    "restrict_iam_policy": 2.4,
+    "change_service_account": 1.6,
+    "remove_secret_mount": 1.4,
+    "restrict_ingress": 3.2,
+    "remove_privileged": 3.0,
+    "rotate_credentials": 1.7,
+}
+
+EDGE_FIX_COST_OVERRIDE: dict[str, float] = {
+    "service_account_bound_role": 1.8,
+    "service_account_bound_cluster_role": 2.8,
 }
 
 EDGE_FIX_TYPE_MAP: dict[str, tuple[str, str]] = {
@@ -247,6 +252,8 @@ class RemediationOptimizer:
         target = edge["target"]
         fix_type, base_action = mapping
 
+        fix_cost = EDGE_FIX_COST_OVERRIDE.get(edge_type, FIX_COST_BY_TYPE[fix_type])
+
         metadata: dict[str, Any] = {}
         if source in graph:
             metadata["edge_source_type"] = graph.nodes[source].get("type")
@@ -254,6 +261,7 @@ class RemediationOptimizer:
             metadata["edge_target_type"] = graph.nodes[target].get("type")
         metadata["base_action"] = base_action
         metadata["impact_reason"] = EDGE_IMPACT_REASON_MAP.get(edge_type, "this edge keeps the attack path open")
+        metadata["effective_fix_cost"] = fix_cost
 
         return RemediationCandidate(
             id=self._candidate_id(source, target, edge_type, fix_type),
@@ -262,7 +270,7 @@ class RemediationOptimizer:
             edge_type=edge_type,
             fix_type=fix_type,
             fix_description="",
-            fix_cost=FIX_COST_BY_TYPE[fix_type],
+            fix_cost=fix_cost,
             metadata=metadata,
         )
 
@@ -277,7 +285,8 @@ class RemediationOptimizer:
         }
         uncovered = set(path_risk_by_id.keys())
         selected: list[dict[str, Any]] = []
-        cumulative_risk_reduction = 0.0
+        cumulative_removed_raw_risk = 0.0
+        total_raw_risk = round(sum(path_risk_by_id.values()), 6)
 
         while uncovered:
             best: RemediationCandidate | None = None
@@ -312,7 +321,11 @@ class RemediationOptimizer:
                 sum(path_risk_by_id[path_id] for path_id in best_uncovered),
                 6,
             )
-            cumulative_risk_reduction = round(cumulative_risk_reduction + covered_risk, 6)
+            cumulative_removed_raw_risk = round(cumulative_removed_raw_risk + covered_risk, 6)
+            cumulative_risk_reduction = round(
+                (cumulative_removed_raw_risk / total_raw_risk) if total_raw_risk > 0 else 0.0,
+                6,
+            )
             fix_description = self._build_fix_description(
                 best,
                 blocked_path_count=len(best_uncovered),
@@ -365,7 +378,7 @@ class RemediationOptimizer:
             f"Change {source_ref} -> {target_ref}: {base_action}. "
             f"This matters because {impact_reason}. "
             f"Expected effect: block {blocked_path_count} risky {path_label} and reduce raw risk by {covered_risk:.2f} "
-            f"(cumulative {cumulative_risk_reduction:.2f})."
+            f"(cumulative reduction ratio {cumulative_risk_reduction:.2f})."
         )
 
     @staticmethod

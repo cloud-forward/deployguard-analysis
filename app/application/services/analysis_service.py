@@ -174,9 +174,8 @@ class AnalysisService:
                         for src, tgt, edge_type in edges
                     ],
                 })
-            
-            # Sort by risk score
-            enriched_paths.sort(key=lambda x: x["raw_final_risk"], reverse=True)
+
+            enriched_paths = self._refine_attack_paths(enriched_paths)
             graph_id = str(
                 unified_result.metadata.get("k8s", {}).get("graph_id")
                 or k8s_result.metadata.get("graph_id")
@@ -242,6 +241,91 @@ class AnalysisService:
                 error_type=type(e).__name__,
             )
             raise
+
+    def _refine_attack_paths(self, paths: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        """
+        Prune weaker near-duplicate paths and apply explicit deterministic ranking.
+
+        Current v1 heuristic:
+        - exact duplicates are already suppressed in PathFinder
+        - for the same entry/target pair, drop a path when a shorter or equal-hop path
+          with no lower risk is a strict ordered subsequence of it
+        - rank remaining paths by risk desc, hop count asc, generic-allows count asc, path_id asc
+        """
+        grouped: dict[tuple[str | None, str | None], list[Dict[str, Any]]] = {}
+        for item in paths:
+            path_nodes = [str(node_id) for node_id in item.get("path", [])]
+            key = (
+                path_nodes[0] if path_nodes else None,
+                path_nodes[-1] if path_nodes else None,
+            )
+            grouped.setdefault(key, []).append(item)
+
+        refined: list[Dict[str, Any]] = []
+        for group in grouped.values():
+            survivors: list[Dict[str, Any]] = []
+            ordered_group = sorted(group, key=self._attack_path_sort_key)
+            for candidate in ordered_group:
+                if any(self._path_dominates(existing, candidate) for existing in survivors):
+                    continue
+                survivors.append(candidate)
+            refined.extend(survivors)
+
+        refined.sort(key=self._attack_path_sort_key)
+        return refined
+
+    def _attack_path_sort_key(self, item: Dict[str, Any]) -> tuple[float, int, int, str]:
+        path = [str(node_id) for node_id in item.get("path", [])]
+        raw_final_risk = item.get("raw_final_risk")
+        try:
+            risk = float(raw_final_risk)
+        except (TypeError, ValueError):
+            risk = 0.0
+
+        edges = item.get("edges", [])
+        generic_allows_count = sum(
+            1 for edge in edges if str(edge.get("type", "")).strip().lower() == "allows"
+        )
+
+        return (
+            -risk,
+            max(len(path) - 1, 0),
+            generic_allows_count,
+            str(item.get("path_id", "")),
+        )
+
+    def _path_dominates(self, dominant: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+        dominant_path = [str(node_id) for node_id in dominant.get("path", [])]
+        candidate_path = [str(node_id) for node_id in candidate.get("path", [])]
+
+        if dominant_path == candidate_path or len(dominant_path) >= len(candidate_path):
+            return False
+        if not dominant_path or not candidate_path:
+            return False
+        if dominant_path[0] != candidate_path[0] or dominant_path[-1] != candidate_path[-1]:
+            return False
+
+        dominant_risk = self._coerce_float(dominant.get("raw_final_risk"))
+        candidate_risk = self._coerce_float(candidate.get("raw_final_risk"))
+        if dominant_risk < candidate_risk:
+            return False
+
+        if not self._is_ordered_subsequence(dominant_path, candidate_path):
+            return False
+
+        return True
+
+    @staticmethod
+    def _is_ordered_subsequence(smaller: list[str], larger: list[str]) -> bool:
+        iterator = iter(larger)
+        return all(item in iterator for item in smaller)
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _build_k8s_result(self, k8s_scan: Dict[str, Any], scan_id: str):
         k8s_facts = self._k8s_extractor.extract(k8s_scan)

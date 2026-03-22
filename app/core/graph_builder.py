@@ -180,27 +180,10 @@ class GraphBuilder:
     def _mark_entry_points(self):
         """Mark entry point nodes"""
         for node_id, attrs in self.graph.nodes(data=True):
-            node_type = attrs.get("type")
-            
-            # Rule 1: Ingress is always entry point
-            if node_type == NodeType.INGRESS.value:
-                self.graph.nodes[node_id]["is_entry_point"] = True
-            
-            # Rule 2: Pods exposed by Ingress
-            elif node_type == NodeType.POD.value:
-                # Check if any Ingress → Service → Pod path exists
-                if self._is_pod_exposed_by_ingress(node_id):
-                    self.graph.nodes[node_id]["is_entry_point"] = True
-            
-            # Rule 3: Public RDS (if metadata indicates)
-            elif node_type == NodeType.RDS.value:
-                if attrs.get("metadata", {}).get("is_publicly_accessible"):
-                    self.graph.nodes[node_id]["is_entry_point"] = True
-            
-            # Rule 4: Public S3 (if metadata indicates)
-            elif node_type == NodeType.S3_BUCKET.value:
-                if attrs.get("metadata", {}).get("is_public"):
-                    self.graph.nodes[node_id]["is_entry_point"] = True
+            self.graph.nodes[node_id]["is_entry_point"] = self._classify_entry_point(
+                node_id,
+                attrs,
+            )
     
     def _is_pod_exposed_by_ingress(self, pod_id: str) -> bool:
         """Check if pod is exposed by Ingress → Service → Pod path"""
@@ -221,42 +204,56 @@ class GraphBuilder:
     def _mark_crown_jewels(self):
         """Mark crown jewel nodes"""
         for node_id, attrs in self.graph.nodes(data=True):
-            node_type = attrs.get("type")
-            metadata = attrs.get("metadata", {})
-            
-            is_cj = False
-            
-            # Rule 1: S3 buckets are always crown jewels
-            if node_type == NodeType.S3_BUCKET.value:
-                is_cj = True
-            
-            # Rule 2: RDS instances are always crown jewels
-            elif node_type == NodeType.RDS.value:
-                is_cj = True
-            
-            # Rule 3: Secrets with credentials
-            elif node_type == NodeType.SECRET.value:
-                if (
-                    metadata.get("contains_db_credentials")
-                    or metadata.get("contains_aws_credentials")
-                ):
-                    is_cj = True
-            
-            # Rule 4: IAM Roles (Tier 1 or 2)
-            elif node_type == NodeType.IAM_ROLE.value:
-                tier = metadata.get("tier")
-                if tier in (1, 2):
-                    is_cj = True
-            
-            # Rule 5: IAM Users (Tier 1 or 2)
-            elif node_type == NodeType.IAM_USER.value:
-                tier = metadata.get("tier")
-                if tier in (1, 2):
-                    is_cj = True
-            
-            if is_cj:
-                self.graph.nodes[node_id]["is_crown_jewel"] = True
-    
+            self.graph.nodes[node_id]["is_crown_jewel"] = self._classify_crown_jewel(attrs)
+
+    def _classify_entry_point(self, node_id: str, attrs: Dict[str, Any]) -> bool:
+        """Return whether this node should be treated as an attack-path entry point."""
+        node_type = attrs.get("type")
+        metadata = attrs.get("metadata", {})
+
+        if node_type == NodeType.INGRESS.value:
+            return True
+
+        if node_type == NodeType.SERVICE.value:
+            return self._is_service_exposed_by_ingress(node_id)
+
+        if node_type == NodeType.POD.value:
+            return self._is_pod_exposed_by_ingress(node_id)
+
+        if node_type == NodeType.RDS.value:
+            return bool(metadata.get("is_publicly_accessible"))
+
+        if node_type == NodeType.S3_BUCKET.value:
+            return bool(metadata.get("is_public"))
+
+        return False
+
+    def _classify_crown_jewel(self, attrs: Dict[str, Any]) -> bool:
+        """Return whether this node should be treated as an attack-path crown jewel."""
+        node_type = attrs.get("type")
+        metadata = attrs.get("metadata", {})
+
+        if node_type in (NodeType.S3_BUCKET.value, NodeType.RDS.value):
+            return True
+
+        if node_type == NodeType.SECRET.value:
+            return bool(
+                metadata.get("contains_db_credentials")
+                or metadata.get("contains_aws_credentials")
+            )
+
+        if node_type in (NodeType.IAM_ROLE.value, NodeType.IAM_USER.value):
+            return metadata.get("tier") in (1, 2)
+
+        return False
+
+    def _is_service_exposed_by_ingress(self, service_id: str) -> bool:
+        """Check if a service is directly exposed by an ingress-like entry point."""
+        for pred in self.graph.predecessors(service_id):
+            if self.graph.nodes[pred].get("type") == NodeType.INGRESS.value:
+                return True
+        return False
+
     def _update_base_risk(self):
         """Update base_risk for all nodes"""
         for node_id, attrs in self.graph.nodes(data=True):
@@ -360,19 +357,19 @@ class GraphBuilder:
     
     def get_entry_points(self) -> List[str]:
         """Get all entry point node IDs"""
-        return [
+        return sorted([
             node_id
             for node_id, attrs in self.graph.nodes(data=True)
             if attrs.get("is_entry_point", False)
-        ]
+        ])
     
     def get_crown_jewels(self) -> List[str]:
         """Get all crown jewel node IDs"""
-        return [
+        return sorted([
             node_id
             for node_id, attrs in self.graph.nodes(data=True)
             if attrs.get("is_crown_jewel", False)
-        ]
+        ])
     
     def get_node_attributes(self, node_id: str) -> Dict[str, Any]:
         """Get attributes of a node"""

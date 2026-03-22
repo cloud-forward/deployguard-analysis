@@ -11,8 +11,10 @@ def test_role_grants_resource_allows_service_account_targets():
     assert (NodeType.CLUSTER_ROLE.value, NodeType.SERVICE_ACCOUNT.value) in allowed
 
 
-def test_supported_node_type_prefixes_do_not_include_node_credential():
-    assert "node_credential" not in ValidationRules.TYPE_PREFIX_MAP
+def test_exposes_token_allows_service_account_targets():
+    allowed = ValidationRules.ALLOWED_COMBINATIONS[FactType.EXPOSES_TOKEN.value]
+
+    assert (NodeType.NODE.value, NodeType.SERVICE_ACCOUNT.value) in allowed
 
 
 def test_allowed_confidence_values_match_supported_contract():

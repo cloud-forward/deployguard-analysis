@@ -7,6 +7,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.inventory_service import InventoryService
 from app.config import settings
 from app.gateway.db.session import get_db
@@ -41,6 +42,13 @@ def get_cluster_service(
 ) -> ClusterService:
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     return ClusterService(cluster_repository=cluster_repo)
+
+
+def get_attack_graph_service(
+    db: AsyncSession = Depends(get_db),
+) -> AttackGraphService:
+    cluster_repo = SQLAlchemyClusterRepository(session=db)
+    return AttackGraphService(cluster_repository=cluster_repo, db=db)
 
 
 def get_inventory_service(

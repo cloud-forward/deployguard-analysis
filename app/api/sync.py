@@ -4,7 +4,7 @@ from app.application.di import get_inventory_service
 from app.application.services.inventory_service import InventoryService
 from app.models.schemas import SyncResponse
 
-router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
+router = APIRouter(prefix="/api/v1/clusters", tags=["Inventory"])
 
 
 @router.post(

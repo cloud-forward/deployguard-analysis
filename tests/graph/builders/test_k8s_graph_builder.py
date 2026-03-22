@@ -31,13 +31,11 @@ def make_k8s_scan() -> dict:
         ],
         "service_accounts": [
             {
-                "metadata": {
-                    "namespace": "production",
-                    "name": "api-sa",
-                    "annotations": {
-                        "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole",
-                    },
-                }
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/WebAppRole",
+                },
             }
         ],
         "roles": [
@@ -55,7 +53,8 @@ def make_k8s_scan() -> dict:
         ],
         "secrets": [
             {
-                "metadata": {"namespace": "production", "name": "db-creds"},
+                "namespace": "production",
+                "name": "db-creds",
                 "type": "Opaque",
                 "data": {"username": "dXNlcg=="},
                 "stringData": {"password": "plaintext"},

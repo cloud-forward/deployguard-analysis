@@ -26,3 +26,28 @@ class AnalysisJobRepository(Protocol):
         """Create an analysis job for a cluster with all required scan IDs. Returns job_id."""
         ...
 
+    async def persist_attack_paths(
+        self,
+        *,
+        cluster_id: str | UUID,
+        graph_id: str,
+        k8s_scan_id: str,
+        aws_scan_id: str,
+        image_scan_id: str,
+        attack_paths: list[Dict[str, Any]],
+    ) -> None:
+        """Persist attack paths and link them to the latest matching analysis job/graph snapshot."""
+        ...
+
+    async def persist_remediation_recommendations(
+        self,
+        *,
+        cluster_id: str | UUID,
+        graph_id: str,
+        k8s_scan_id: str,
+        aws_scan_id: str,
+        image_scan_id: str,
+        remediation_optimization: Dict[str, Any],
+    ) -> None:
+        """Persist remediation optimization recommendations for the linked graph snapshot."""
+        ...

@@ -39,7 +39,7 @@ class NodeIDGenerator:
     @staticmethod
     def node(node_name: str) -> str:
         return f"node:{node_name}"
-    
+
     @staticmethod
     def container_image(image_ref: str) -> str:
         return f"container_image:{image_ref}"

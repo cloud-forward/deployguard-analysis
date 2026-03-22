@@ -14,7 +14,7 @@ from app.models.schemas import (
     InvSummaryResponse,
 )
 
-router = APIRouter(tags=["Clusters"])
+router = APIRouter(tags=["Inventory"])
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,6 @@ router = APIRouter(tags=["Clusters"])
         200: {"description": "클러스터 자산 목록"},
         404: {"description": "클러스터를 찾을 수 없습니다"},
     },
-    tags=["Discovery Inventory"],
 )
 async def get_cluster_assets(
     cluster_id: str,
@@ -50,7 +49,6 @@ async def get_cluster_assets(
         200: {"description": "자산 상세 정보"},
         404: {"description": "자산을 찾을 수 없습니다"},
     },
-    tags=["Discovery Inventory"],
 )
 async def get_asset_detail(
     asset_id: str,
@@ -70,14 +68,8 @@ async def get_asset_detail(
     status_code=200,
     summary="[신규] Inventory Summary 조회",
     description=(
-        "Summary Bar용. 전체 자산 수, K8s/AWS 타입별 집계, 스캐너 커버리지, 위험 요약을 반환합니다.\n\n"
-        "**MVP 임시값 안내:**\n"
-        "- `last_analysis_at`: graph_snapshots 미연동으로 null\n"
-        "- `k8s_resources`: K8s scanner 미연동으로 빈 dict\n"
-        "- `risk_summary`: graph/attack_paths 미연동으로 전부 0\n"
-        "- `scanner_coverage`: scan_records 기반 근사값"
+        "Summary Bar용. 전체 자산 수, K8s/AWS 타입별 집계, 스캐너 커버리지, 위험 요약을 반환합니다."
     ),
-    tags=["Inventory (v1)"],
 )
 async def get_inventory_summary(
     cluster_id: str,
@@ -92,14 +84,8 @@ async def get_inventory_summary(
     status_code=200,
     summary="[신규] Inventory 자산 목록 조회",
     description=(
-        "Asset Grid용. 필터/페이지네이션을 지원하는 자산 목록을 반환합니다.\n\n"
-        "**MVP 임시값 안내:**\n"
-        "- `is_entry_point`, `is_crown_jewel`: graph 미연동으로 항상 false\n"
-        "- `base_risk`: graph 미연동으로 null\n"
-        "- `graph_id`: graph_snapshots 미연동으로 null\n"
-        "- `timestamps.last_analysis_at`: graph 미연동으로 null"
+        "Asset Grid용. 필터/페이지네이션을 지원하는 자산 목록을 반환합니다."
     ),
-    tags=["Inventory (v1)"],
 )
 async def get_inventory_assets(
     cluster_id: str,
@@ -128,13 +114,8 @@ async def get_inventory_assets(
     status_code=200,
     summary="[신규] Risk Spotlight 조회",
     description=(
-        "Risk Spotlight 패널용. Entry Point / Crown Jewel 목록을 반환합니다.\n\n"
-        "**MVP 임시값 안내:**\n"
-        "- `entry_points`, `crown_jewels`: graph_nodes 미연동으로 빈 배열\n"
-        "- `graph_id`: graph_snapshots 미연동으로 null\n\n"
-        "2차 작업(graph 연동) 이후 실값으로 교체 예정."
+        "Risk Spotlight 패널용. Entry Point / Crown Jewel 목록을 반환합니다."
     ),
-    tags=["Inventory (v1)"],
 )
 async def get_inventory_risk_spotlight(
     cluster_id: str,
@@ -149,12 +130,8 @@ async def get_inventory_risk_spotlight(
     status_code=200,
     summary="[신규] Scanner Status 조회",
     description=(
-        "Scanner Status Bar용. 스캐너별 최신 스캔 상태 및 커버리지를 반환합니다.\n\n"
-        "**데이터 소스:** scan_records 기반 근사값 (MVP)\n"
-        "- `resources_collected`: scan result 미연동으로 null\n"
-        "- `coverage_status`: completed scan 존재 여부로 covered/not_covered 판정"
+        "Scanner Status Bar용. 스캐너별 최신 스캔 상태 및 커버리지를 반환합니다."
     ),
-    tags=["Inventory (v1)"],
 )
 async def get_inventory_scanner_status(
     cluster_id: str,

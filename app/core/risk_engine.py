@@ -18,6 +18,11 @@ class RiskEngine:
     def calculate_path_risk(
         self, graph: nx.DiGraph, path: List[str]
     ) -> float:
+        return self.calculate_path_risk_details(graph, path)["raw_final_risk"]
+
+    def calculate_path_risk_details(
+        self, graph: nx.DiGraph, path: List[str]
+    ) -> Dict[str, float]:
         """
         Calculate risk score for a path.
         
@@ -26,10 +31,10 @@ class RiskEngine:
             path: List of node IDs in path
         
         Returns:
-            Risk score (0.0 - 1.0)
+            Risk details including raw_final_risk and a compatibility risk_score.
         """
         if not path:
-            return 0.0
+            return {"raw_final_risk": 0.0, "risk_score": 0.0}
         
         # Aggregate base_risk from all nodes in path
         risk_scores = []
@@ -40,7 +45,7 @@ class RiskEngine:
                 risk_scores.append(base_risk)
         
         if not risk_scores:
-            return 0.0
+            return {"raw_final_risk": 0.0, "risk_score": 0.0}
         
         # Use max risk in path
         path_risk = max(risk_scores)
@@ -49,9 +54,12 @@ class RiskEngine:
         length_factor = 1.0 - (len(path) * 0.02)
         length_factor = max(length_factor, 0.7)  # Floor at 0.7
         
-        final_risk = path_risk * length_factor
-        
-        return min(final_risk, 1.0)
+        final_risk = min(path_risk * length_factor, 1.0)
+
+        return {
+            "raw_final_risk": final_risk,
+            "risk_score": final_risk,
+        }
     
     def calculate_node_risk(
         self, graph: nx.DiGraph, node_id: str

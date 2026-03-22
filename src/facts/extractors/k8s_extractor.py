@@ -518,9 +518,10 @@ class K8sFactExtractor(BaseExtractor):
     ) -> List[Fact]:
         """Phase 3: Extract container escape facts"""
         facts: List[Fact] = []
-        
-        facts.extend(self._extract_escapes_to(scan))
-        facts.extend(self._extract_exposes_token(scan, existing_facts))
+
+        escape_facts = self._extract_escapes_to(scan)
+        facts.extend(escape_facts)
+        facts.extend(self._extract_exposes_token(scan, [*existing_facts, *escape_facts]))
         
         return facts
     
@@ -560,7 +561,7 @@ class K8sFactExtractor(BaseExtractor):
     def _extract_exposes_token(
         self, scan: Dict[str, Any], existing_facts: List[Fact]
     ) -> List[Fact]:
-        """Extract exposes_token facts"""
+        """Extract token exposure facts from escape-capable nodes."""
         facts: List[Fact] = []
         
         # Find all nodes with escape paths

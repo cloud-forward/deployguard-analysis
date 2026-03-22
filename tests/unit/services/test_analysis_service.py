@@ -124,7 +124,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
     service._graph_builder.get_crown_jewels = MagicMock(return_value=["iam:123456789012:AppRole"])
     service._path_finder.find_all_paths = MagicMock(return_value=[["pod:prod:api", "iam:123456789012:AppRole"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("pod:prod:api", "iam:123456789012:AppRole", "service_account_assumes_iam_role")])
-    service._risk_engine.calculate_path_risk = MagicMock(return_value=0.9)
+    service._risk_engine.calculate_path_risk_details = MagicMock(return_value={"risk_score": 0.9, "raw_final_risk": 0.9})
     service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
@@ -142,8 +142,10 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service):
     )
     service._remediation_optimizer.optimize.assert_called_once_with(
         [{
+            "path_id": "path:0:pod:prod:api->iam:123456789012:AppRole",
             "path": ["pod:prod:api", "iam:123456789012:AppRole"],
             "risk_score": 0.9,
+            "raw_final_risk": 0.9,
             "length": 2,
             "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
         }],
@@ -176,14 +178,16 @@ async def test_execute_analysis_preserves_downstream_networkx_compatibility(serv
     service._graph_builder.get_crown_jewels = MagicMock(return_value=["s3:123:data"])
     service._path_finder.find_all_paths = MagicMock(return_value=[["ingress:prod:web", "s3:123:data"]])
     service._path_finder.get_path_edges = MagicMock(return_value=[("ingress:prod:web", "s3:123:data", "path")])
-    service._risk_engine.calculate_path_risk = MagicMock(return_value=0.5)
+    service._risk_engine.calculate_path_risk_details = MagicMock(return_value={"risk_score": 0.5, "raw_final_risk": 0.5})
     service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 1}, "recommendations": []})
 
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
     assert result["attack_paths"] == [{
+        "path_id": "path:0:ingress:prod:web->s3:123:data",
         "path": ["ingress:prod:web", "s3:123:data"],
         "risk_score": 0.5,
+        "raw_final_risk": 0.5,
         "length": 2,
         "edges": [{"source": "ingress:prod:web", "target": "s3:123:data", "type": "path"}],
     }]

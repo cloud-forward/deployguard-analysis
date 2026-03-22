@@ -157,12 +157,15 @@ class AnalysisService:
             # Step 5: Calculate risk scores
             enriched_paths = []
             for path in paths[:100]:  # Limit to top 100
-                risk_score = self._risk_engine.calculate_path_risk(graph, path)
+                path_id = f"path:{len(enriched_paths)}:{'->'.join(path)}"
+                risk_details = self._risk_engine.calculate_path_risk_details(graph, path)
                 edges = self._path_finder.get_path_edges(graph, path)
                 
                 enriched_paths.append({
+                    "path_id": path_id,
                     "path": path,
-                    "risk_score": risk_score,
+                    "risk_score": risk_details["risk_score"],
+                    "raw_final_risk": risk_details["raw_final_risk"],
                     "length": len(path),
                     "edges": [
                         {"source": src, "target": tgt, "type": edge_type}
@@ -171,7 +174,7 @@ class AnalysisService:
                 })
             
             # Sort by risk score
-            enriched_paths.sort(key=lambda x: x["risk_score"], reverse=True)
+            enriched_paths.sort(key=lambda x: x["raw_final_risk"], reverse=True)
             remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
             
             result = {

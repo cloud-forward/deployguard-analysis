@@ -20,6 +20,10 @@ from app.models.schemas import (
     AttackGraphPathResponse,
     AttackGraphResponse,
     AttackGraphSeverity,
+    RemediationRecommendationDetailEnvelopeResponse,
+    RemediationRecommendationDetailResponse,
+    RemediationRecommendationListItemResponse,
+    RemediationRecommendationListResponse,
 )
 
 SEVERITY_ORDER = {severity.value: idx for idx, severity in enumerate(AttackGraphSeverity)}
@@ -171,6 +175,56 @@ class AttackGraphService:
             analysis_run_id=analysis.get("analysis_run_id"),
             generated_at=analysis.get("generated_at"),
             path=path,
+        )
+
+    async def get_remediation_recommendations(self, cluster_id: str) -> RemediationRecommendationListResponse:
+        cluster = await self._clusters.get_by_id(cluster_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        analysis = await self._get_latest_analysis_context(cluster_id)
+        if analysis is None or not analysis.get("graph_id"):
+            return RemediationRecommendationListResponse(
+                cluster_id=cluster_id,
+                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                generated_at=analysis.get("generated_at") if analysis else None,
+            )
+
+        items = await self._get_remediation_recommendation_items(str(analysis["graph_id"]))
+        return RemediationRecommendationListResponse(
+            cluster_id=cluster_id,
+            analysis_run_id=analysis.get("analysis_run_id"),
+            generated_at=analysis.get("generated_at"),
+            items=items,
+        )
+
+    async def get_remediation_recommendation_detail(
+        self,
+        cluster_id: str,
+        recommendation_id: str,
+    ) -> RemediationRecommendationDetailEnvelopeResponse:
+        cluster = await self._clusters.get_by_id(cluster_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        analysis = await self._get_latest_analysis_context(cluster_id)
+        if analysis is None or not analysis.get("graph_id"):
+            return RemediationRecommendationDetailEnvelopeResponse(
+                cluster_id=cluster_id,
+                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                generated_at=analysis.get("generated_at") if analysis else None,
+                recommendation=None,
+            )
+
+        recommendation = await self._get_remediation_recommendation_detail(str(analysis["graph_id"]), recommendation_id)
+        if recommendation is None:
+            raise HTTPException(status_code=404, detail="Remediation recommendation not found")
+
+        return RemediationRecommendationDetailEnvelopeResponse(
+            cluster_id=cluster_id,
+            analysis_run_id=analysis.get("analysis_run_id"),
+            generated_at=analysis.get("generated_at"),
+            recommendation=recommendation,
         )
 
     async def _get_latest_analysis_context(self, cluster_id: str) -> Optional[dict[str, Any]]:
@@ -414,6 +468,163 @@ class AttackGraphService:
             )
             for index, edge_id in enumerate(fallback_edge_ids)
         ]
+
+    async def _get_remediation_recommendation_items(self, graph_id: str) -> list[RemediationRecommendationListItemResponse]:
+        columns = await self._get_table_columns("remediation_recommendations")
+        if not columns:
+            return []
+
+        id_col = self._pick_column(columns, "recommendation_id", "id")
+        rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
+        if not id_col or not rank_col:
+            return []
+
+        source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
+        target_col = self._pick_column(columns, "edge_target", "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        fix_type_col = self._pick_column(columns, "fix_type")
+        fix_desc_col = self._pick_column(columns, "fix_description", "description")
+        blocked_ids_col = self._pick_column(columns, "blocked_path_ids")
+        blocked_indices_col = self._pick_column(columns, "blocked_path_indices")
+        fix_cost_col = self._pick_column(columns, "fix_cost")
+        edge_score_col = self._pick_column(columns, "edge_score", "score")
+        covered_risk_col = self._pick_column(columns, "covered_risk")
+        cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+
+        select_parts = [
+            f"{id_col} AS recommendation_id",
+            f"{rank_col} AS recommendation_rank",
+            f"{source_col} AS edge_source" if source_col else "NULL AS edge_source",
+            f"{target_col} AS edge_target" if target_col else "NULL AS edge_target",
+            f"{type_col} AS edge_type" if type_col else "NULL AS edge_type",
+            f"{fix_type_col} AS fix_type" if fix_type_col else "NULL AS fix_type",
+            f"{fix_desc_col} AS fix_description" if fix_desc_col else "NULL AS fix_description",
+            f"{blocked_ids_col} AS blocked_path_ids" if blocked_ids_col else "NULL AS blocked_path_ids",
+            f"{blocked_indices_col} AS blocked_path_indices" if blocked_indices_col else "NULL AS blocked_path_indices",
+            f"{fix_cost_col} AS fix_cost" if fix_cost_col else "NULL AS fix_cost",
+            f"{edge_score_col} AS edge_score" if edge_score_col else "NULL AS edge_score",
+            f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
+            f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+        ]
+
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM remediation_recommendations
+                WHERE graph_id = :graph_id
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+
+        items = [
+            RemediationRecommendationListItemResponse(
+                recommendation_id=str(row["recommendation_id"]),
+                recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+                edge_source=self._normalize_optional_str(row.get("edge_source")),
+                edge_target=self._normalize_optional_str(row.get("edge_target")),
+                edge_type=self._normalize_optional_str(row.get("edge_type")),
+                fix_type=self._normalize_optional_str(row.get("fix_type")),
+                fix_description=self._normalize_optional_str(row.get("fix_description")),
+                blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+                blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+                fix_cost=self._normalize_float(row.get("fix_cost")),
+                edge_score=self._normalize_float(row.get("edge_score")),
+                covered_risk=self._normalize_float(row.get("covered_risk")),
+                cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+                metadata=self._normalize_object(row.get("metadata")),
+            )
+            for row in result.mappings().all()
+        ]
+
+        return sorted(
+            items,
+            key=lambda item: (
+                item.recommendation_rank,
+                -(item.cumulative_risk_reduction or -1.0),
+                item.recommendation_id,
+            ),
+        )
+
+    async def _get_remediation_recommendation_detail(
+        self,
+        graph_id: str,
+        recommendation_id: str,
+    ) -> RemediationRecommendationDetailResponse | None:
+        columns = await self._get_table_columns("remediation_recommendations")
+        if not columns:
+            return None
+
+        id_col = self._pick_column(columns, "recommendation_id", "id")
+        rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
+        if not id_col or not rank_col:
+            return None
+
+        source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
+        target_col = self._pick_column(columns, "edge_target", "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        fix_type_col = self._pick_column(columns, "fix_type")
+        fix_desc_col = self._pick_column(columns, "fix_description", "description")
+        blocked_ids_col = self._pick_column(columns, "blocked_path_ids")
+        blocked_indices_col = self._pick_column(columns, "blocked_path_indices")
+        fix_cost_col = self._pick_column(columns, "fix_cost")
+        edge_score_col = self._pick_column(columns, "edge_score", "score")
+        covered_risk_col = self._pick_column(columns, "covered_risk")
+        cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+
+        select_parts = [
+            f"{id_col} AS recommendation_id",
+            f"{rank_col} AS recommendation_rank",
+            f"{source_col} AS edge_source" if source_col else "NULL AS edge_source",
+            f"{target_col} AS edge_target" if target_col else "NULL AS edge_target",
+            f"{type_col} AS edge_type" if type_col else "NULL AS edge_type",
+            f"{fix_type_col} AS fix_type" if fix_type_col else "NULL AS fix_type",
+            f"{fix_desc_col} AS fix_description" if fix_desc_col else "NULL AS fix_description",
+            f"{blocked_ids_col} AS blocked_path_ids" if blocked_ids_col else "NULL AS blocked_path_ids",
+            f"{blocked_indices_col} AS blocked_path_indices" if blocked_indices_col else "NULL AS blocked_path_indices",
+            f"{fix_cost_col} AS fix_cost" if fix_cost_col else "NULL AS fix_cost",
+            f"{edge_score_col} AS edge_score" if edge_score_col else "NULL AS edge_score",
+            f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
+            f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+        ]
+
+        row = (
+            await self._db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM remediation_recommendations
+                    WHERE graph_id = :graph_id AND {id_col} = :recommendation_id
+                    LIMIT 1
+                    """
+                ),
+                {"graph_id": graph_id, "recommendation_id": recommendation_id},
+            )
+        ).mappings().first()
+        if row is None:
+            return None
+
+        return RemediationRecommendationDetailResponse(
+            recommendation_id=str(row["recommendation_id"]),
+            recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+            edge_source=self._normalize_optional_str(row.get("edge_source")),
+            edge_target=self._normalize_optional_str(row.get("edge_target")),
+            edge_type=self._normalize_optional_str(row.get("edge_type")),
+            fix_type=self._normalize_optional_str(row.get("fix_type")),
+            fix_description=self._normalize_optional_str(row.get("fix_description")),
+            blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+            blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+            fix_cost=self._normalize_float(row.get("fix_cost")),
+            edge_score=self._normalize_float(row.get("edge_score")),
+            covered_risk=self._normalize_float(row.get("covered_risk")),
+            cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+            metadata=self._normalize_object(row.get("metadata")),
+        )
 
     async def _get_nodes(self, graph_id: str) -> list[AttackGraphNodeResponse]:
         columns = await self._get_table_columns("graph_nodes")
@@ -673,6 +884,33 @@ class AttackGraphService:
             return None
         normalized = str(value)
         return normalized if normalized else None
+
+    @staticmethod
+    def _normalize_int_list(value: Any) -> list[int]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            candidates = value
+        elif isinstance(value, tuple):
+            candidates = list(value)
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+            if not isinstance(parsed, list):
+                return []
+            candidates = parsed
+        else:
+            return []
+
+        normalized: list[int] = []
+        for item in candidates:
+            try:
+                normalized.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return normalized
 
     @staticmethod
     def _normalize_label(value: Any, node_id: str) -> str:

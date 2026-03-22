@@ -151,6 +151,7 @@ async def attack_graph_client(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("DROP TABLE IF EXISTS remediation_recommendations"))
         await conn.execute(text("DROP TABLE IF EXISTS attack_path_edges"))
         await conn.execute(text("DROP TABLE IF EXISTS attack_paths"))
         await conn.execute(text("""
@@ -200,6 +201,25 @@ async def attack_graph_client(tmp_path):
                 source_node_id TEXT,
                 target_node_id TEXT,
                 edge_type TEXT,
+                metadata TEXT
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE remediation_recommendations (
+                graph_id TEXT NOT NULL,
+                recommendation_id TEXT NOT NULL,
+                recommendation_rank INTEGER NOT NULL,
+                edge_source TEXT,
+                edge_target TEXT,
+                edge_type TEXT,
+                fix_type TEXT,
+                fix_description TEXT,
+                blocked_path_ids TEXT,
+                blocked_path_indices TEXT,
+                fix_cost REAL,
+                edge_score REAL,
+                covered_risk REAL,
+                cumulative_risk_reduction REAL,
                 metadata TEXT
             )
         """))
@@ -468,6 +488,133 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
             "metadata": {"service": "s3"},
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_list(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-1"
+    analysis_run_id = "analysis-recommendations-1"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:00:00', '2026-03-22 14:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    (:graph_id, 'restrict-ingress-1', 0, 'ingress:prod:web', 'service:prod:web', 'ingress_exposes_service',
+                     'restrict_ingress', 'Restrict public ingress exposure.', '["path-a","path-b"]', '[0,1]', 1.0, 1.5,
+                     1.5, 1.5, '{"edge_source_type":"ingress"}'),
+                    (:graph_id, 'remove-privileged-2', 1, 'pod:prod:escape', 'node:worker-1', 'escapes_to',
+                     'remove_privileged', 'Remove the privileged pod config.', '["path-c"]', '[2]', 2.2, 0.7,
+                     0.7, 2.2, '{"edge_source_type":"pod"}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:05:00"
+    assert [item["recommendation_id"] for item in body["items"]] == ["restrict-ingress-1", "remove-privileged-2"]
+    assert body["items"][0] == {
+        "recommendation_id": "restrict-ingress-1",
+        "recommendation_rank": 0,
+        "edge_source": "ingress:prod:web",
+        "edge_target": "service:prod:web",
+        "edge_type": "ingress_exposes_service",
+        "fix_type": "restrict_ingress",
+        "fix_description": "Restrict public ingress exposure.",
+        "blocked_path_ids": ["path-a", "path-b"],
+        "blocked_path_indices": [0, 1],
+        "fix_cost": 1.0,
+        "edge_score": 1.5,
+        "covered_risk": 1.5,
+        "cumulative_risk_reduction": 1.5,
+        "metadata": {"edge_source_type": "ingress"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendation_detail_returns_persisted_row(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-2"
+    analysis_run_id = "analysis-recommendations-2"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:00:00', '2026-03-22 15:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES (
+                    :graph_id, 'rotate-credentials-1', 0, 'secret:prod:db-creds', 'rds:prod-db', 'secret_contains_credentials',
+                    'rotate_credentials', 'Rotate exposed database credentials.', '["path-db"]', '[4]', 1.3, 0.9,
+                    0.9, 0.9, '{"secret_type":"db"}'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T15:05:00"
+    assert body["recommendation"] == {
+        "recommendation_id": "rotate-credentials-1",
+        "recommendation_rank": 0,
+        "edge_source": "secret:prod:db-creds",
+        "edge_target": "rds:prod-db",
+        "edge_type": "secret_contains_credentials",
+        "fix_type": "rotate_credentials",
+        "fix_description": "Rotate exposed database credentials.",
+        "blocked_path_ids": ["path-db"],
+        "blocked_path_indices": [4],
+        "fix_cost": 1.3,
+        "edge_score": 0.9,
+        "covered_risk": 0.9,
+        "cumulative_risk_reduction": 0.9,
+        "metadata": {"secret_type": "db"},
+    }
 
 
 @pytest.mark.asyncio

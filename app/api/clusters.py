@@ -14,6 +14,8 @@ from app.models.schemas import (
     ClusterUpdateRequest,
     ClusterResponse,
     ClusterCreateResponse,
+    RemediationRecommendationDetailEnvelopeResponse,
+    RemediationRecommendationListResponse,
 )
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
@@ -129,6 +131,41 @@ async def get_attack_path_detail(
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     return await service.get_attack_path_detail(cluster_id, path_id)
+
+
+@router.get(
+    "/{cluster_id}/remediation-recommendations",
+    response_model=RemediationRecommendationListResponse,
+    summary="[신규] Persisted Remediation Recommendations 조회",
+    description="클러스터 기준 최신 분석에 연결된 persisted remediation recommendation 목록을 반환합니다.",
+    responses={
+        200: {"description": "클러스터 기준 최신 remediation recommendation 목록"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+    },
+)
+async def get_remediation_recommendations(
+    cluster_id: str,
+    service: AttackGraphService = Depends(get_attack_graph_service),
+):
+    return await service.get_remediation_recommendations(cluster_id)
+
+
+@router.get(
+    "/{cluster_id}/remediation-recommendations/{recommendation_id}",
+    response_model=RemediationRecommendationDetailEnvelopeResponse,
+    summary="[신규] Persisted Remediation Recommendation 상세 조회",
+    description="클러스터 기준 최신 분석에 연결된 특정 persisted remediation recommendation 상세를 반환합니다.",
+    responses={
+        200: {"description": "클러스터 기준 remediation recommendation 상세"},
+        404: {"description": "클러스터 또는 remediation recommendation을 찾을 수 없습니다"},
+    },
+)
+async def get_remediation_recommendation_detail(
+    cluster_id: str,
+    recommendation_id: str,
+    service: AttackGraphService = Depends(get_attack_graph_service),
+):
+    return await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
 
 
 @router.patch(

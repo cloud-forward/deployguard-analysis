@@ -544,6 +544,56 @@ class AttackPathDetailEnvelopeResponse(BaseModel):
     path: Optional[AttackPathDetailResponse] = Field(None, description="Requested attack path detail")
 
 
+class RemediationRecommendationListItemResponse(BaseModel):
+    recommendation_id: str = Field(..., description="Stable recommendation id")
+    recommendation_rank: int = Field(..., description="0-based greedy selection order")
+    edge_source: str | None = Field(None, description="Source node id for the removable edge")
+    edge_target: str | None = Field(None, description="Target node id for the removable edge")
+    edge_type: str | None = Field(None, description="Persisted edge type")
+    fix_type: str | None = Field(None, description="Persisted remediation fix type")
+    fix_description: str | None = Field(None, description="Human-readable remediation description")
+    blocked_path_ids: list[str] = Field(default_factory=list, description="Persisted blocked path ids")
+    blocked_path_indices: list[int] = Field(default_factory=list, description="Persisted blocked path indices")
+    fix_cost: float | None = Field(None, description="Persisted fix cost")
+    edge_score: float | None = Field(None, description="Persisted greedy edge score")
+    covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
+    cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+
+
+class RemediationRecommendationDetailResponse(BaseModel):
+    recommendation_id: str = Field(..., description="Stable recommendation id")
+    recommendation_rank: int = Field(..., description="0-based greedy selection order")
+    edge_source: str | None = Field(None, description="Source node id for the removable edge")
+    edge_target: str | None = Field(None, description="Target node id for the removable edge")
+    edge_type: str | None = Field(None, description="Persisted edge type")
+    fix_type: str | None = Field(None, description="Persisted remediation fix type")
+    fix_description: str | None = Field(None, description="Human-readable remediation description")
+    blocked_path_ids: list[str] = Field(default_factory=list, description="Persisted blocked path ids")
+    blocked_path_indices: list[int] = Field(default_factory=list, description="Persisted blocked path indices")
+    fix_cost: float | None = Field(None, description="Persisted fix cost")
+    edge_score: float | None = Field(None, description="Persisted greedy edge score")
+    covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
+    cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+
+
+class RemediationRecommendationListResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing these recommendations")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned recommendations")
+    items: list[RemediationRecommendationListItemResponse] = Field(default_factory=list)
+
+
+class RemediationRecommendationDetailEnvelopeResponse(BaseModel):
+    cluster_id: str = Field(..., description="Cluster id")
+    analysis_run_id: Optional[str] = Field(None, description="Latest analysis job id backing this recommendation")
+    generated_at: Optional[datetime] = Field(None, description="Generation timestamp for the returned recommendation")
+    recommendation: Optional[RemediationRecommendationDetailResponse] = Field(
+        None, description="Requested remediation recommendation detail"
+    )
+
+
 class SyncResponse(BaseModel):
     status: str
     cluster_id: str

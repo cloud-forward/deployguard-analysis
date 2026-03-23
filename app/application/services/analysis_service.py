@@ -26,6 +26,7 @@ from app.models.schemas import (
     ClusterAnalysisJobListResponse,
 )
 from src.facts.extractors.k8s_extractor import K8sFactExtractor
+from src.facts.extractors.aws_extractor import AWSFactExtractor
 from src.facts.extractors.lateral_move_extractor import LateralMoveExtractor
 from src.graph.builders.aws_graph_builder import AWSGraphBuilder
 from src.graph.builders.aws_scanner_types import (
@@ -65,6 +66,7 @@ class AnalysisService:
         self._scans = scan_repo
         self._s3 = s3_service
         self._k8s_extractor = K8sFactExtractor()
+        self._aws_extractor = AWSFactExtractor()
         self._lateral_extractor = LateralMoveExtractor()
         self._bridge_builder = IRSABridgeBuilder()
         self._graph_builder = GraphBuilder()
@@ -130,20 +132,27 @@ class AnalysisService:
         job = await self._jobs.get_analysis_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
-        await self._jobs.mark_running(job.id, current_step="fact_extraction")
+        persisted_job_id = str(job.id)
+        cluster_id = str(job.cluster_id)
+        k8s_scan_id = job.k8s_scan_id
+        aws_scan_id = job.aws_scan_id
+        image_scan_id = job.image_scan_id
+
+        await self._jobs.mark_running(persisted_job_id, current_step="fact_extraction")
         try:
             result = await self.execute_analysis(
-                cluster_id=job.cluster_id,
-                k8s_scan_id=job.k8s_scan_id,
-                aws_scan_id=job.aws_scan_id,
-                image_scan_id=job.image_scan_id,
-                analysis_job_id=job.id,
+                cluster_id=cluster_id,
+                k8s_scan_id=k8s_scan_id,
+                aws_scan_id=aws_scan_id,
+                image_scan_id=image_scan_id,
+                analysis_job_id=persisted_job_id,
             )
         except Exception as exc:
-            await self._jobs.mark_failed(job.id, str(exc))
+            await self._jobs.rollback()
+            await self._jobs.mark_failed(persisted_job_id, str(exc))
             raise
 
-        await self._jobs.mark_completed(job.id, result.get("stats", {}))
+        await self._jobs.mark_completed(persisted_job_id, result.get("stats", {}))
         return result
 
     async def execute_analysis_debug(
@@ -217,6 +226,11 @@ class AnalysisService:
                 if image_scan_id else
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_IMAGE, "scan_id": None}
             )
+            extracted_k8s_facts = (
+                await asyncio.to_thread(self._extract_k8s_facts, k8s_scan)
+                if k8s_scan_id else
+                []
+            )
 
             k8s_result = (
                 await asyncio.to_thread(self._build_k8s_result, k8s_scan, k8s_scan_id)
@@ -233,11 +247,21 @@ class AnalysisService:
                 k8s_scan,
                 aws_scan_result,
             )
+            extracted_aws_facts = (
+                await asyncio.to_thread(
+                    self._extract_aws_facts,
+                    aws_scan_result,
+                    k8s_scan if k8s_scan_id else None,
+                )
+                if aws_scan_id else
+                []
+            )
             aws_result = (
                 await asyncio.to_thread(self._build_aws_result, aws_scan_result, bridge_result)
                 if aws_scan_id else
                 AWSBuildResult(metadata={"scan_id": None, "account_id": None})
             )
+            extracted_facts = [*extracted_k8s_facts, *extracted_aws_facts]
             unified_result = self._unified_graph_builder.build(k8s_result, aws_result)
 
             logger.info(
@@ -307,6 +331,23 @@ class AnalysisService:
                 image_scan_id=image_scan_id,
                 attack_paths=enriched_paths,
             )
+            await self._jobs.persist_facts(
+                cluster_id=cluster_id,
+                analysis_job_id=analysis_job_id,
+                graph_id=graph_id,
+                k8s_scan_id=k8s_scan_id,
+                aws_scan_id=aws_scan_id,
+                image_scan_id=image_scan_id,
+                facts=extracted_facts,
+            )
+            await self._jobs.persist_graph(graph_id=graph_id, graph=graph)
+            await self._jobs.finalize_graph_snapshot(
+                graph_id=graph_id,
+                node_count=graph.number_of_nodes(),
+                edge_count=graph.number_of_edges(),
+                entry_point_count=len(entry_points),
+                crown_jewel_count=len(crown_jewels),
+            )
             await self._update_step(analysis_job_id, "optimization")
             remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
             await self._jobs.persist_remediation_recommendations(
@@ -328,7 +369,7 @@ class AnalysisService:
                 },
                 "stats": {
                     "facts": {
-                        "total": len(k8s_result.edges) + len(aws_result.edges),
+                        "total": len(extracted_facts),
                         "errors": 0,
                         "warnings": len(bridge_result.warnings) + len(unified_result.warnings),
                     },
@@ -481,12 +522,18 @@ class AnalysisService:
             return 0.0
 
     def _build_k8s_result(self, k8s_scan: Dict[str, Any], scan_id: str):
-        k8s_facts = self._k8s_extractor.extract(k8s_scan)
-        lateral_facts = self._lateral_extractor.extract(k8s_scan)
         return K8sGraphBuilder().build(
-            [*k8s_facts, *lateral_facts],
+            self._extract_k8s_facts(k8s_scan),
             k8s_scan,
             scan_id=scan_id,
+        )
+
+    def _extract_k8s_facts(self, k8s_scan: Dict[str, Any]):
+        k8s_facts = self._k8s_extractor.extract(k8s_scan)
+        lateral_facts = self._lateral_extractor.extract(k8s_scan)
+        return self._annotate_fact_scan_id(
+            [*k8s_facts, *lateral_facts],
+            scan_id=self._coerce_scan_id(k8s_scan.get("scan_id")),
         )
 
     def _build_aws_result(self, aws_scan: AWSScanResult, bridge_result):
@@ -501,6 +548,29 @@ class AnalysisService:
             policy_results=policy_results,
             user_policy_results=user_policy_results,
         )
+
+    def _extract_aws_facts(self, aws_scan: AWSScanResult, k8s_scan: Dict[str, Any] | None):
+        facts, _bridge_output = self._aws_extractor.extract_with_debug(
+            aws_scan,
+            k8s_scan=k8s_scan or {"scan_id": None},
+        )
+        return self._annotate_fact_scan_id(
+            facts,
+            scan_id=self._coerce_scan_id(getattr(aws_scan, "scan_id", None)),
+        )
+
+    @staticmethod
+    def _coerce_scan_id(value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _annotate_fact_scan_id(facts, scan_id: str | None):
+        for fact in facts:
+            setattr(fact, "_persisted_scan_id", scan_id)
+        return facts
 
     def _coerce_aws_scan_result(self, aws_scan: Dict[str, Any] | AWSScanResult, scan_id: str) -> AWSScanResult:
         if isinstance(aws_scan, AWSScanResult):

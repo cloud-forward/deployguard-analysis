@@ -96,6 +96,73 @@ class GraphSnapshot(Base):
         ForeignKey("clusters.id"),
         nullable=False,
     )
+    k8s_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aws_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, server_default=text("'pending'"))
+    node_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    edge_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    entry_point_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    crown_jewel_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+
+class GraphNode(Base):
+    __tablename__ = "graph_nodes"
+    __table_args__ = (
+        Index("idx_graph_nodes_graph_id", "graph_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    graph_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=False,
+    )
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    node_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    namespace: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    base_risk: Mapped[float | None] = mapped_column(nullable=True)
+    has_runtime_evidence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_entry_point: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_crown_jewel: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+
+
+class GraphEdge(Base):
+    __tablename__ = "graph_edges"
+    __table_args__ = (
+        Index("idx_graph_edges_graph_id", "graph_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    graph_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=False,
+    )
+    source_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    edge_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
 
 
 class AnalysisJob(Base):
@@ -174,7 +241,6 @@ class AttackPath(Base):
         nullable=False,
     )
     path_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
     risk_score: Mapped[float | None] = mapped_column(nullable=True)
     raw_final_risk: Mapped[float | None] = mapped_column(nullable=True)
@@ -182,7 +248,6 @@ class AttackPath(Base):
     entry_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     node_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
-    edge_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
 
 
 class AttackPathEdge(Base):

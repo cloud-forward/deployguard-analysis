@@ -4,7 +4,7 @@ import json
 from typing import Any, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import inspect, text
+from sqlalchemy import bindparam, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schemas import (
@@ -355,7 +355,6 @@ class AttackGraphService:
         entry_col = self._pick_column(columns, "entry_node_id")
         target_col = self._pick_column(columns, "target_node_id")
         node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
-        edge_ids_col = self._pick_column(columns, "edge_ids", "path_edges", "path_edge_ids")
 
         select_parts = [
             f"{public_id_col} AS path_id",
@@ -368,7 +367,6 @@ class AttackGraphService:
             f"{entry_col} AS entry_node_id" if entry_col else "NULL AS entry_node_id",
             f"{target_col} AS target_node_id" if target_col else "NULL AS target_node_id",
             f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
-            f"{edge_ids_col} AS edge_ids" if edge_ids_col else "NULL AS edge_ids",
         ]
 
         row = (
@@ -388,8 +386,8 @@ class AttackGraphService:
             return None
 
         node_ids = self._normalize_string_list(row.get("node_ids"))
-        edge_ids = self._normalize_string_list(row.get("edge_ids"))
-        edges = await self._get_attack_path_edge_sequence(str(row.get("persisted_path_id")), edge_ids)
+        edges = await self._get_attack_path_edge_sequence(str(row.get("persisted_path_id")), [])
+        edge_ids = await self._get_graph_edge_ids_for_path(graph_id, edges, node_ids)
 
         return AttackPathDetailResponse(
             path_id=str(row["path_id"]),
@@ -414,7 +412,7 @@ class AttackGraphService:
         if not columns:
             return []
 
-        edge_id_col = self._pick_column(columns, "edge_id", "id")
+        edge_id_col = self._pick_column(columns, "id")
         source_col = self._pick_column(columns, "source_node_id", "source")
         target_col = self._pick_column(columns, "target_node_id", "target")
         type_col = self._pick_column(columns, "edge_type", "type")
@@ -690,9 +688,9 @@ class AttackGraphService:
         if not columns:
             return []
 
-        id_col = self._pick_column(columns, "edge_id", "id")
-        source_col = self._pick_column(columns, "source", "source_node_id")
-        target_col = self._pick_column(columns, "target", "target_node_id")
+        id_col = self._pick_column(columns, "id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
         if not id_col or not source_col or not target_col:
             return []
 
@@ -758,18 +756,18 @@ class AttackGraphService:
         id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
         if not id_col:
             return []
+        row_id_col = self._pick_column(columns, "id")
 
         title_col = self._pick_column(columns, "title", "name")
         severity_col = self._pick_column(columns, "severity", "risk_level")
         node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
-        edge_ids_col = self._pick_column(columns, "edge_ids", "path_edges", "path_edge_ids")
 
         select_parts = [
             f"{id_col} AS id",
+            f"{row_id_col} AS persisted_path_id" if row_id_col else "NULL AS persisted_path_id",
             f"{title_col} AS title" if title_col else "NULL AS title",
             f"{severity_col} AS severity" if severity_col else "NULL AS severity",
             f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
-            f"{edge_ids_col} AS edge_ids" if edge_ids_col else "NULL AS edge_ids",
         ]
 
         query = text(
@@ -781,14 +779,25 @@ class AttackGraphService:
             """
         )
         result = await self._db.execute(query, {"graph_id": graph_id})
+        rows = result.mappings().all()
+        persisted_path_ids = [
+            str(row["persisted_path_id"])
+            for row in rows
+            if row.get("persisted_path_id") is not None
+        ]
+        edge_pairs_by_path_id = await self._get_attack_path_edge_pairs_by_path_ids(persisted_path_ids)
 
         paths: list[AttackGraphPathResponse] = []
-        for row in result.mappings().all():
+        for row in rows:
             node_ids = self._normalize_string_list(row.get("node_ids"))
             if not node_ids or any(node_id not in valid_node_ids for node_id in node_ids):
                 continue
 
-            edge_ids = self._normalize_string_list(row.get("edge_ids"))
+            persisted_path_id = self._normalize_optional_str(row.get("persisted_path_id"))
+            edge_ids = self._edge_ids_from_pairs(
+                edge_pairs_by_path_id.get(persisted_path_id or "", []),
+                edge_ids_by_pair,
+            )
             if not edge_ids and node_ids:
                 edge_ids = self._derive_edge_ids(node_ids, edge_ids_by_pair)
             if len(node_ids) > 1 and len(edge_ids) != len(node_ids) - 1:
@@ -810,6 +819,98 @@ class AttackGraphService:
             )
 
         return sorted(paths, key=lambda item: (SEVERITY_ORDER.get(item.severity, 99), item.title, item.id))
+
+    async def _get_attack_path_edge_pairs_by_path_ids(
+        self,
+        path_ids: list[str],
+    ) -> dict[str, list[tuple[str, str]]]:
+        if not path_ids:
+            return {}
+
+        columns = await self._get_table_columns("attack_path_edges")
+        if not columns:
+            return {}
+
+        path_id_col = self._pick_column(columns, "path_id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
+        order_col = self._pick_column(columns, "sequence", "edge_index", "path_edge_index")
+        if not path_id_col or not source_col or not target_col:
+            return {}
+
+        order_sql = order_col or path_id_col
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT {path_id_col} AS path_id, {source_col} AS source_node_id, {target_col} AS target_node_id
+                FROM attack_path_edges
+                WHERE {path_id_col} IN :path_ids
+                ORDER BY {path_id_col}, {order_sql}
+                """
+            ).bindparams(bindparam("path_ids", expanding=True)),
+            {"path_ids": path_ids},
+        )
+
+        pairs_by_path_id: dict[str, list[tuple[str, str]]] = {}
+        for row in result.mappings().all():
+            path_id = str(row["path_id"])
+            pairs_by_path_id.setdefault(path_id, []).append(
+                (str(row["source_node_id"]), str(row["target_node_id"]))
+            )
+        return pairs_by_path_id
+
+    async def _get_graph_edge_ids_for_path(
+        self,
+        graph_id: str,
+        edges: list[AttackPathEdgeSequenceResponse],
+        node_ids: list[str],
+    ) -> list[str]:
+        edge_ids_by_pair = await self._get_graph_edge_ids_by_pair(graph_id)
+        edge_ids = self._edge_ids_from_pairs(
+            [(edge.source_node_id, edge.target_node_id) for edge in edges],
+            edge_ids_by_pair,
+        )
+        if edge_ids:
+            return edge_ids
+        return self._derive_edge_ids(node_ids, edge_ids_by_pair)
+
+    async def _get_graph_edge_ids_by_pair(self, graph_id: str) -> dict[tuple[str, str], str]:
+        columns = await self._get_table_columns("graph_edges")
+        if not columns:
+            return {}
+
+        id_col = self._pick_column(columns, "id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
+        if not id_col or not source_col or not target_col:
+            return {}
+
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT {id_col} AS id, {source_col} AS source_node_id, {target_col} AS target_node_id
+                FROM graph_edges
+                WHERE graph_id = :graph_id
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        return {
+            (str(row["source_node_id"]), str(row["target_node_id"])): str(row["id"])
+            for row in result.mappings().all()
+        }
+
+    @staticmethod
+    def _edge_ids_from_pairs(
+        edge_pairs: list[tuple[str, str]],
+        edge_ids_by_pair: dict[tuple[str, str], str],
+    ) -> list[str]:
+        edge_ids: list[str] = []
+        for source, target in edge_pairs:
+            edge_id = edge_ids_by_pair.get((source, target))
+            if edge_id:
+                edge_ids.append(edge_id)
+        return edge_ids
 
     @staticmethod
     def _pick_column(columns: set[str], *candidates: str) -> Optional[str]:

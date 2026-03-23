@@ -11,8 +11,8 @@ from fastapi import HTTPException
 from app.models.schemas import ScannerType, RequestSource
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
-    SCAN_STATUS_QUEUED,
-    SCAN_STATUS_RUNNING,
+    SCAN_STATUS_CREATED,
+    SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
 )
 from app.models.schemas import (
@@ -115,7 +115,7 @@ class ScanService:
             scan_id=scan_id,
             cluster_id=cluster_id_str,
             scanner_type=scanner_type_str,
-            status=SCAN_STATUS_QUEUED,
+            status=SCAN_STATUS_CREATED,
             request_source=request_source,
             requested_at=requested_at,
         )
@@ -127,10 +127,10 @@ class ScanService:
                 cluster_id=cluster_id_str,
                 scanner_type=scanner_type_str,
                 request_source=request_source,
-                status_after=SCAN_STATUS_QUEUED,
+                status_after=SCAN_STATUS_CREATED,
             ),
         )
-        return ScanStartResponse(scan_id=scan_id, status=SCAN_STATUS_QUEUED)
+        return ScanStartResponse(scan_id=scan_id, status=SCAN_STATUS_CREATED)
 
     async def get_upload_url(
         self,
@@ -153,7 +153,7 @@ class ScanService:
             )
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
         status_before = record.status
-        if record.status not in (SCAN_STATUS_RUNNING, SCAN_STATUS_UPLOADING):
+        if record.status not in (SCAN_STATUS_PROCESSING, SCAN_STATUS_UPLOADING):
             error = HTTPException(
                 status_code=409,
                 detail=f"Scan session is {record.status} and cannot accept uploads",
@@ -180,7 +180,7 @@ class ScanService:
             scanner_type=record.scanner_type,
             file_name=file_name,
         )
-        if record.status == SCAN_STATUS_RUNNING:
+        if record.status == SCAN_STATUS_PROCESSING:
             await self._repo.update_status(scan_id, SCAN_STATUS_UPLOADING)
             status_after = SCAN_STATUS_UPLOADING
         else:
@@ -233,7 +233,7 @@ class ScanService:
                 ),
             )
             raise HTTPException(status_code=403, detail="Scan does not belong to authenticated cluster")
-        if record.status not in (SCAN_STATUS_RUNNING, SCAN_STATUS_UPLOADING):
+        if record.status not in (SCAN_STATUS_PROCESSING, SCAN_STATUS_UPLOADING):
             error = HTTPException(
                 status_code=409,
                 detail=f"Scan session is {record.status} and cannot be completed",
@@ -403,8 +403,8 @@ class ScanService:
                 cluster_id=record.cluster_id,
                 scanner_type=record.scanner_type,
                 claimed_by=record.claimed_by,
-                status_before=SCAN_STATUS_QUEUED,
-                status_after=SCAN_STATUS_RUNNING,
+                status_before=SCAN_STATUS_CREATED,
+                status_after=SCAN_STATUS_PROCESSING,
             ),
         )
         return record

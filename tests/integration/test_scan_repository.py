@@ -1,6 +1,7 @@
 """
 Integration tests for SQLAlchemyScanRepository using SQLite in-memory database.
 """
+from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
@@ -35,6 +36,22 @@ class TestSQLAlchemyScanRepository:
         assert found is not None
         assert found.scan_id == "test-001"
         assert found.cluster_id == CLUSTER_1
+
+    @pytest.mark.asyncio
+    async def test_create_persists_request_source_and_requested_at(self, repo):
+        requested_at = datetime(2026, 3, 9, 12, 0, 0)
+
+        await repo.create(
+            scan_id="test-001b",
+            cluster_id=CLUSTER_1,
+            scanner_type="k8s",
+            request_source="scheduled",
+            requested_at=requested_at,
+        )
+
+        found = await repo.get_by_scan_id("test-001b")
+        assert found.request_source == "scheduled"
+        assert found.requested_at == requested_at
 
     @pytest.mark.asyncio
     async def test_get_nonexistent_returns_none(self, repo):
@@ -115,7 +132,6 @@ class TestSQLAlchemyScanRepository:
     @pytest.mark.asyncio
     async def test_update_status_with_completed_at(self, repo):
         """update_status persists completed_at when provided"""
-        from datetime import datetime
         await repo.create(scan_id="test-004", cluster_id=CLUSTER_1, scanner_type="k8s")
         completed = datetime(2026, 3, 9, 12, 0, 0)
 
@@ -127,7 +143,6 @@ class TestSQLAlchemyScanRepository:
 
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):
-        from datetime import datetime, timedelta
         await repo.create(scan_id="q-001", cluster_id=CLUSTER_1, scanner_type="k8s", status="created", request_source="manual")
         now = datetime(2026, 3, 9, 12, 0, 0)
         claimed = await repo.claim_next_queued_scan(
@@ -140,10 +155,19 @@ class TestSQLAlchemyScanRepository:
         assert claimed is not None
         assert claimed.status == "processing"
         assert claimed.claimed_by == "worker-1"
+        assert claimed.claimed_at == now
+        assert claimed.started_at == now
+        assert claimed.lease_expires_at == now + timedelta(seconds=300)
+
+        found = await repo.get_by_scan_id("q-001")
+        assert found.status == "processing"
+        assert found.claimed_by == "worker-1"
+        assert found.claimed_at == now
+        assert found.started_at == now
+        assert found.lease_expires_at == now + timedelta(seconds=300)
 
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan_none_when_empty(self, repo):
-        from datetime import datetime, timedelta
         now = datetime(2026, 3, 9, 12, 0, 0)
         claimed = await repo.claim_next_queued_scan(
             cluster_id=CLUSTER_1,

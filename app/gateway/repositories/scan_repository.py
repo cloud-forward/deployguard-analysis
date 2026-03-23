@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED, SCAN_STATUS_RUNNING
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED, SCAN_STATUS_PROCESSING
 from app.domain.repositories.scan_repository import ScanRepository
 from app.gateway.models import ScanRecord
 from app.models.schemas import RequestSource
@@ -36,16 +36,20 @@ class SQLAlchemyScanRepository(ScanRepository):
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = SCAN_STATUS_QUEUED,
+        status: str = SCAN_STATUS_CREATED,
         request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
     ) -> ScanRecord:
-        record = ScanRecord(
+        record_kwargs = dict(
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
             status=status,
+            request_source=request_source,
         )
+        if requested_at is not None:
+            record_kwargs["requested_at"] = requested_at
+        record = ScanRecord(**record_kwargs)
         self._session.add(record)
         try:
             await self._session.commit()
@@ -220,7 +224,7 @@ class SQLAlchemyScanRepository(ScanRepository):
             .where(
                 ScanRecord.cluster_id == str(cluster_id),
                 ScanRecord.scanner_type == scanner_type,
-                ScanRecord.status == SCAN_STATUS_QUEUED,
+                ScanRecord.status == SCAN_STATUS_CREATED,
             )
             .order_by(ScanRecord.created_at.asc())
             .limit(1)
@@ -229,14 +233,14 @@ class SQLAlchemyScanRepository(ScanRepository):
         record = result.scalars().first()
         if record is None:
             return None
-        record.status = SCAN_STATUS_RUNNING
+        record.status = SCAN_STATUS_PROCESSING
+        record.claimed_by = claimed_by
+        record.claimed_at = started_at
+        record.started_at = started_at
+        record.lease_expires_at = lease_expires_at
         try:
             await self._session.commit()
             await self._session.refresh(record)
-            record.claimed_by = claimed_by
-            record.claimed_at = started_at
-            record.started_at = started_at
-            record.lease_expires_at = lease_expires_at
             return record
         except IntegrityError as exc:
             await self._rollback_and_log(
@@ -246,7 +250,7 @@ class SQLAlchemyScanRepository(ScanRepository):
                 scan_id=record.scan_id,
                 cluster_id=record.cluster_id,
                 scanner_type=record.scanner_type,
-                status_after=SCAN_STATUS_RUNNING,
+                status_after=SCAN_STATUS_PROCESSING,
             )
             raise
         except SQLAlchemyError as exc:
@@ -257,6 +261,6 @@ class SQLAlchemyScanRepository(ScanRepository):
                 scan_id=record.scan_id,
                 cluster_id=record.cluster_id,
                 scanner_type=record.scanner_type,
-                status_after=SCAN_STATUS_RUNNING,
+                status_after=SCAN_STATUS_PROCESSING,
             )
             raise

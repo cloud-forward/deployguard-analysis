@@ -1,7 +1,9 @@
 """
 S3 service for generating presigned URLs and verifying file existence.
 """
+import json
 import logging
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -9,6 +11,7 @@ from botocore.exceptions import ClientError
 from app.core.constants import (
     VALID_SCANNER_TYPES,
     S3_SCAN_PREFIX,
+    canonical_scan_file_name,
     AWS_DEFAULT_REGION,
 )
 
@@ -47,7 +50,7 @@ class S3Service:
                   ├ image
                   └ image
 
-        S3 key format: scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}
+        S3 key format: scans/{cluster_id}/{scan_id}/{scanner_type}/{scanner_type}-snapshot.json
 
         scanner_type must be one of: "k8s", "aws", "image".
 
@@ -57,7 +60,8 @@ class S3Service:
             raise ValueError(
                 f"Invalid scanner_type '{scanner_type}'. Must be one of: {sorted(VALID_SCANNER_TYPES)}"
             )
-        s3_key = f"{S3_SCAN_PREFIX}/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"
+        canonical_file_name = canonical_scan_file_name(scanner_type)
+        s3_key = f"{S3_SCAN_PREFIX}/{cluster_id}/{scan_id}/{scanner_type}/{canonical_file_name}"
         try:
             presigned_url = self.client.generate_presigned_url(
                 "put_object",
@@ -103,3 +107,18 @@ class S3Service:
                 return False
             logger.error("Error checking existence of key '%s': %s", s3_key, e)
             raise
+
+    def load_json(self, s3_key: str) -> dict[str, Any]:
+        """
+        Load and decode a JSON object stored in S3.
+        """
+        try:
+            response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
+        except ClientError as e:
+            logger.error("Failed to load JSON object for key '%s': %s", s3_key, e)
+            raise
+
+        body = response["Body"].read()
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        return json.loads(body)

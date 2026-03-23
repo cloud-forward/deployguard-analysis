@@ -12,9 +12,9 @@ and API prefixes must be imported from here — never hardcoded in business logi
 S3_BUCKET_NAME: str = "dg-raw-scans"
 
 # S3 path templates
-# scans/{cluster_id}/{scan_id}/{scanner_type}/scan.json
+# scans/{cluster_id}/{scan_id}/{scanner_type}/{scanner_type}-snapshot.json
 S3_SCAN_PREFIX: str = "scans"
-S3_SCAN_FILE_NAME: str = "scan.json"
+S3_SCAN_FILE_NAME_TEMPLATE: str = "{scanner_type}-snapshot.json"
 
 # runtime/{cluster_id}/{date}/events.json
 S3_RUNTIME_PREFIX: str = "runtime"
@@ -34,6 +34,10 @@ VALID_SCANNER_TYPES: frozenset[str] = frozenset({
     SCANNER_TYPE_AWS,
     SCANNER_TYPE_IMAGE,
 })
+
+
+def canonical_scan_file_name(scanner_type: str) -> str:
+    return S3_SCAN_FILE_NAME_TEMPLATE.format(scanner_type=scanner_type)
 
 # ---------------------------------------------------------------------------
 # Scan statuses

@@ -2,6 +2,7 @@
 SQLAlchemy implementation of AnalysisJobRepository.
 """
 from __future__ import annotations
+from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 from sqlalchemy import delete, select
@@ -24,21 +25,84 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         return "job_stub"
 
     async def mark_started(self, job_id: str) -> None:
-        return None
+        await self.mark_running(job_id)
 
     async def mark_completed(self, job_id: str, summary: Dict[str, Any]) -> None:
-        return None
+        job = await self._session.get(AnalysisJob, job_id)
+        if job is None:
+            return None
+        job.status = "completed"
+        job.current_step = None
+        job.error_message = None
+        job.completed_at = datetime.utcnow()
+        await self._session.commit()
 
     async def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
-    async def create_analysis_job(self, cluster_id: str | UUID, k8s_scan_id: str, aws_scan_id: str, image_scan_id: str) -> str:
+    async def mark_running(self, job_id: str, current_step: str | None = None) -> None:
+        job = await self._session.get(AnalysisJob, job_id)
+        if job is None:
+            return None
+        job.status = "running"
+        job.current_step = current_step
+        job.error_message = None
+        if job.started_at is None:
+            job.started_at = datetime.utcnow()
+        await self._session.commit()
+
+    async def update_current_step(self, job_id: str, current_step: str) -> None:
+        job = await self._session.get(AnalysisJob, job_id)
+        if job is None:
+            return None
+        job.status = "running"
+        job.current_step = current_step
+        await self._session.commit()
+
+    async def mark_failed(self, job_id: str, error_message: str) -> None:
+        job = await self._session.get(AnalysisJob, job_id)
+        if job is None:
+            return None
+        job.status = "failed"
+        job.current_step = None
+        job.error_message = error_message
+        job.completed_at = datetime.utcnow()
+        await self._session.commit()
+
+    async def get_analysis_job(self, job_id: str) -> AnalysisJob | None:
+        return await self._session.get(AnalysisJob, job_id)
+
+    async def list_analysis_jobs(
+        self,
+        cluster_id: str | UUID,
+        status: str | None = None,
+    ) -> list[AnalysisJob]:
+        normalized_cluster_id = str(UUID(str(cluster_id)))
+        query = (
+            select(AnalysisJob)
+            .where(AnalysisJob.cluster_id == normalized_cluster_id)
+            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+        )
+        if status is not None:
+            query = query.where(AnalysisJob.status == status)
+        result = await self._session.execute(query)
+        return list(result.scalars().all())
+
+    async def create_analysis_job(
+        self,
+        cluster_id: str | UUID,
+        k8s_scan_id: str | None,
+        aws_scan_id: str | None,
+        image_scan_id: str | None,
+        expected_scans: list[str],
+    ) -> str:
         normalized_cluster_id = str(UUID(str(cluster_id)))
         job = AnalysisJob(
             cluster_id=normalized_cluster_id,
             k8s_scan_id=k8s_scan_id,
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,
+            expected_scans=list(expected_scans),
             status="pending",
         )
         self._session.add(job)

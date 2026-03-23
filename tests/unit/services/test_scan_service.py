@@ -15,13 +15,15 @@ from app.core.constants import (
 def make_service():
     mock_repo = AsyncMock()
     mock_s3 = MagicMock()
+    mock_clusters = AsyncMock()
     mock_s3.generate_presigned_upload_url.return_value = (
-        "https://presigned-url", "scans/c1/s1/k8s/f.json"
+        "https://presigned-url", "scans/c1/s1/k8s/k8s-snapshot.json"
     )
     mock_s3.generate_presigned_download_url.return_value = "https://download-url"
     mock_s3.verify_file_exists.return_value = True
-    svc = ScanService(scan_repository=mock_repo, s3_service=mock_s3)
-    return svc, mock_repo, mock_s3
+    mock_clusters.get_by_id.return_value = SimpleNamespace(id="prod-01", cluster_type="eks")
+    svc = ScanService(scan_repository=mock_repo, s3_service=mock_s3, cluster_repository=mock_clusters)
+    return svc, mock_repo, mock_s3, mock_clusters
 
 
 class TestScanServiceStartScan:
@@ -29,65 +31,66 @@ class TestScanServiceStartScan:
     @pytest.mark.asyncio
     async def test_start_scan_returns_scan_id(self):
         """start_scan returns a scan_id and status=created"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="manual")
+        result = await svc.start_scan(cluster_id="prod-01", request_source="manual")
 
-        assert result.scan_id is not None
+        assert len(result.scans) == 2
         assert result.status == SCAN_STATUS_CREATED
 
     @pytest.mark.asyncio
-    async def test_scan_id_format(self):
-        """scan_id format must be {YYYYMMDDTHHmmSS}-{scanner_type}"""
-        svc, repo, _ = make_service()
+    async def test_k8s_cluster_start_creates_k8s_and_image_records(self):
+        svc, repo, _, _ = make_service()
         repo.find_active_scan.return_value = None
 
-        result = await svc.start_scan(cluster_id="prod-01", scanner_type="k8s", request_source="manual")
+        result = await svc.start_scan(cluster_id="prod-01", request_source="manual")
 
-        assert re.match(r"^\d{8}T\d{6}-k8s$", result.scan_id), (
-            f"scan_id '{result.scan_id}' does not match expected format"
-        )
+        created_types = [scan.scanner_type for scan in result.scans]
+        assert created_types == ["k8s", "image"]
+        assert re.match(r"^\d{8}T\d{6}-k8s$", result.scans[0].scan_id)
+        assert re.match(r"^\d{8}T\d{6}-image$", result.scans[1].scan_id)
 
     @pytest.mark.asyncio
-    async def test_start_scan_creates_db_record(self):
-        """start_scan calls repository.create exactly once"""
-        svc, repo, _ = make_service()
+    async def test_aws_cluster_start_creates_only_aws_record(self):
+        svc, repo, _, clusters = make_service()
         repo.find_active_scan.return_value = None
+        clusters.get_by_id.return_value = SimpleNamespace(id="prod-01", cluster_type="aws")
 
-        await svc.start_scan("prod-01", "k8s", "manual")
+        result = await svc.start_scan("prod-01", "manual")
 
         repo.create.assert_called_once()
         _, kwargs = repo.create.call_args
         assert kwargs["status"] == SCAN_STATUS_CREATED
         assert kwargs["request_source"] == "manual"
-        assert kwargs["scanner_type"] == "k8s"
+        assert kwargs["scanner_type"] == "aws"
         assert kwargs["requested_at"] is not None
+        assert [scan.scanner_type for scan in result.scans] == ["aws"]
 
     @pytest.mark.asyncio
     async def test_start_scan_duplicate_raises_409(self):
-        """start_scan raises 409 if an active scan already exists"""
+        """start_scan raises 409 if any fan-out scanner already has an active scan"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
-        repo.find_active_scan.return_value = MagicMock(status=SCAN_STATUS_CREATED)
+        svc, repo, _, _ = make_service()
+        repo.find_active_scan.side_effect = [None, MagicMock(status=SCAN_STATUS_CREATED)]
 
         with pytest.raises(HTTPException) as exc_info:
-            await svc.start_scan("prod-01", "k8s", "manual")
+            await svc.start_scan("prod-01", "manual")
 
         assert exc_info.value.status_code == 409
         assert "already running" in exc_info.value.detail
+        repo.create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_scan_duplicate_logs_failure_context(self, caplog):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
-        repo.find_active_scan.return_value = MagicMock(status=SCAN_STATUS_CREATED)
+        svc, repo, _, _ = make_service()
+        repo.find_active_scan.side_effect = [MagicMock(status=SCAN_STATUS_CREATED)]
 
         with caplog.at_level(logging.WARNING):
             with pytest.raises(HTTPException):
                 await svc.start_scan(
                     "prod-01",
-                    "k8s",
                     "manual",
                     request_id="req-dup-1",
                     endpoint_path="/api/v1/scans/start",
@@ -104,21 +107,22 @@ class TestScanServiceStartScan:
     @pytest.mark.asyncio
     async def test_allow_new_scan_if_previous_completed(self):
         """start_scan succeeds when find_active_scan returns None (prior scan completed)"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.find_active_scan.return_value = None  # completed scans are not active
 
-        result = await svc.start_scan("prod-01", "k8s", "manual")
+        result = await svc.start_scan("prod-01", "manual")
 
         assert result.status == SCAN_STATUS_CREATED
-        repo.create.assert_called_once()
+        assert repo.create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_allow_new_scan_if_previous_failed(self):
         """start_scan succeeds when find_active_scan returns None (prior scan failed)"""
-        svc, repo, _ = make_service()
-        repo.find_active_scan.return_value = None  # failed scans are not active
+        svc, repo, _, clusters = make_service()
+        repo.find_active_scan.return_value = None
+        clusters.get_by_id.return_value = SimpleNamespace(id="prod-01", cluster_type="aws")
 
-        result = await svc.start_scan("prod-01", "aws", "manual")
+        result = await svc.start_scan("prod-01", "manual")
 
         assert result.status == SCAN_STATUS_CREATED
         repo.create.assert_called_once()
@@ -129,7 +133,7 @@ class TestScanServiceUploadUrl:
     @pytest.mark.asyncio
     async def test_upload_url_returns_presigned_url(self):
         """get_upload_url returns S3 presigned URL and s3_key"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1", cluster_id="c1", scanner_type="k8s", status=SCAN_STATUS_PROCESSING
         )
@@ -137,13 +141,13 @@ class TestScanServiceUploadUrl:
         result = await svc.get_upload_url("s1", "k8s_scan.json")
 
         assert "presigned-url" in result.upload_url
-        assert result.s3_key == "scans/c1/s1/k8s/f.json"
+        assert result.s3_key == "scans/c1/s1/k8s/k8s-snapshot.json"
 
     @pytest.mark.asyncio
     async def test_upload_url_scan_not_found_raises_404(self):
         """get_upload_url raises 404 for unknown scan_id"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
@@ -155,7 +159,7 @@ class TestScanServiceUploadUrl:
     async def test_upload_url_completed_scan_raises_409(self):
         """get_upload_url raises 409 for already completed scan"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="completed")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -167,7 +171,7 @@ class TestScanServiceUploadUrl:
     async def test_upload_url_failed_scan_raises_409(self):
         """get_upload_url raises 409 for a failed scan"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="failed")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -178,7 +182,7 @@ class TestScanServiceUploadUrl:
     @pytest.mark.asyncio
     async def test_upload_url_invalid_state_logs_failure_context(self, caplog):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             cluster_id="c1",
@@ -207,7 +211,7 @@ class TestScanServiceUploadUrl:
     @pytest.mark.asyncio
     async def test_upload_url_queued_scan_raises_409(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status=SCAN_STATUS_CREATED)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -218,7 +222,7 @@ class TestScanServiceUploadUrl:
     @pytest.mark.asyncio
     async def test_upload_url_transitions_status_to_uploading(self):
         """get_upload_url updates status to 'uploading' when scan is 'processing'"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1", cluster_id="c1", scanner_type="k8s", status=SCAN_STATUS_PROCESSING
         )
@@ -233,10 +237,10 @@ class TestScanServiceComplete:
     @pytest.mark.asyncio
     async def test_complete_scan_returns_completed(self):
         """complete_scan returns status=completed on success"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="uploading")
 
-        result = await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+        result = await svc.complete_scan("s1", ["scans/c1/s1/k8s/k8s-snapshot.json"])
 
         assert result.status == SCAN_STATUS_COMPLETED
         assert result.scan_id == "s1"
@@ -244,10 +248,10 @@ class TestScanServiceComplete:
     @pytest.mark.asyncio
     async def test_complete_scan_calls_update(self):
         """complete_scan calls repository.update with status=completed"""
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="uploading")
 
-        await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+        await svc.complete_scan("s1", ["scans/c1/s1/k8s/k8s-snapshot.json"])
 
         repo.update.assert_called_once()
         call_kwargs = repo.update.call_args
@@ -255,8 +259,8 @@ class TestScanServiceComplete:
         assert call_kwargs[1]["completed_at"] is not None
 
     @pytest.mark.asyncio
-    async def test_complete_scan_triggers_analysis_check(self):
-        svc, repo, _ = make_service()
+    async def test_complete_scan_does_not_trigger_analysis_automatically(self):
+        svc, repo, _, _ = make_service()
         analysis = AsyncMock()
         svc._analysis = analysis
         repo.get_by_scan_id.return_value = MagicMock(
@@ -266,15 +270,15 @@ class TestScanServiceComplete:
             status="uploading",
         )
 
-        await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+        await svc.complete_scan("s1", ["scans/c1/s1/k8s/k8s-snapshot.json"])
 
-        analysis.maybe_trigger_analysis.assert_awaited_once_with("c1", request_id=None)
+        analysis.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_complete_scan_not_found_raises_404(self):
         """complete_scan raises 404 for unknown scan_id"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
@@ -286,7 +290,7 @@ class TestScanServiceComplete:
     async def test_complete_scan_missing_file_raises_400(self):
         """complete_scan raises 400 if a file is not found in S3"""
         from fastapi import HTTPException
-        svc, repo, s3 = make_service()
+        svc, repo, s3, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status="uploading")
         s3.verify_file_exists.return_value = False
 
@@ -299,7 +303,7 @@ class TestScanServiceComplete:
     @pytest.mark.asyncio
     async def test_complete_scan_missing_file_does_not_trigger_analysis(self):
         from fastapi import HTTPException
-        svc, repo, s3 = make_service()
+        svc, repo, s3, _ = make_service()
         analysis = AsyncMock()
         svc._analysis = analysis
         repo.get_by_scan_id.return_value = MagicMock(
@@ -313,12 +317,12 @@ class TestScanServiceComplete:
         with pytest.raises(HTTPException):
             await svc.complete_scan("s1", ["scans/c1/s1/k8s/missing.json"])
 
-        analysis.maybe_trigger_analysis.assert_not_called()
+        analysis.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_complete_scan_missing_file_logs_failure_context(self, caplog):
         from fastapi import HTTPException
-        svc, repo, s3 = make_service()
+        svc, repo, s3, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             cluster_id="c1",
@@ -348,29 +352,29 @@ class TestScanServiceComplete:
     @pytest.mark.asyncio
     async def test_complete_scan_invalid_state_raises_409(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", status=SCAN_STATUS_CREATED)
 
         with pytest.raises(HTTPException) as exc_info:
-            await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"])
+            await svc.complete_scan("s1", ["scans/c1/s1/k8s/k8s-snapshot.json"])
 
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_complete_scan_ownership_mismatch_raises_403(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(scan_id="s1", cluster_id="c1", status="uploading")
 
         with pytest.raises(HTTPException) as exc_info:
-            await svc.complete_scan("s1", ["scans/c1/s1/k8s/f.json"], authenticated_cluster_id="c2")
+            await svc.complete_scan("s1", ["scans/c1/s1/k8s/k8s-snapshot.json"], authenticated_cluster_id="c2")
 
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_complete_scan_ownership_mismatch_logs_failure_context(self, caplog):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             cluster_id="c1",
@@ -382,7 +386,7 @@ class TestScanServiceComplete:
             with pytest.raises(HTTPException):
                 await svc.complete_scan(
                     "s1",
-                    ["scans/c1/s1/k8s/f.json"],
+                    ["scans/c1/s1/k8s/k8s-snapshot.json"],
                     authenticated_cluster_id="c2",
                     request_id="req-owner-1",
                     endpoint_path="/api/v1/scans/s1/complete",
@@ -403,12 +407,12 @@ class TestScanServiceGetStatus:
     async def test_get_status_returns_current_state(self):
         """get_scan_status returns current status and scan metadata"""
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1", cluster_id="c1", scanner_type="k8s",
             status="completed",
             created_at=datetime(2024, 1, 15), completed_at=datetime(2024, 1, 15, 10, 30),
-            s3_keys=["scans/c1/s1/k8s.json"]
+            s3_keys=["scans/c1/s1/k8s/k8s-snapshot.json"]
         )
 
         result = await svc.get_scan_status("s1")
@@ -420,7 +424,7 @@ class TestScanServiceGetStatus:
     async def test_get_status_not_found_raises_404(self):
         """get_scan_status raises 404 for unknown scan_id"""
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
@@ -431,7 +435,7 @@ class TestScanServiceGetStatus:
     @pytest.mark.asyncio
     async def test_get_status_falls_back_to_requested_at_when_created_at_missing(self):
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         requested_at = datetime(2024, 1, 15, 10, 0, 0)
         repo.get_by_scan_id.return_value = SimpleNamespace(
             scan_id="s1",
@@ -453,7 +457,7 @@ class TestScanServiceGetDetail:
     @pytest.mark.asyncio
     async def test_get_detail_returns_scan_metadata(self):
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             cluster_id="c1",
@@ -461,7 +465,7 @@ class TestScanServiceGetDetail:
             status="completed",
             created_at=datetime(2024, 1, 15),
             completed_at=datetime(2024, 1, 15, 10, 30),
-            s3_keys=["scans/c1/s1/k8s/scan.json"],
+            s3_keys=["scans/c1/s1/k8s/k8s-snapshot.json"],
         )
 
         result = await svc.get_scan_detail("s1")
@@ -470,12 +474,12 @@ class TestScanServiceGetDetail:
         assert result.cluster_id == "c1"
         assert result.scanner_type == "k8s"
         assert result.status == "completed"
-        assert result.s3_keys == ["scans/c1/s1/k8s/scan.json"]
+        assert result.s3_keys == ["scans/c1/s1/k8s/k8s-snapshot.json"]
 
     @pytest.mark.asyncio
     async def test_get_detail_not_found_raises_404(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
@@ -486,7 +490,7 @@ class TestScanServiceGetDetail:
     @pytest.mark.asyncio
     async def test_get_detail_falls_back_to_requested_at_and_empty_s3_keys(self):
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         requested_at = datetime(2024, 1, 15, 10, 0, 0)
         repo.get_by_scan_id.return_value = SimpleNamespace(
             scan_id="s1",
@@ -508,7 +512,7 @@ class TestScanServiceListClusterScans:
     @pytest.mark.asyncio
     async def test_list_cluster_scans_returns_newest_first(self):
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.list_by_cluster.return_value = [
             MagicMock(
                 scan_id="older",
@@ -516,7 +520,7 @@ class TestScanServiceListClusterScans:
                 status="completed",
                 created_at=datetime(2024, 1, 15, 10, 0, 0),
                 completed_at=datetime(2024, 1, 15, 10, 30, 0),
-                s3_keys=["scans/c1/older/k8s/scan.json"],
+                s3_keys=["scans/c1/older/k8s/k8s-snapshot.json"],
             ),
             MagicMock(
                 scan_id="newer",
@@ -539,7 +543,7 @@ class TestScanServiceListClusterScans:
 
     @pytest.mark.asyncio
     async def test_list_cluster_scans_returns_empty_list(self):
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.list_by_cluster.return_value = []
 
         result = await svc.list_cluster_scans("c1")
@@ -550,7 +554,7 @@ class TestScanServiceListClusterScans:
     @pytest.mark.asyncio
     async def test_list_cluster_scans_uses_requested_at_when_created_at_missing(self):
         from datetime import datetime
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         older_requested_at = datetime(2024, 1, 15, 10, 0, 0)
         newer_requested_at = datetime(2024, 1, 16, 10, 0, 0)
         repo.list_by_cluster.return_value = [
@@ -560,7 +564,7 @@ class TestScanServiceListClusterScans:
                 status="completed",
                 requested_at=older_requested_at,
                 completed_at=datetime(2024, 1, 15, 10, 30, 0),
-                s3_keys=["scans/c1/older/k8s/scan.json"],
+                s3_keys=["scans/c1/older/k8s/k8s-snapshot.json"],
             ),
             SimpleNamespace(
                 scan_id="newer",
@@ -584,27 +588,27 @@ class TestScanServiceGetRawResultDownloadUrl:
 
     @pytest.mark.asyncio
     async def test_get_raw_result_download_url_returns_presigned_url(self):
-        svc, repo, s3 = make_service()
+        svc, repo, s3, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
-            s3_keys=["scans/c1/s1/k8s/scan.json"],
+            s3_keys=["scans/c1/s1/k8s/k8s-snapshot.json"],
         )
 
         result = await svc.get_raw_result_download_url("s1")
 
         assert result.scan_id == "s1"
-        assert result.s3_key == "scans/c1/s1/k8s/scan.json"
+        assert result.s3_key == "scans/c1/s1/k8s/k8s-snapshot.json"
         assert result.download_url == "https://download-url"
         assert result.expires_in == 600
         s3.generate_presigned_download_url.assert_called_once_with(
-            s3_key="scans/c1/s1/k8s/scan.json",
+            s3_key="scans/c1/s1/k8s/k8s-snapshot.json",
             expires_in=600,
         )
 
     @pytest.mark.asyncio
     async def test_get_raw_result_download_url_not_found_raises_404(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
@@ -615,7 +619,7 @@ class TestScanServiceGetRawResultDownloadUrl:
     @pytest.mark.asyncio
     async def test_get_raw_result_download_url_without_files_raises_404(self):
         from fastapi import HTTPException
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             s3_keys=[],
@@ -629,11 +633,11 @@ class TestScanServiceGetRawResultDownloadUrl:
     @pytest.mark.asyncio
     async def test_get_raw_result_download_url_multiple_files_raises_409(self):
         from fastapi import HTTPException
-        svc, repo, s3 = make_service()
+        svc, repo, s3, _ = make_service()
         repo.get_by_scan_id.return_value = MagicMock(
             scan_id="s1",
             s3_keys=[
-                "scans/c1/s1/k8s/scan.json",
+                "scans/c1/s1/k8s/k8s-snapshot.json",
                 "scans/c1/s1/k8s/extra.json",
             ],
         )
@@ -649,7 +653,7 @@ class TestScanServiceClaimPending:
 
     @pytest.mark.asyncio
     async def test_claim_pending_scan_calls_repo(self):
-        svc, repo, _ = make_service()
+        svc, repo, _, _ = make_service()
         repo.claim_next_queued_scan.return_value = MagicMock(scan_id="s1")
 
         result = await svc.claim_pending_scan(

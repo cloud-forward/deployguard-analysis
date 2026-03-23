@@ -25,7 +25,9 @@ DeployGuard는 Kubernetes 및 AWS 인프라의 공격 경로를 분석하고 최
 3. **작업 생성**: 대시보드 또는 스케줄러가 `POST /api/v1/scans/start` 호출 → `created` 작업 생성
 4. **작업 클레임**: 워커가 `GET /api/v1/scans/pending` 폴링 (Bearer 인증) → created 작업 claim
 5. **실행 및 업로드**: claim한 워커가 실제 스캔 실행 후 `POST /api/v1/scans/{scan_id}/upload-url` 사용
-6. **완료 보고**: 워커가 `POST /api/v1/scans/{scan_id}/complete` 호출 → Analysis 파이프라인 트리거
+6. **완료 보고**: 워커가 `POST /api/v1/scans/{scan_id}/complete` 호출 → 스캔 완료만 기록
+7. **분석 작업 생성**: 사용자가 `POST /api/v1/analysis/jobs` 호출 → 선택한 scan_id로 analysis_jobs 생성
+8. **분석 실행**: 사용자가 `POST /api/v1/analysis/jobs/{job_id}/execute` 호출
 """,
     version="4.0.0",
     openapi_tags=[

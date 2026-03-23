@@ -5,7 +5,6 @@ import pytest
 from pydantic import ValidationError
 from app.models.schemas import (
     ScanStartRequest,
-    ScannerType,
     UploadUrlRequest,
     ScanCompleteRequest,
     ScanStatusResponse,
@@ -17,37 +16,24 @@ class TestScanStartRequest:
     def test_valid_request(self):
         """Valid request with all fields"""
         from uuid import UUID
-        req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
+        req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         assert req.cluster_id == UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-        assert req.scanner_type == ScannerType.k8s
         assert req.request_source == "manual"
-
-    def test_valid_scanner_types(self):
-        """All documented scanner types are accepted"""
-        for st, expected in [("k8s", ScannerType.k8s), ("aws", ScannerType.aws), ("image", ScannerType.image)]:
-            req = ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type=st)
-            assert req.scanner_type == expected
-
-    def test_invalid_scanner_type(self):
-        """Invalid scanner_type raises ValidationError"""
-        with pytest.raises(ValidationError):
-            ScanStartRequest(cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="invalid")
 
     def test_missing_cluster_id(self):
         """Missing cluster_id raises ValidationError"""
         with pytest.raises(ValidationError):
-            ScanStartRequest(scanner_type="k8s")
+            ScanStartRequest()
 
     def test_invalid_cluster_id_format_rejected(self):
         """Non-UUID cluster_id raises ValidationError"""
         with pytest.raises(ValidationError):
-            ScanStartRequest(cluster_id="not-a-uuid", scanner_type="k8s")
+            ScanStartRequest(cluster_id="not-a-uuid")
 
     def test_valid_request_sources(self):
         for request_source in ("manual", "scheduled"):
             req = ScanStartRequest(
                 cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-                scanner_type="k8s",
                 request_source=request_source,
             )
             assert req.request_source == request_source
@@ -56,7 +42,6 @@ class TestScanStartRequest:
         with pytest.raises(ValidationError):
             ScanStartRequest(
                 cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-                scanner_type="k8s",
                 request_source="api",
             )
 
@@ -80,7 +65,7 @@ class TestUploadUrlRequest:
 class TestScanCompleteRequest:
 
     def test_valid_files_list(self):
-        req = ScanCompleteRequest(files=["scans/c1/s1/k8s.json"])
+        req = ScanCompleteRequest(files=["scans/c1/s1/k8s/k8s-snapshot.json"])
         assert len(req.files) == 1
 
     def test_empty_files_rejected(self):
@@ -101,7 +86,7 @@ class TestScanStatusResponse:
             status="completed",
             created_at=datetime(2024, 1, 15, 10, 0, 0),
             completed_at=datetime(2024, 1, 15, 10, 5, 0),
-            files=["scans/prod-01/abc-123/k8s.json"]
+            files=["scans/prod-01/abc-123/k8s/k8s-snapshot.json"]
         )
         data = resp.model_dump()
         assert data["status"] == "completed"

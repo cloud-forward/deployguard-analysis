@@ -27,10 +27,10 @@ class TestS3Service:
         )
 
         assert url == "https://test-bucket.s3.amazonaws.com/signed-url"
-        assert key == "scans/prod-01/scan-001/k8s/k8s_scan.json"
+        assert key == "scans/prod-01/scan-001/k8s/k8s-snapshot.json"
 
     def test_s3_key_format(self):
-        """S3 key follows format: scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"""
+        """S3 key follows canonical format regardless of requested file name."""
         self.mock_s3_client.generate_presigned_url.return_value = "https://url"
 
         _, key = self.service.generate_presigned_upload_url(
@@ -40,7 +40,7 @@ class TestS3Service:
             file_name="aws_scan.json"
         )
 
-        assert key == "scans/my-cluster/abc-123/aws/aws_scan.json"
+        assert key == "scans/my-cluster/abc-123/aws/aws-snapshot.json"
 
     def test_presigned_url_called_with_correct_params(self):
         """boto3 called with PUT method and correct bucket/key"""
@@ -54,7 +54,7 @@ class TestS3Service:
             "put_object",
             Params={
                 "Bucket": "test-bucket",
-                "Key": "scans/c1/s1/image/f1.json"
+                "Key": "scans/c1/s1/image/image-snapshot.json"
             },
             ExpiresIn=600
         )
@@ -64,7 +64,7 @@ class TestS3Service:
         self.mock_s3_client.generate_presigned_url.return_value = "https://test-bucket.s3.amazonaws.com/download-url"
 
         url = self.service.generate_presigned_download_url(
-            "scans/prod-01/scan-001/k8s/k8s_scan.json"
+            "scans/prod-01/scan-001/k8s/k8s-snapshot.json"
         )
 
         assert url == "https://test-bucket.s3.amazonaws.com/download-url"
@@ -90,7 +90,7 @@ class TestS3Service:
         """verify_file_exists returns True when file exists"""
         self.mock_s3_client.head_object.return_value = {"ContentLength": 1024}
 
-        result = self.service.verify_file_exists("scans/c1/s1/k8s/f1.json")
+        result = self.service.verify_file_exists("scans/c1/s1/k8s/k8s-snapshot.json")
         assert result is True
 
     def test_verify_file_exists_false(self):
@@ -100,8 +100,21 @@ class TestS3Service:
             {"Error": {"Code": "404"}}, "HeadObject"
         )
 
-        result = self.service.verify_file_exists("scans/c1/s1/k8s/missing.json")
+        result = self.service.verify_file_exists("scans/c1/s1/k8s/k8s-snapshot.json")
         assert result is False
+
+    def test_load_json_returns_decoded_payload(self):
+        body = MagicMock()
+        body.read.return_value = b'{"scan_id":"scan-001","resources":[]}'
+        self.mock_s3_client.get_object.return_value = {"Body": body}
+
+        result = self.service.load_json("scans/c1/s1/k8s/k8s-snapshot.json")
+
+        self.mock_s3_client.get_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="scans/c1/s1/k8s/k8s-snapshot.json",
+        )
+        assert result == {"scan_id": "scan-001", "resources": []}
 
     def test_presigned_url_expiration_default(self):
         """Default expiration is 600 seconds"""
@@ -125,7 +138,7 @@ class TestS3Service:
         """Default download expiration is 600 seconds"""
         self.mock_s3_client.generate_presigned_url.return_value = "https://url"
 
-        self.service.generate_presigned_download_url("scans/c1/s1/k8s/f.json")
+        self.service.generate_presigned_download_url("scans/c1/s1/k8s/k8s-snapshot.json")
 
         call_args = self.mock_s3_client.generate_presigned_url.call_args
         assert call_args[1]["ExpiresIn"] == 600
@@ -134,7 +147,7 @@ class TestS3Service:
         """Custom download expiration is passed through"""
         self.mock_s3_client.generate_presigned_url.return_value = "https://url"
 
-        self.service.generate_presigned_download_url("scans/c1/s1/k8s/f.json", expires_in=300)
+        self.service.generate_presigned_download_url("scans/c1/s1/k8s/k8s-snapshot.json", expires_in=300)
 
         call_args = self.mock_s3_client.generate_presigned_url.call_args
         assert call_args[1]["ExpiresIn"] == 300
@@ -149,6 +162,7 @@ class TestS3Service:
         )
 
         assert f"/{scanner_type}/" in key
+        assert key.endswith(f"/{scanner_type}-snapshot.json")
 
     @pytest.mark.parametrize("scanner_type", ["unknown", "", "K8S", "AWS"])
     def test_invalid_scanner_type_raises_value_error(self, scanner_type):

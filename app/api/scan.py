@@ -34,24 +34,25 @@ cluster_router = APIRouter(prefix="/api/v1/clusters", tags=["Scans"])
     description="""
 대시보드 또는 스케줄러가 호출하여 `created` 상태의 스캔 작업을 생성하는 작업 등록 API입니다.
 이 엔드포인트는 스캔을 직접 실행하지 않으며, 워커가 이후 `/pending`을 폴링해 claim할 작업만 등록합니다.
-응답의 `scan_id`는 생성된 스캔 작업의 식별자이며 이후 `upload-url` 및 `complete` 호출에 사용됩니다.
+응답에는 생성된 스캔 작업 목록이 포함되며, 이후 `upload-url` 및 `complete` 호출에 사용됩니다.
 
 **실제 동작 흐름:**
-1. 대시보드 또는 스케줄러가 `/start`를 호출해 큐 작업을 생성합니다.
+1. 대시보드 또는 스케줄러가 `/start`를 호출해 클러스터 타입 기준 큐 작업을 생성합니다.
 2. 스캐너 워커가 `/pending`을 폴링해 자신이 처리할 created 작업을 claim합니다.
 3. claim에 성공한 워커가 실제 스캔을 수행한 뒤 결과를 업로드하고 `/complete`를 호출합니다.
 
-**스캐너 유형:**
-- `k8s` — Kubernetes 클러스터 리소스 (Pods, RBAC, Secrets, Services 등)
-- `aws` — AWS 클라우드 리소스 (IAM, S3, RDS, EC2, SecurityGroups)
-- `image` — 컨테이너 이미지 취약점 (CVE, EPSS, 서명)
+**클러스터 타입별 fan-out:**
+- `eks`, `self-managed` → `k8s` + `image`
+- `aws` → `aws`
+
 클러스터와 scanner_type 조합당 하나의 활성 스캔만 허용합니다.
-활성 상태(`created`, `processing`, `uploading`)가 이미 있으면 409를 반환합니다.
+fan-out 대상 중 하나라도 활성 상태(`created`, `processing`, `uploading`)가 이미 있으면 전체 요청은 409로 거부됩니다.
 """,
     responses={
-        201: {"description": "스캔 세션이 성공적으로 생성되었습니다"},
-        409: {"description": "해당 클러스터와 스캐너 유형에 대한 스캔이 이미 실행 중입니다"},
-        422: {"description": "유효하지 않은 scanner_type 또는 request_source, 혹은 필드 누락"},
+        201: {"description": "클러스터 타입에 맞는 스캔 세션이 성공적으로 생성되었습니다"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+        409: {"description": "fan-out 대상 스캐너 중 하나 이상에 대해 활성 스캔이 이미 존재합니다"},
+        422: {"description": "유효하지 않은 request_source 또는 필드 누락"},
     },
 )
 async def start_scan(
@@ -65,13 +66,11 @@ async def start_scan(
         extra={
             "request_id": request_id,
             "cluster_id": str(request.cluster_id),
-            "scanner_type": request.scanner_type.value,
             "request_source": request.request_source,
         },
     )
     return await service.start_scan(
         cluster_id=request.cluster_id,
-        scanner_type=request.scanner_type,
         request_source=request.request_source,
         request_id=request_id,
         endpoint_path=http_request.url.path,
@@ -156,15 +155,15 @@ async def claim_pending_scan(
 
 Presigned URL은 600초(10분) 후 만료됩니다.
 
-**S3 키 형식:** `scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}`
+**S3 키 형식:** `scans/{cluster_id}/{scan_id}/{scanner_type}/{scanner_type}-snapshot.json`
 
 `scanner_type`은 스캔 세션에 의해 결정됩니다 (`/start` 호출 시 설정).
-각 스캐너는 자체 prefix에 기록합니다. 유효한 스캐너 유형: `k8s`, `aws`, `image`.
+각 스캐너는 canonical raw snapshot 파일명으로 기록합니다. 유효한 스캐너 유형: `k8s`, `aws`, `image`.
 
 **예시:**
-- `scans/prod-cluster/scan123/k8s/resources.json`
-- `scans/prod-cluster/scan123/aws/iam.json`
-- `scans/prod-cluster/scan123/image/cve.json`
+- `scans/prod-cluster/scan123/k8s/k8s-snapshot.json`
+- `scans/prod-cluster/scan123/aws/aws-snapshot.json`
+- `scans/prod-cluster/scan123/image/image-snapshot.json`
 """,
     responses={
         200: {"description": "Presigned URL이 생성되었습니다"},
@@ -201,9 +200,9 @@ async def get_upload_url(
 동작은 다음과 같습니다:
 1. 업로드된 S3 파일 존재 여부 검증
 2. 상태를 `processing` 또는 `uploading`에서 `completed`로 전이
-3. 현재 구현된 분석 오케스트레이션 체크(`maybe_trigger_analysis`)만 호출
+3. 분석 작업 생성은 하지 않음. 이후 사용자가 별도로 `POST /api/v1/analysis/jobs`를 호출해야 함
 
-즉, complete는 다음 오케스트레이션 단계로 넘기는 역할이며 분석 파이프라인 실행 자체를 수행하지 않습니다.
+즉, complete는 스캔 완료를 기록하는 역할만 하며 분석 파이프라인 실행 자체를 수행하지 않습니다.
 """,
     responses={
         202: {"description": "스캔 완료가 접수되었으며 completed 상태로 전이되었습니다"},

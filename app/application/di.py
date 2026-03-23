@@ -25,7 +25,8 @@ def get_analysis_service(
 ) -> AnalysisService:
     jobs_repo = SqlAlchemyAnalysisJobRepository(session=db)
     scan_repo = SQLAlchemyScanRepository(session=db)
-    return AnalysisService(jobs_repo=jobs_repo, scan_repo=scan_repo)
+    s3_service = S3Service(bucket_name=settings.S3_BUCKET_NAME, region=settings.AWS_REGION)
+    return AnalysisService(jobs_repo=jobs_repo, scan_repo=scan_repo, s3_service=s3_service)
 
 def get_scan_service(
     db: AsyncSession = Depends(get_db),
@@ -33,8 +34,14 @@ def get_scan_service(
     scan_repo = SQLAlchemyScanRepository(session=db)
     s3_service = S3Service(bucket_name=settings.S3_BUCKET_NAME, region=settings.AWS_REGION)
     jobs_repo = SqlAlchemyAnalysisJobRepository(session=db)
-    analysis_service = AnalysisService(jobs_repo=jobs_repo, scan_repo=scan_repo)
-    return ScanService(scan_repository=scan_repo, s3_service=s3_service, analysis_service=analysis_service)
+    cluster_repo = SQLAlchemyClusterRepository(session=db)
+    analysis_service = AnalysisService(jobs_repo=jobs_repo, scan_repo=scan_repo, s3_service=s3_service)
+    return ScanService(
+        scan_repository=scan_repo,
+        s3_service=s3_service,
+        analysis_service=analysis_service,
+        cluster_repository=cluster_repo,
+    )
 
 
 def get_cluster_service(

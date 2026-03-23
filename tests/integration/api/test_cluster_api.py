@@ -154,6 +154,8 @@ async def attack_graph_client(tmp_path):
         await conn.execute(text("DROP TABLE IF EXISTS remediation_recommendations"))
         await conn.execute(text("DROP TABLE IF EXISTS attack_path_edges"))
         await conn.execute(text("DROP TABLE IF EXISTS attack_paths"))
+        await conn.execute(text("DROP TABLE IF EXISTS graph_edges"))
+        await conn.execute(text("DROP TABLE IF EXISTS graph_nodes"))
         await conn.execute(text("""
             CREATE TABLE graph_nodes (
                 graph_id TEXT NOT NULL,
@@ -169,38 +171,36 @@ async def attack_graph_client(tmp_path):
         """))
         await conn.execute(text("""
             CREATE TABLE graph_edges (
+                id TEXT NOT NULL,
                 graph_id TEXT NOT NULL,
-                edge_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                target TEXT NOT NULL,
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT NOT NULL,
                 edge_type TEXT,
                 metadata TEXT
             )
         """))
         await conn.execute(text("""
             CREATE TABLE attack_paths (
+                id TEXT NOT NULL,
                 graph_id TEXT NOT NULL,
                 path_id TEXT NOT NULL,
-                title TEXT,
                 risk_level TEXT,
                 risk_score REAL,
                 raw_final_risk REAL,
                 hop_count INTEGER,
                 entry_node_id TEXT,
                 target_node_id TEXT,
-                node_ids TEXT,
-                edge_ids TEXT
+                node_ids TEXT
             )
         """))
         await conn.execute(text("""
             CREATE TABLE attack_path_edges (
-                graph_id TEXT NOT NULL,
+                id TEXT NOT NULL,
                 path_id TEXT NOT NULL,
-                edge_id TEXT NOT NULL,
-                edge_index INTEGER,
                 source_node_id TEXT,
                 target_node_id TEXT,
                 edge_type TEXT,
+                sequence INTEGER,
                 metadata TEXT
             )
         """))
@@ -253,7 +253,10 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
     analysis_run_id = "analysis-1"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 10:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -281,10 +284,10 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
         await session.execute(
             text(
                 """
-                INSERT INTO graph_edges (graph_id, edge_id, source, target, edge_type, metadata)
+                INSERT INTO graph_edges (id, graph_id, source_node_id, target_node_id, edge_type, metadata)
                 VALUES
-                    (:graph_id, 'edge-1', 'ingress:prod:web', 'pod:prod:api', 'allows', '{"protocol":"http"}'),
-                    (:graph_id, 'edge-2', 'pod:prod:api', 's3:prod-secrets', 'accesses', NULL)
+                    ('edge-1', :graph_id, 'ingress:prod:web', 'pod:prod:api', 'allows', '{"protocol":"http"}'),
+                    ('edge-2', :graph_id, 'pod:prod:api', 's3:prod-secrets', 'accesses', NULL)
                 """
             ),
             {"graph_id": graph_id},
@@ -292,13 +295,22 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
         await session.execute(
             text(
                 """
-                INSERT INTO attack_paths (graph_id, path_id, title, risk_level, node_ids, edge_ids)
-                VALUES (:graph_id, 'path-1', 'Internet to secrets', 'critical',
-                        '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]',
-                        '["edge-1","edge-2"]')
+                INSERT INTO attack_paths (id, graph_id, path_id, risk_level, node_ids)
+                VALUES ('path-row-1', :graph_id, 'path-1', 'critical',
+                        '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]')
                 """
             ),
             {"graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_path_edges (id, path_id, source_node_id, target_node_id, edge_type, sequence, metadata)
+                VALUES
+                    ('path-1-step-0', 'path-row-1', 'ingress:prod:web', 'pod:prod:api', 'allows', 0, '{"protocol":"http"}'),
+                    ('path-1-step-1', 'path-row-1', 'pod:prod:api', 's3:prod-secrets', 'accesses', 1, NULL)
+                """
+            )
         )
         await session.commit()
 
@@ -311,7 +323,7 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
     assert body["generated_at"] == "2026-03-22T10:05:00"
     assert body["paths"] == [{
         "id": "path-1",
-        "title": "Internet to secrets",
+        "title": "Public Web Ingress -> Secrets Bucket",
         "summary": "Public Web Ingress to Secrets Bucket in 2 hops",
         "severity": "critical",
         "evidence_count": 1,
@@ -359,7 +371,10 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
     analysis_run_id = "analysis-paths-1"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 12:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -373,16 +388,14 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
             text(
                 """
                 INSERT INTO attack_paths (
-                    graph_id, path_id, title, risk_level, risk_score, raw_final_risk,
-                    hop_count, entry_node_id, target_node_id, node_ids, edge_ids
+                    id, graph_id, path_id, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids
                 )
                 VALUES
-                    (:graph_id, 'path-high', 'Internet to Secrets', 'high', 0.8, 0.8, 2, 'ingress:prod:web', 's3:prod-secrets',
-                     '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]',
-                     '["path-high:edge:0","path-high:edge:1"]'),
-                    (:graph_id, 'path-medium', 'Pod to RDS', 'medium', 0.5, 0.5, 1, 'pod:prod:api', 'rds:prod-db',
-                     '["pod:prod:api","rds:prod-db"]',
-                     '["path-medium:edge:0"]')
+                    ('path-row-high', :graph_id, 'path-high', 'high', 0.8, 0.8, 2, 'ingress:prod:web', 's3:prod-secrets',
+                     '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]'),
+                    ('path-row-medium', :graph_id, 'path-medium', 'medium', 0.5, 0.5, 1, 'pod:prod:api', 'rds:prod-db',
+                     '["pod:prod:api","rds:prod-db"]')
                 """
             ),
             {"graph_id": graph_id},
@@ -399,7 +412,7 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
     assert [item["path_id"] for item in body["items"]] == ["path-high", "path-medium"]
     assert body["items"][0] == {
         "path_id": "path-high",
-        "title": "Internet to Secrets",
+        "title": "ingress:prod:web -> s3:prod-secrets",
         "risk_level": "high",
         "risk_score": 0.8,
         "raw_final_risk": 0.8,
@@ -417,7 +430,10 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
     analysis_run_id = "analysis-paths-2"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 13:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -431,14 +447,13 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
             text(
                 """
                 INSERT INTO attack_paths (
-                    graph_id, path_id, title, risk_level, risk_score, raw_final_risk,
-                    hop_count, entry_node_id, target_node_id, node_ids, edge_ids
+                    id, graph_id, path_id, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids
                 )
                 VALUES (
-                    :graph_id, 'path-detail', 'Internet to Secrets', 'critical', 0.95, 0.95, 2,
+                    'path-row-detail', :graph_id, 'path-detail', 'critical', 0.95, 0.95, 2,
                     'ingress:prod:web', 's3:prod-secrets',
-                    '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]',
-                    '["path-detail:edge:0","path-detail:edge:1"]'
+                    '["ingress:prod:web","pod:prod:api","s3:prod-secrets"]'
                 )
                 """
             ),
@@ -447,15 +462,26 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
         await session.execute(
             text(
                 """
-                INSERT INTO attack_path_edges (
-                    graph_id, path_id, edge_id, edge_index, source_node_id, target_node_id, edge_type, metadata
-                )
+                INSERT INTO graph_edges (id, graph_id, source_node_id, target_node_id, edge_type, metadata)
                 VALUES
-                    (:graph_id, 'path-detail', 'path-detail:edge:0', 0, 'ingress:prod:web', 'pod:prod:api', 'ingress_exposes_service', '{"protocol":"http"}'),
-                    (:graph_id, 'path-detail', 'path-detail:edge:1', 1, 'pod:prod:api', 's3:prod-secrets', 'iam_role_access_resource', '{"service":"s3"}')
+                    ('edge-detail-1', :graph_id, 'ingress:prod:web', 'pod:prod:api', 'ingress_exposes_service', '{"protocol":"http"}'),
+                    ('edge-detail-2', :graph_id, 'pod:prod:api', 's3:prod-secrets', 'iam_role_access_resource', '{"service":"s3"}')
                 """
             ),
             {"graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_path_edges (
+                    id, path_id, source_node_id, target_node_id, edge_type, sequence, metadata
+                )
+                VALUES
+                    ('path-detail:edge:0', 'path-row-detail', 'ingress:prod:web', 'pod:prod:api', 'ingress_exposes_service', 0, '{"protocol":"http"}'),
+                    ('path-detail:edge:1', 'path-row-detail', 'pod:prod:api', 's3:prod-secrets', 'iam_role_access_resource', 1, '{"service":"s3"}')
+                """
+            ),
+            {},
         )
         await session.commit()
 
@@ -469,7 +495,7 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
     assert body["path"]["path_id"] == "path-detail"
     assert body["path"]["risk_level"] == "critical"
     assert body["path"]["raw_final_risk"] == 0.95
-    assert body["path"]["edge_ids"] == ["path-detail:edge:0", "path-detail:edge:1"]
+    assert body["path"]["edge_ids"] == ["edge-detail-1", "edge-detail-2"]
     assert body["path"]["edges"] == [
         {
             "edge_id": "path-detail:edge:0",
@@ -497,7 +523,10 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
     analysis_run_id = "analysis-recommendations-1"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -561,7 +590,10 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
     analysis_run_id = "analysis-recommendations-2"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -641,7 +673,10 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
     analysis_run_id = "analysis-2"
 
     async with attack_graph_client["sessionmaker"]() as session:
-        await session.execute(text("INSERT INTO graph_snapshots (id) VALUES (:id)"), {"id": graph_id})
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 11:00:00"},
+        )
         await session.execute(
             text(
                 """
@@ -669,11 +704,11 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
         await session.execute(
             text(
                 """
-                INSERT INTO graph_edges (graph_id, edge_id, source, target, edge_type, metadata)
+                INSERT INTO graph_edges (id, graph_id, source_node_id, target_node_id, edge_type, metadata)
                 VALUES
-                    (:graph_id, 'edge-keep-1', 'sa:prod:api', 's3:archive', 'service_account_assumes_iam_role', :edge_keep_1_metadata),
-                    (:graph_id, 'edge-keep-2', 's3:archive', 'mystery:asset', 'totally_custom', :edge_keep_2_metadata),
-                    (:graph_id, 'edge-drop', 'ghost:src', 's3:archive', 'allows', NULL)
+                    ('edge-keep-1', :graph_id, 'sa:prod:api', 's3:archive', 'service_account_assumes_iam_role', :edge_keep_1_metadata),
+                    ('edge-keep-2', :graph_id, 's3:archive', 'mystery:asset', 'totally_custom', :edge_keep_2_metadata),
+                    ('edge-drop', :graph_id, 'ghost:src', 's3:archive', 'allows', NULL)
                 """
             ),
             {
@@ -685,21 +720,30 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
         await session.execute(
             text(
                 """
-                INSERT INTO attack_paths (graph_id, path_id, title, risk_level, node_ids, edge_ids)
-                VALUES
-                    (:graph_id, 'path-keep', '', 'urgent',
-                        '["sa:prod:api","s3:archive","mystery:asset"]',
-                        '["edge-keep-1","edge-keep-2"]'),
-                    (:graph_id, 'path-drop-missing-node', 'bad node path', 'high',
-                        '["sa:prod:api","ghost:node"]',
-                        '["edge-keep-1"]'),
-                    (:graph_id, 'path-drop-missing-edge', 'bad edge path', 'low',
-                        '["sa:prod:api","s3:archive"]',
-                        '["edge-drop"]')
+                INSERT INTO attack_paths (id, graph_id, path_id, risk_level, node_ids)
+                    VALUES
+                        ('path-row-keep', :graph_id, 'path-keep', 'urgent',
+                            '["sa:prod:api","s3:archive","mystery:asset"]'),
+                        ('path-row-drop-node', :graph_id, 'path-drop-missing-node', 'high',
+                            '["sa:prod:api","ghost:node"]'),
+                        ('path-row-drop-edge', :graph_id, 'path-drop-missing-edge', 'low',
+                            '["sa:prod:api","mystery:asset"]')
                 """
             ),
             {"graph_id": graph_id},
         )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_path_edges (id, path_id, source_node_id, target_node_id, edge_type, sequence, metadata)
+                VALUES
+                        ('path-keep-step-0', 'path-row-keep', 'sa:prod:api', 's3:archive', 'service_account_assumes_iam_role', 0, NULL),
+                        ('path-keep-step-1', 'path-row-keep', 's3:archive', 'mystery:asset', 'totally_custom', 1, NULL),
+                        ('path-drop-node-step-0', 'path-row-drop-node', 'sa:prod:api', 'ghost:node', 'service_account_assumes_iam_role', 0, NULL),
+                        ('path-drop-edge-step-0', 'path-row-drop-edge', 'sa:prod:api', 'ghost:edge', 'service_account_assumes_iam_role', 0, NULL)
+                    """
+                )
+            )
         await session.commit()
 
     response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")

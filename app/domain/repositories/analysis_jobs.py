@@ -5,6 +5,7 @@ These are implemented by gateway adapters (e.g., SQLAlchemy).
 from __future__ import annotations
 from typing import Protocol, runtime_checkable, Any, Dict, Optional
 from uuid import UUID
+from src.facts.canonical_fact import Fact
 
 
 @runtime_checkable
@@ -81,4 +82,43 @@ class AnalysisJobRepository(Protocol):
         remediation_optimization: Dict[str, Any],
     ) -> None:
         """Persist remediation optimization recommendations for the linked graph snapshot."""
+        ...
+
+    async def persist_graph(
+        self,
+        *,
+        graph_id: str,
+        graph: Any,
+    ) -> None:
+        """Persist graph nodes and edges for an existing graph snapshot."""
+        ...
+
+    async def finalize_graph_snapshot(
+        self,
+        *,
+        graph_id: str,
+        node_count: int,
+        edge_count: int,
+        entry_point_count: int,
+        crown_jewel_count: int,
+    ) -> None:
+        """Finalize a graph snapshot with completed status and computed counts."""
+        ...
+
+    async def persist_facts(
+        self,
+        *,
+        cluster_id: str | UUID,
+        analysis_job_id: str | None,
+        graph_id: str,
+        k8s_scan_id: str | None,
+        aws_scan_id: str | None,
+        image_scan_id: str | None,
+        facts: list[Fact],
+    ) -> None:
+        """Persist canonical facts for the current analysis execution."""
+        ...
+
+    async def rollback(self) -> None:
+        """Rollback the current unit of work after a persistence failure."""
         ...

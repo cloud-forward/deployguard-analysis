@@ -123,7 +123,7 @@ async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_rep
     )
 
     jobs_repo.create_analysis_job.assert_awaited_once_with(
-        cluster_id=aws_cluster_id,
+        cluster_id=k8s_cluster_id,
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id="img-1",
@@ -159,7 +159,7 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
 
 
 @pytest.mark.asyncio
-async def test_create_analysis_job_derives_representative_cluster_from_aws_when_image_present_but_k8s_absent(service, jobs_repo, scan_repo):
+async def test_create_analysis_job_derives_representative_cluster_from_image_when_k8s_absent(service, jobs_repo, scan_repo):
     image_cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     aws_cluster_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
     scan_repo.get_by_scan_id.side_effect = [
@@ -173,7 +173,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_aws_when_
     )
 
     jobs_repo.create_analysis_job.assert_awaited_once_with(
-        cluster_id=aws_cluster_id,
+        cluster_id=image_cluster_id,
         k8s_scan_id=None,
         aws_scan_id="aws-1",
         image_scan_id="img-1",
@@ -198,7 +198,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_aws_when_
 
 
 @pytest.mark.asyncio
-async def test_create_analysis_job_prefers_aws_cluster_over_k8s_when_both_present(service, jobs_repo, scan_repo):
+async def test_create_analysis_job_prefers_k8s_cluster_over_aws_when_both_present(service, jobs_repo, scan_repo):
     k8s_cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     aws_cluster_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
     scan_repo.get_by_scan_id.side_effect = [
@@ -212,7 +212,7 @@ async def test_create_analysis_job_prefers_aws_cluster_over_k8s_when_both_presen
     )
 
     jobs_repo.create_analysis_job.assert_awaited_once_with(
-        cluster_id=aws_cluster_id,
+        cluster_id=k8s_cluster_id,
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id=None,
@@ -396,7 +396,7 @@ async def test_allows_aws_scan_from_different_cluster_than_k8s_image(service, jo
     )
 
     jobs_repo.create_analysis_job.assert_awaited_once_with(
-        cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id="img-1",

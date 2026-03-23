@@ -714,12 +714,12 @@ class AnalysisService:
 
         representative_cluster_id = None
         aws_record = records_by_field.get("aws_scan_id")
-        if aws_record is not None:
-            representative_cluster_id = str(aws_record.cluster_id)
-        elif k8s_record is not None:
+        if k8s_record is not None:
             representative_cluster_id = str(k8s_record.cluster_id)
-        else:
+        elif image_record is not None:
             representative_cluster_id = str(image_record.cluster_id)
+        else:
+            representative_cluster_id = str(aws_record.cluster_id)
 
         return {
             "cluster_id": representative_cluster_id,

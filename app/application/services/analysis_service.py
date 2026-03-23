@@ -296,11 +296,12 @@ class AnalysisService:
                 max_path_length=MAX_HOPS,
                 max_paths=MAX_ATTACK_PATHS,
             )
+            valid_paths = [path for path in paths if self._is_valid_attack_path(path)]
             
             # Step 5: Calculate risk scores
             await self._update_step(analysis_job_id, "risk_calculation")
             enriched_paths = []
-            for path in paths:
+            for path in valid_paths:
                 path_id = f"path:{len(enriched_paths)}:{'->'.join(path)}"
                 risk_details = self._risk_engine.calculate_path_risk_details(graph, path)
                 edges = self._path_finder.get_path_edges(graph, path)
@@ -380,7 +381,7 @@ class AnalysisService:
                         "crown_jewels": len(crown_jewels),
                     },
                     "paths": {
-                        "total": len(paths),
+                        "total": len(valid_paths),
                         "returned": len(enriched_paths),
                     },
                 },
@@ -487,6 +488,11 @@ class AnalysisService:
             generic_allows_count,
             str(item.get("path_id", "")),
         )
+
+    @staticmethod
+    def _is_valid_attack_path(path: list[Any]) -> bool:
+        normalized_path = [str(node_id) for node_id in path]
+        return len(normalized_path) > 1 and normalized_path[0] != normalized_path[-1]
 
     def _path_dominates(self, dominant: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
         dominant_path = [str(node_id) for node_id in dominant.get("path", [])]

@@ -781,6 +781,149 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
 
 
 @pytest.mark.asyncio
+async def test_execute_analysis_returns_zero_paths_when_entry_and_crown_have_no_path(service, jobs_repo):
+    service._load_scan_data = AsyncMock(side_effect=[
+        {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
+        {"scan_id": "aws-1", "aws_account_id": "123456789012"},
+        {"scan_id": "img-1"},
+    ])
+    k8s_result = K8sBuildResult(
+        nodes=[K8sGraphNode(id="pod:prod:api", type="pod")],
+        edges=[],
+        metadata={"scan_id": "k8s-1", "cluster_id": "cluster-1", "graph_id": "k8s-1-graph"},
+    )
+    aws_result = AWSBuildResult(
+        nodes=[AWSGraphNode(id="iam_user:123456789012:target", type="iam_user", namespace="123456789012")],
+        edges=[],
+        metadata={"scan_id": "aws-1", "account_id": "123456789012", "graph_id": "aws-1-graph"},
+    )
+    unified_result = UnifiedGraphResult(
+        nodes=[*k8s_result.nodes, *aws_result.nodes],
+        edges=[],
+        metadata={"sources": ["k8s", "aws"]},
+        warnings=[],
+    )
+    bridge_result = MagicMock(irsa_mappings=[], credential_facts=[], warnings=[])
+    graph = nx.DiGraph()
+    graph.add_node("pod:prod:api", id="pod:prod:api", type="pod", is_entry_point=True, is_crown_jewel=False, base_risk=0.3, metadata={})
+    graph.add_node("iam_user:123456789012:target", id="iam_user:123456789012:target", type="iam_user", is_entry_point=False, is_crown_jewel=True, base_risk=0.9, metadata={})
+
+    service._build_k8s_result = MagicMock(return_value=k8s_result)
+    service._extract_k8s_facts = MagicMock(return_value=[])
+    service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
+    service._bridge_builder.build = MagicMock(return_value=bridge_result)
+    service._extract_aws_facts = MagicMock(return_value=[])
+    service._build_aws_result = MagicMock(return_value=aws_result)
+    service._unified_graph_builder.build = MagicMock(return_value=unified_result)
+    service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
+    service._graph_builder.get_entry_points = MagicMock(return_value=["pod:prod:api"])
+    service._graph_builder.get_crown_jewels = MagicMock(return_value=["iam_user:123456789012:target"])
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 0}, "recommendations": []})
+
+    result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
+
+    jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="k8s-1-graph",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        attack_paths=[],
+    )
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="11111111-1111-1111-1111-111111111111",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        remediation_optimization={"summary": {"selected_count": 0}, "recommendations": []},
+    )
+    jobs_repo.finalize_graph_snapshot.assert_awaited_once_with(
+        graph_id="11111111-1111-1111-1111-111111111111",
+        node_count=2,
+        edge_count=0,
+        entry_point_count=1,
+        crown_jewel_count=1,
+    )
+    assert result["stats"]["graph"] == {
+        "nodes": 2,
+        "edges": 0,
+        "entry_points": 1,
+        "crown_jewels": 1,
+    }
+    assert result["stats"]["paths"] == {
+        "total": 0,
+        "returned": 0,
+    }
+    assert result["attack_paths"] == []
+    assert result["remediation_optimization"] == {"summary": {"selected_count": 0}, "recommendations": []}
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_skips_self_entry_target_pairs(service, jobs_repo):
+    service._load_scan_data = AsyncMock(side_effect=[
+        {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
+        {"scan_id": "aws-1", "aws_account_id": "123456789012"},
+        {"scan_id": "img-1"},
+    ])
+    k8s_result = K8sBuildResult(
+        nodes=[K8sGraphNode(id="s3:244105859679:testbed-bucket-02", type="s3_bucket")],
+        edges=[],
+        metadata={"scan_id": "k8s-1", "cluster_id": "cluster-1", "graph_id": "k8s-1-graph"},
+    )
+    aws_result = AWSBuildResult(
+        nodes=[],
+        edges=[],
+        metadata={"scan_id": "aws-1", "account_id": "123456789012", "graph_id": "aws-1-graph"},
+    )
+    unified_result = UnifiedGraphResult(
+        nodes=list(k8s_result.nodes),
+        edges=[],
+        metadata={"sources": ["k8s", "aws"]},
+        warnings=[],
+    )
+    bridge_result = MagicMock(irsa_mappings=[], credential_facts=[], warnings=[])
+    graph = nx.DiGraph()
+    graph.add_node(
+        "s3:244105859679:testbed-bucket-02",
+        id="s3:244105859679:testbed-bucket-02",
+        type="s3_bucket",
+        is_entry_point=True,
+        is_crown_jewel=True,
+        base_risk=0.9,
+        metadata={},
+    )
+
+    service._build_k8s_result = MagicMock(return_value=k8s_result)
+    service._extract_k8s_facts = MagicMock(return_value=[])
+    service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
+    service._bridge_builder.build = MagicMock(return_value=bridge_result)
+    service._extract_aws_facts = MagicMock(return_value=[])
+    service._build_aws_result = MagicMock(return_value=aws_result)
+    service._unified_graph_builder.build = MagicMock(return_value=unified_result)
+    service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
+    service._graph_builder.get_entry_points = MagicMock(return_value=["s3:244105859679:testbed-bucket-02"])
+    service._graph_builder.get_crown_jewels = MagicMock(return_value=["s3:244105859679:testbed-bucket-02"])
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 0}, "recommendations": []})
+
+    result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
+
+    jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        graph_id="k8s-1-graph",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        attack_paths=[],
+    )
+    assert result["stats"]["paths"] == {
+        "total": 0,
+        "returned": 0,
+    }
+    assert result["attack_paths"] == []
+
+
+@pytest.mark.asyncio
 async def test_execute_analysis_updates_job_steps_when_analysis_job_id_present(service, jobs_repo):
     service._load_scan_data = AsyncMock(side_effect=[
         {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},

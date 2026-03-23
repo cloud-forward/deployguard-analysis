@@ -51,8 +51,16 @@ class DebugAnalysisExecuteRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
             "k8s_scan_id": "20260309T113020-k8s",
+            "aws_scan_id": "20260309T113020-aws",
             "image_scan_id": "20260309T113020-image",
-        }
+        },
+        {
+            "k8s_scan_id": "20260309T113020-k8s",
+            "image_scan_id": "20260309T113020-image",
+        },
+        {
+            "aws_scan_id": "20260309T113020-aws",
+        },
     ]})
 
     @model_validator(mode="after")

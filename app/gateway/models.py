@@ -91,6 +91,11 @@ class GraphSnapshot(Base):
         default=lambda: str(uuid4()),
         server_default=text("gen_random_uuid()"),
     )
+    cluster_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id"),
+        nullable=False,
+    )
 
 
 class AnalysisJob(Base):
@@ -183,9 +188,8 @@ class AttackPath(Base):
 class AttackPathEdge(Base):
     __tablename__ = "attack_path_edges"
     __table_args__ = (
-        Index("idx_attack_path_edges_graph_id", "graph_id"),
-        Index("idx_attack_path_edges_graph_path_id", "graph_id", "path_id"),
-        Index("idx_attack_path_edges_graph_path_order", "graph_id", "path_id", "edge_index"),
+        Index("idx_attack_path_edges_path_id", "path_id"),
+        Index("idx_attack_path_edges_path_sequence", "path_id", "sequence"),
     )
 
     id: Mapped[str] = mapped_column(
@@ -194,18 +198,15 @@ class AttackPathEdge(Base):
         default=lambda: str(uuid4()),
         server_default=text("gen_random_uuid()"),
     )
-    graph_id: Mapped[str] = mapped_column(
+    path_id: Mapped[str] = mapped_column(
         UUID_COMPAT,
-        ForeignKey("graph_snapshots.id"),
+        ForeignKey("attack_paths.id"),
         nullable=False,
     )
-    path_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    edge_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    edge_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     source_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
     target_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
     edge_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
 
 
 class RemediationRecommendation(Base):

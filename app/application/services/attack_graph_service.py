@@ -342,9 +342,10 @@ class AttackGraphService:
         if not columns:
             return None
 
-        id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
-        if not id_col:
+        public_id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
+        if not public_id_col:
             return None
+        row_id_col = self._pick_column(columns, "id")
 
         title_col = self._pick_column(columns, "title", "name")
         severity_col = self._pick_column(columns, "severity", "risk_level")
@@ -357,7 +358,8 @@ class AttackGraphService:
         edge_ids_col = self._pick_column(columns, "edge_ids", "path_edges", "path_edge_ids")
 
         select_parts = [
-            f"{id_col} AS path_id",
+            f"{public_id_col} AS path_id",
+            f"{row_id_col} AS persisted_path_id" if row_id_col else f"{public_id_col} AS persisted_path_id",
             f"{title_col} AS title" if title_col else "NULL AS title",
             f"{severity_col} AS risk_level" if severity_col else "NULL AS risk_level",
             f"{risk_score_col} AS risk_score" if risk_score_col else "NULL AS risk_score",
@@ -375,7 +377,7 @@ class AttackGraphService:
                     f"""
                     SELECT {", ".join(select_parts)}
                     FROM attack_paths
-                    WHERE graph_id = :graph_id AND {id_col} = :path_id
+                    WHERE graph_id = :graph_id AND {public_id_col} = :path_id
                     LIMIT 1
                     """
                 ),
@@ -387,7 +389,7 @@ class AttackGraphService:
 
         node_ids = self._normalize_string_list(row.get("node_ids"))
         edge_ids = self._normalize_string_list(row.get("edge_ids"))
-        edges = await self._get_attack_path_edge_sequence(graph_id, path_id, edge_ids)
+        edges = await self._get_attack_path_edge_sequence(str(row.get("persisted_path_id")), edge_ids)
 
         return AttackPathDetailResponse(
             path_id=str(row["path_id"]),
@@ -405,8 +407,7 @@ class AttackGraphService:
 
     async def _get_attack_path_edge_sequence(
         self,
-        graph_id: str,
-        path_id: str,
+        persisted_path_id: str,
         fallback_edge_ids: list[str],
     ) -> list[AttackPathEdgeSequenceResponse]:
         columns = await self._get_table_columns("attack_path_edges")
@@ -437,10 +438,10 @@ class AttackGraphService:
                 f"""
                 SELECT {", ".join(select_parts)}
                 FROM attack_path_edges
-                WHERE graph_id = :graph_id AND path_id = :path_id
+                WHERE path_id = :path_id
                 """
             ),
-            {"graph_id": graph_id, "path_id": path_id},
+            {"path_id": persisted_path_id},
         )
 
         edges = [

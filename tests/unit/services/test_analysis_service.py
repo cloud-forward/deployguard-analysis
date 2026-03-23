@@ -10,6 +10,7 @@ from app.core.constants import SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE, SCANNER_TYP
 from app.main import app
 from src.graph.builders.aws_graph_builder import GraphEdge as AWSGraphEdge
 from src.graph.builders.aws_graph_builder import GraphNode as AWSGraphNode
+from src.graph.builders.aws_scanner_types import IAMRoleScan
 from src.graph.builders.build_result_types import AWSBuildResult, K8sBuildResult, UnifiedGraphResult
 from src.graph.graph_models import GraphNode as K8sGraphNode
 
@@ -69,6 +70,8 @@ def jobs_repo():
     repo = AsyncMock()
     repo.create_analysis_job = AsyncMock(return_value="job-123")
     repo.get_analysis_job = AsyncMock()
+    repo.persist_attack_paths = AsyncMock(return_value="11111111-1111-1111-1111-111111111111")
+    repo.persist_remediation_recommendations = AsyncMock()
     return repo
 
 
@@ -259,8 +262,11 @@ async def test_execute_analysis_debug_uses_explicit_scan_ids_only(service, scan_
 async def test_execute_analysis_debug_rejects_wrong_scanner_type(service, scan_repo):
     scan_repo.get_by_scan_id.return_value = _make_scan("aws-1", SCANNER_TYPE_AWS)
 
-    with pytest.raises(ValueError, match="expected k8s"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.execute_analysis_debug(k8s_scan_id="aws-1")
+
+    assert exc_info.value.status_code == 400
+    assert "expected k8s" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -271,8 +277,25 @@ async def test_execute_analysis_debug_rejects_non_completed_scan(service, scan_r
         status="processing",
     )
 
-    with pytest.raises(ValueError, match="is not completed"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.execute_analysis_debug(k8s_scan_id="k8s-1")
+
+    assert exc_info.value.status_code == 400
+    assert "is not completed" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_debug_rejects_k8s_image_cluster_mismatch(service, scan_repo):
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id="cluster-a"),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id="cluster-b"),
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.execute_analysis_debug(k8s_scan_id="k8s-1", image_scan_id="img-1")
+
+    assert exc_info.value.status_code == 400
+    assert "must belong to the same cluster" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -415,6 +438,97 @@ async def test_load_scan_data_uses_explicit_scan_id_and_s3_payload(service, scan
 
 
 @pytest.mark.asyncio
+async def test_load_scan_data_allows_aws_scan_from_different_cluster_when_cluster_match_disabled(service, scan_repo, s3_service):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "aws-1",
+        SCANNER_TYPE_AWS,
+        cluster_id="other-cluster",
+        s3_keys=["scans/other-cluster/aws-1/aws/aws-snapshot.json"],
+    )
+    s3_service.load_json.return_value = {"resources": []}
+
+    payload = await service._load_scan_data(
+        "job-cluster",
+        "aws-1",
+        SCANNER_TYPE_AWS,
+        require_cluster_match=False,
+    )
+
+    assert payload["scan_id"] == "aws-1"
+    assert payload["cluster_id"] == "job-cluster"
+    s3_service.load_json.assert_called_once_with("scans/other-cluster/aws-1/aws/aws-snapshot.json")
+
+
+@pytest.mark.asyncio
+async def test_load_scan_data_rejects_k8s_cluster_mismatch_when_cluster_match_required(service, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "k8s-1",
+        SCANNER_TYPE_K8S,
+        cluster_id="other-cluster",
+    )
+
+    with pytest.raises(ValueError, match="does not belong to cluster"):
+        await service._load_scan_data("job-cluster", "k8s-1", SCANNER_TYPE_K8S, require_cluster_match=True)
+
+
+@pytest.mark.asyncio
+async def test_load_scan_data_rejects_scanner_type_mismatch(service, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "aws-1",
+        SCANNER_TYPE_AWS,
+        cluster_id="job-cluster",
+    )
+
+    with pytest.raises(ValueError, match="expected k8s"):
+        await service._load_scan_data("job-cluster", "aws-1", SCANNER_TYPE_K8S)
+
+
+@pytest.mark.asyncio
+async def test_load_scan_data_rejects_non_completed_scan(service, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "img-1",
+        SCANNER_TYPE_IMAGE,
+        status="processing",
+        cluster_id="job-cluster",
+    )
+
+    with pytest.raises(ValueError, match="is not completed"):
+        await service._load_scan_data("job-cluster", "img-1", SCANNER_TYPE_IMAGE)
+
+
+def test_coerce_aws_scan_result_maps_role_name_payload_to_iam_role_scan(service):
+    result = service._coerce_aws_scan_result(
+        {
+            "scan_id": "aws-1",
+            "aws_account_id": "123456789012",
+            "scanned_at": "2026-03-23T00:00:00Z",
+            "iam_roles": [
+                {
+                    "role_name": "AppRole",
+                    "arn": "arn:aws:iam::123456789012:role/AppRole",
+                    "is_irsa": True,
+                    "irsa_oidc_issuer": "oidc.eks.ap-northeast-2.amazonaws.com/id/example",
+                    "attached_policies": [],
+                    "inline_policies": [],
+                    "trust_policy": {"Version": "2012-10-17"},
+                }
+            ],
+            "s3_buckets": [],
+            "rds_instances": [],
+            "ec2_instances": [],
+            "security_groups": [],
+        },
+        "aws-1",
+    )
+
+    assert len(result.iam_roles) == 1
+    assert isinstance(result.iam_roles[0], IAMRoleScan)
+    assert result.iam_roles[0].name == "AppRole"
+    assert result.iam_roles[0].arn == "arn:aws:iam::123456789012:role/AppRole"
+    assert result.iam_roles[0].is_irsa is True
+
+
+@pytest.mark.asyncio
 async def test_execute_analysis_does_not_infer_latest_scans_from_cluster(service, scan_repo):
     scan_repo.get_latest_completed_scans.side_effect = AssertionError("latest scan lookup should not be used")
     service._load_scan_data = AsyncMock(side_effect=[
@@ -451,6 +565,9 @@ async def test_execute_analysis_does_not_infer_latest_scans_from_cluster(service
     await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
     scan_repo.get_latest_completed_scans.assert_not_called()
+    assert service._load_scan_data.await_args_list[0].kwargs["require_cluster_match"] is True
+    assert service._load_scan_data.await_args_list[1].kwargs["require_cluster_match"] is False
+    assert service._load_scan_data.await_args_list[2].kwargs["require_cluster_match"] is True
 
 
 @pytest.mark.asyncio
@@ -522,7 +639,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
     )
     jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
         cluster_id="cluster-1",
-        graph_id="k8s-1-graph",
+        graph_id="11111111-1111-1111-1111-111111111111",
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id="img-1",
@@ -591,4 +708,13 @@ def test_openapi_docs_distinguish_standard_and_debug_analysis_flows():
     assert "선택된 scan_id와 실행 상태" in get_job["description"]
     assert "persisted analysis job 목록" in list_jobs["description"]
     assert "cluster_id" not in openapi["components"]["schemas"]["AnalysisJobRequest"]["properties"]
-    assert "cluster_id" not in openapi["components"]["schemas"]["DebugAnalysisExecuteRequest"]["properties"]
+    debug_schema = openapi["components"]["schemas"]["DebugAnalysisExecuteRequest"]
+    assert "cluster_id" not in debug_schema["properties"]
+    assert "aws_scan_id" in debug_schema["properties"]
+    assert len(debug_schema.get("examples", [])) == 3
+    assert debug_schema["examples"][0]["aws_scan_id"] == "20260309T113020-aws"
+    assert debug_schema["examples"][1] == {
+        "k8s_scan_id": "20260309T113020-k8s",
+        "image_scan_id": "20260309T113020-image",
+    }
+    assert debug_schema["examples"][2] == {"aws_scan_id": "20260309T113020-aws"}

@@ -58,20 +58,23 @@ class AnalysisJobRepository(Protocol):
         self,
         *,
         cluster_id: str | UUID,
-        graph_id: str,
+        graph_id: str | None,
         k8s_scan_id: str,
         aws_scan_id: str,
         image_scan_id: str,
         attack_paths: list[Dict[str, Any]],
-    ) -> None:
-        """Persist attack paths and link them to the latest matching analysis job/graph snapshot."""
+    ) -> str:
+        """Persist attack paths and link them to the latest matching analysis job/graph snapshot.
+
+        Returns the real persisted graph snapshot id.
+        """
         ...
 
     async def persist_remediation_recommendations(
         self,
         *,
         cluster_id: str | UUID,
-        graph_id: str,
+        graph_id: str | None,
         k8s_scan_id: str,
         aws_scan_id: str,
         image_scan_id: str,

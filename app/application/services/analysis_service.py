@@ -152,16 +152,13 @@ class AnalysisService:
         aws_scan_id: str | None = None,
         image_scan_id: str | None = None,
     ) -> Dict[str, Any]:
-        if not any((k8s_scan_id, aws_scan_id, image_scan_id)):
-            raise HTTPException(status_code=422, detail="At least one scan ID must be provided")
-
-        resolved_cluster_id = await self._resolve_cluster_id_for_debug(
+        resolved_inputs = await self._resolve_analysis_job_inputs(
             k8s_scan_id=k8s_scan_id,
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,
         )
         return await self.execute_analysis(
-            cluster_id=resolved_cluster_id,
+            cluster_id=resolved_inputs["cluster_id"],
             k8s_scan_id=k8s_scan_id,
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,
@@ -191,9 +188,13 @@ class AnalysisService:
         """
         logger.info(
             "Starting analysis execution",
-            cluster_id=cluster_id,
-            k8s_scan_id=k8s_scan_id,
-            aws_scan_id=aws_scan_id,
+            extra=_context(
+                cluster_id=cluster_id,
+                k8s_scan_id=k8s_scan_id,
+                aws_scan_id=aws_scan_id,
+                image_scan_id=image_scan_id,
+                analysis_job_id=analysis_job_id,
+            ),
         )
         
         try:
@@ -207,7 +208,7 @@ class AnalysisService:
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_K8S, "scan_id": None}
             )
             aws_scan = (
-                await self._load_scan_data(cluster_id, aws_scan_id, SCANNER_TYPE_AWS, require_cluster_match=require_cluster_match)
+                await self._load_scan_data(cluster_id, aws_scan_id, SCANNER_TYPE_AWS, require_cluster_match=False)
                 if aws_scan_id else
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_AWS, "scan_id": None}
             )
@@ -241,11 +242,13 @@ class AnalysisService:
 
             logger.info(
                 "Unified graph assembled from domain results",
-                cluster_id=cluster_id,
-                k8s_nodes=len(k8s_result.nodes),
-                aws_nodes=len(aws_result.nodes),
-                unified_nodes=len(unified_result.nodes),
-                unified_edges=len(unified_result.edges),
+                extra=_context(
+                    cluster_id=cluster_id,
+                    k8s_nodes=len(k8s_result.nodes),
+                    aws_nodes=len(aws_result.nodes),
+                    unified_nodes=len(unified_result.nodes),
+                    unified_edges=len(unified_result.edges),
+                ),
             )
 
             # Step 3: Adapt unified graph for existing NetworkX consumers
@@ -258,7 +261,7 @@ class AnalysisService:
             
             logger.info(
                 f"Graph built: {len(entry_points)} entry points, {len(crown_jewels)} crown jewels",
-                cluster_id=cluster_id,
+                extra=_context(cluster_id=cluster_id),
             )
             
             await self._update_step(analysis_job_id, "path_discovery")
@@ -291,14 +294,14 @@ class AnalysisService:
                 })
 
             enriched_paths = self._refine_attack_paths(enriched_paths)
-            graph_id = str(
+            preferred_graph_id = str(
                 unified_result.metadata.get("k8s", {}).get("graph_id")
                 or k8s_result.metadata.get("graph_id")
-                or f"{k8s_scan_id}-graph"
-            )
-            await self._jobs.persist_attack_paths(
+                or ""
+            ) or None
+            graph_id = await self._jobs.persist_attack_paths(
                 cluster_id=cluster_id,
-                graph_id=graph_id,
+                graph_id=preferred_graph_id,
                 k8s_scan_id=k8s_scan_id,
                 aws_scan_id=aws_scan_id,
                 image_scan_id=image_scan_id,
@@ -346,7 +349,7 @@ class AnalysisService:
             
             logger.info(
                 f"Analysis complete: {len(enriched_paths)} attack paths found",
-                cluster_id=cluster_id,
+                extra=_context(cluster_id=cluster_id, analysis_job_id=analysis_job_id),
             )
             
             return result
@@ -354,8 +357,11 @@ class AnalysisService:
         except Exception as e:
             logger.error(
                 f"Analysis execution failed: {str(e)}",
-                cluster_id=cluster_id,
-                error_type=type(e).__name__,
+                extra=_context(
+                    cluster_id=cluster_id,
+                    analysis_job_id=analysis_job_id,
+                    error_type=type(e).__name__,
+                ),
             )
             raise
 
@@ -505,7 +511,15 @@ class AnalysisService:
             aws_account_id=aws_scan.get("aws_account_id", ""),
             scanned_at=aws_scan.get("scanned_at", ""),
             iam_roles=[
-                role if isinstance(role, IAMRoleScan) else IAMRoleScan(**role)
+                role if isinstance(role, IAMRoleScan) else IAMRoleScan(
+                    name=role.get("name") or role.get("role_name", ""),
+                    arn=role.get("arn", ""),
+                    is_irsa=role.get("is_irsa", False),
+                    irsa_oidc_issuer=role.get("irsa_oidc_issuer"),
+                    attached_policies=role.get("attached_policies", []),
+                    inline_policies=role.get("inline_policies", []),
+                    trust_policy=role.get("trust_policy", {}),
+                )
                 for role in aws_scan.get("iam_roles", [])
             ],
             s3_buckets=[
@@ -575,33 +589,6 @@ class AnalysisService:
         payload.setdefault("cluster_id", str(cluster_id))
         payload.setdefault("scanner_type", scanner_type)
         return payload
-
-    async def _resolve_cluster_id_for_debug(
-        self,
-        *,
-        k8s_scan_id: str | None,
-        aws_scan_id: str | None,
-        image_scan_id: str | None,
-    ) -> str:
-        selected_scans = [
-            (SCANNER_TYPE_K8S, k8s_scan_id),
-            (SCANNER_TYPE_AWS, aws_scan_id),
-            (SCANNER_TYPE_IMAGE, image_scan_id),
-        ]
-        for scanner_type, scan_id in selected_scans:
-            if not scan_id:
-                continue
-            record = await self._scans.get_by_scan_id(scan_id)
-            if record is None:
-                raise ValueError(f"Scan record not found: {scan_id}")
-            if record.scanner_type != scanner_type:
-                raise ValueError(
-                    f"Scan {scan_id} has scanner_type={record.scanner_type}, expected {scanner_type}"
-                )
-            if record.status != "completed":
-                raise ValueError(f"Scan {scan_id} is not completed")
-            return str(record.cluster_id)
-        raise ValueError("At least one scan ID is required for analysis execution")
 
     async def _resolve_analysis_job_inputs(
         self,

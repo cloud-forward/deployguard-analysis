@@ -57,20 +57,44 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
+          # [ADDED] shell safety
+          set -euo pipefail
 
           echo "Pull latest image"
           docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
           echo "Stop old container"
-          docker stop deployguard-analysis || true
+          docker stop $CONTAINER_NAME || true
 
           echo "Remove old container"
-          docker rm deployguard-analysis || true
+          docker rm $CONTAINER_NAME || true
+
+          # [ADDED] check whether port 8000 is still occupied
+          echo "Check port 8000 usage before run"
+          ss -tulpn | grep ':8000' || true
+
+          # [ADDED] try to clean up orphan docker-proxy processes holding 8000
+          PROXY_PIDS="$(ss -tulpn | awk '/:8000/ && /docker-proxy/ {
+            if (match($0, /pid=([0-9]+)/, m)) print m[1]
+          }' | sort -u || true)"
+
+          if [ -n "${PROXY_PIDS}" ]; then
+            echo "Found docker-proxy PIDs on port 8000: ${PROXY_PIDS}"
+            kill ${PROXY_PIDS} || true
+            sleep 2
+          fi
+
+          # [ADDED] fail fast if 8000 is still occupied
+          if ss -tulpn | grep ':8000' > /dev/null; then
+            echo "Port 8000 is still in use. Aborting deploy."
+            ss -tulpn | grep ':8000' || true
+            exit 1
+          fi
 
           echo "Run new container"
           docker run -d \
             --restart unless-stopped \
-            --name deployguard-analysis \
+            --name $CONTAINER_NAME \
             -p 8000:8000 \
             -e AWS_REGION=ap-northeast-2 \
             -e S3_BUCKET_NAME=dg-raw-scans \

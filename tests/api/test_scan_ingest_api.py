@@ -15,8 +15,7 @@ from app.application.services.scan_service import ScanService
 from app.core.constants import (
     ACTIVE_SCAN_STATUSES,
     SCAN_STATUS_COMPLETED,
-    SCAN_STATUS_QUEUED,
-    SCAN_STATUS_RUNNING,
+    SCAN_STATUS_CREATED,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
 )
@@ -46,7 +45,7 @@ class FakeScanRepository:
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = SCAN_STATUS_QUEUED,
+        status: str = SCAN_STATUS_CREATED,
         request_source: str = "manual",
         requested_at=None,
     ):
@@ -113,13 +112,13 @@ class FakeScanRepository:
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
             r for r in self._store.values()
-            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == SCAN_STATUS_QUEUED
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == SCAN_STATUS_CREATED
         ]
         if not queued:
             return None
         queued.sort(key=lambda r: r.requested_at)
         record = queued[0]
-        record.status = "running"
+        record.status = SCAN_STATUS_PROCESSING
         record.claimed_by = claimed_by
         record.claimed_at = started_at
         record.started_at = started_at
@@ -327,7 +326,7 @@ class TestScanStart:
         assert resp.status_code == 201
         data = resp.json()
         assert "scan_id" in data
-        assert data["status"] == SCAN_STATUS_QUEUED
+        assert data["status"] == SCAN_STATUS_CREATED
 
     def test_scan_id_contains_scanner_type(self, client):
         resp = _start(client, scanner_type="aws")
@@ -422,7 +421,7 @@ class TestScanStart:
         assert record_created.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         assert record_created.scanner_type == "k8s"
         assert record_created.request_source == "manual"
-        assert record_created.status_after == SCAN_STATUS_QUEUED
+        assert record_created.status_after == SCAN_STATUS_CREATED
         assert record_created.scan_id == resp.json()["scan_id"]
 
 
@@ -493,7 +492,7 @@ class TestCompleteScan:
         assert data["status"] == SCAN_STATUS_COMPLETED
         assert data["completed_at"] is not None
 
-    def test_complete_from_running_transitions_to_completed(self, client):
+    def test_complete_from_processing_transitions_to_completed(self, client):
         scan_id = _start(client).json()["scan_id"]
         _claim(client)
         resp = client.post(
@@ -507,7 +506,7 @@ class TestCompleteScan:
         resp = client.post("/api/v1/scans/ghost-scan/complete", json={"files": ["some/key.json"]})
         assert resp.status_code == 404
 
-    def test_complete_requires_running_or_uploading(self, client):
+    def test_complete_requires_processing_or_uploading(self, client):
         scan_id = _start(client).json()["scan_id"]
         resp = client.post(
             f"/api/v1/scans/{scan_id}/complete",
@@ -624,18 +623,18 @@ class TestScanStatus:
         resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == SCAN_STATUS_QUEUED
+        assert data["status"] == SCAN_STATUS_CREATED
         assert data["scan_id"] == scan_id
 
     def test_get_status_not_found(self, client):
         resp = client.get("/api/v1/scans/ghost-id/status")
         assert resp.status_code == 404
 
-    def test_status_transitions_queued_uploading_completed(self, client):
+    def test_status_transitions_created_processing_uploading_completed(self, client):
         scan_id = _start(client).json()["scan_id"]
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_QUEUED
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_CREATED
         _claim(client)
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_RUNNING
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
         _upload_url(client, scan_id)
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
         _complete(client, scan_id)
@@ -653,7 +652,7 @@ class TestScanDetail:
         assert data["scan_id"] == scan_id
         assert data["cluster_id"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         assert data["scanner_type"] == "k8s"
-        assert data["status"] == SCAN_STATUS_QUEUED
+        assert data["status"] == SCAN_STATUS_CREATED
         assert data["s3_keys"] == []
         assert data["created_at"] is not None
         assert data["completed_at"] is None
@@ -737,7 +736,7 @@ class TestClusterScanList:
             scan_id="newer-scan",
             cluster_id="cluster-1",
             scanner_type="aws",
-            status=SCAN_STATUS_RUNNING,
+            status=SCAN_STATUS_PROCESSING,
             s3_keys=[],
             created_at=datetime(2026, 3, 10, 10, 0, 0),
             completed_at=None,
@@ -748,7 +747,7 @@ class TestClusterScanList:
             scan_id="other-scan",
             cluster_id="cluster-2",
             scanner_type="image",
-            status=SCAN_STATUS_QUEUED,
+            status=SCAN_STATUS_CREATED,
             s3_keys=[],
             created_at=datetime(2026, 3, 11, 10, 0, 0),
             completed_at=None,
@@ -780,7 +779,7 @@ class TestClusterScanList:
 
 
 class TestClaimPendingScan:
-    def test_claims_one_queued_scan(self, client):
+    def test_claims_one_created_scan(self, client):
         scan_id = _start(client).json()["scan_id"]
         resp = client.get(
             "/api/v1/scans/pending",
@@ -793,7 +792,7 @@ class TestClaimPendingScan:
         assert resp.status_code == 200
         data = resp.json()
         assert data["scan_id"] == scan_id
-        assert data["status"] == "running"
+        assert data["status"] == "processing"
         assert data["claimed_by"] == "worker-1"
         assert data["claimed_at"] is not None
         assert data["started_at"] is not None
@@ -813,7 +812,7 @@ class TestClaimPendingScan:
         no_more_target = _claim(client, scanner_type="k8s", claimed_by="worker-2")
         assert no_more_target.status_code == 204
 
-    def test_returns_204_when_no_queued(self, client):
+    def test_returns_204_when_no_created(self, client):
         resp = client.get(
             "/api/v1/scans/pending",
             params={
@@ -853,8 +852,8 @@ class TestClaimPendingScan:
         assert claimed_record.claimed_by == "worker-b"
         assert claimed_record.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         assert claimed_record.scanner_type == "k8s"
-        assert claimed_record.status_before == SCAN_STATUS_QUEUED
-        assert claimed_record.status_after == SCAN_STATUS_RUNNING
+        assert claimed_record.status_before == SCAN_STATUS_CREATED
+        assert claimed_record.status_after == SCAN_STATUS_PROCESSING
         assert claimed_record.scan_id == claimed.json()["scan_id"]
 
 
@@ -872,8 +871,8 @@ def test_openapi_scan_flow_documents_producer_worker_model(client):
     assert "스캔을 직접 실행하지 않으며" in start_op["description"]
     assert "대시보드 또는 스케줄러가 `/start`를 호출" in start_op["description"]
 
-    assert pending_op["summary"] == "워커용 queued 작업 클레임"
+    assert pending_op["summary"] == "워커용 created 작업 클레임"
     assert "워커 클레임 API" in pending_op["description"]
     assert "`/start`가 생성한 작업만" in pending_op["description"]
-    assert "실제로 실행할 queued 작업" in pending_op["description"]
+    assert "실제로 실행할 created 작업" in pending_op["description"]
     assert "작업 생성" in scans_tag["description"]

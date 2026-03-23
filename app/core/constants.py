@@ -46,10 +46,6 @@ SCAN_STATUS_COMPLETED: str = "completed"
 SCAN_STATUS_FAILED: str = "failed"
 SCAN_STATUS_PENDING: str = "pending"
 
-# Backward-compatible aliases used by existing application flow code.
-SCAN_STATUS_QUEUED: str = SCAN_STATUS_CREATED
-SCAN_STATUS_RUNNING: str = SCAN_STATUS_PROCESSING
-
 VALID_SCAN_STATUSES: frozenset[str] = frozenset({
     SCAN_STATUS_CREATED,
     SCAN_STATUS_UPLOADING,

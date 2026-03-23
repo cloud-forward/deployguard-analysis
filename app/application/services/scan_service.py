@@ -9,6 +9,7 @@ from datetime import timedelta
 from uuid import UUID
 from fastapi import HTTPException
 from app.models.schemas import ScannerType, RequestSource
+from app.domain.repositories.cluster_repository import ClusterRepository
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
@@ -21,6 +22,7 @@ from app.models.schemas import (
     ScanSummaryItemResponse,
     ScanCompleteResponse,
     ScanDetailResponse,
+    ScanStartItemResponse,
     ScanStartResponse,
     ScanStatusResponse,
     UploadUrlResponse,
@@ -72,65 +74,94 @@ def _get_record_s3_keys(record) -> list[str]:
 
 
 class ScanService:
-    def __init__(self, scan_repository, s3_service, analysis_service=None):
+    def __init__(self, scan_repository, s3_service, analysis_service=None, cluster_repository: ClusterRepository | None = None):
         self._repo = scan_repository
         self._s3 = s3_service
         self._analysis = analysis_service
+        self._clusters = cluster_repository
 
     async def start_scan(
         self,
         cluster_id: UUID,
-        scanner_type: ScannerType,
         request_source: RequestSource,
         request_id: str | None = None,
         endpoint_path: str | None = None,
     ) -> ScanStartResponse:
         cluster_id_str = str(cluster_id)
-        scanner_type_str = scanner_type.value if isinstance(scanner_type, ScannerType) else str(scanner_type)
+        cluster = await self._get_cluster(cluster_id_str)
+        scanner_types = self._scanner_types_for_cluster_type(cluster.cluster_type)
         requested_at = datetime.utcnow()
-        active = await self._repo.find_active_scan(cluster_id_str, scanner_type_str)
-        if active is not None:
-            error = HTTPException(
-                status_code=409,
-                detail="A scan for this cluster and scanner type is already running",
-            )
-            logger.warning(
-                "scan.start.rejected_active_scan",
-                extra=_context(
-                    request_id=request_id,
-                    cluster_id=cluster_id_str,
-                    scanner_type=scanner_type_str,
-                    request_source=request_source,
-                    endpoint_path=endpoint_path,
-                    error_type=_error_type(error),
-                ),
-            )
-            raise HTTPException(
-                status_code=409,
-                detail="A scan for this cluster and scanner type is already running",
-            )
+        for scanner_type_str in scanner_types:
+            active = await self._repo.find_active_scan(cluster_id_str, scanner_type_str)
+            if active is not None:
+                error = HTTPException(
+                    status_code=409,
+                    detail=f"A scan for this cluster and scanner type is already running: {scanner_type_str}",
+                )
+                logger.warning(
+                    "scan.start.rejected_active_scan",
+                    extra=_context(
+                        request_id=request_id,
+                        cluster_id=cluster_id_str,
+                        scanner_type=scanner_type_str,
+                        request_source=request_source,
+                        endpoint_path=endpoint_path,
+                        error_type=_error_type(error),
+                    ),
+                )
+                raise error
+
         timestamp = requested_at.strftime("%Y%m%dT%H%M%S")
-        scan_id = f"{timestamp}-{scanner_type_str}"
-        await self._repo.create(
-            scan_id=scan_id,
-            cluster_id=cluster_id_str,
-            scanner_type=scanner_type_str,
-            status=SCAN_STATUS_CREATED,
-            request_source=request_source,
-            requested_at=requested_at,
-        )
-        logger.info(
-            "scan.start.record_created",
-            extra=_context(
-                request_id=request_id,
+        created_scans: list[ScanStartItemResponse] = []
+        for scanner_type_str in scanner_types:
+            scan_id = f"{timestamp}-{scanner_type_str}"
+            await self._repo.create(
                 scan_id=scan_id,
                 cluster_id=cluster_id_str,
                 scanner_type=scanner_type_str,
+                status=SCAN_STATUS_CREATED,
                 request_source=request_source,
-                status_after=SCAN_STATUS_CREATED,
-            ),
+                requested_at=requested_at,
+            )
+            logger.info(
+                "scan.start.record_created",
+                extra=_context(
+                    request_id=request_id,
+                    scan_id=scan_id,
+                    cluster_id=cluster_id_str,
+                    scanner_type=scanner_type_str,
+                    request_source=request_source,
+                    status_after=SCAN_STATUS_CREATED,
+                ),
+            )
+            created_scans.append(
+                ScanStartItemResponse(
+                    scan_id=scan_id,
+                    scanner_type=scanner_type_str,
+                    status=SCAN_STATUS_CREATED,
+                )
+            )
+        return ScanStartResponse(
+            cluster_id=cluster_id_str,
+            status=SCAN_STATUS_CREATED,
+            scans=created_scans,
         )
-        return ScanStartResponse(scan_id=scan_id, status=SCAN_STATUS_CREATED)
+
+    async def _get_cluster(self, cluster_id: str):
+        if self._clusters is None:
+            raise RuntimeError("Cluster repository is not configured for scan creation")
+        cluster = await self._clusters.get_by_id(cluster_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
+        return cluster
+
+    @staticmethod
+    def _scanner_types_for_cluster_type(cluster_type: str) -> list[str]:
+        if cluster_type in ("eks", "self-managed"):
+            return ["k8s", "image"]
+        if cluster_type == "aws":
+            return ["aws"]
+        raise HTTPException(status_code=400, detail=f"Unsupported cluster_type for scan start: {cluster_type}")
 
     async def get_upload_url(
         self,
@@ -288,8 +319,6 @@ class ScanService:
                 status_after=SCAN_STATUS_COMPLETED,
             ),
         )
-        if self._analysis is not None:
-            await self._analysis.maybe_trigger_analysis(record.cluster_id, request_id=request_id)
         return ScanCompleteResponse(scan_id=scan_id, status=SCAN_STATUS_COMPLETED)
 
     async def get_scan_status(self, scan_id: str) -> ScanStatusResponse:

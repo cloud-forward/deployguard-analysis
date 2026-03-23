@@ -48,6 +48,8 @@ class PathFinder:
 
         for entry in ordered_entry_points:
             for jewel in ordered_crown_jewels:
+                if entry == jewel:
+                    continue
                 iterator = self._shortest_paths_up_to_hops(
                     graph,
                     source=entry,
@@ -100,7 +102,7 @@ class PathFinder:
         """
         try:
             return nx.shortest_path(graph, source=source, target=target)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
+        except nx.NetworkXNoPath:
             return None
     
     def get_path_edges(
@@ -142,13 +144,16 @@ class PathFinder:
                 source=source,
                 target=target,
             )
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
+        except nx.NetworkXNoPath:
             return iter(())
 
         def _bounded() -> Iterator[List[str]]:
-            for path in iterator:
-                if self._path_hops(path) > max_path_length:
-                    break
-                yield path
+            try:
+                for path in iterator:
+                    if self._path_hops(path) > max_path_length:
+                        break
+                    yield path
+            except nx.NetworkXNoPath:
+                return
 
         return _bounded()

@@ -156,6 +156,8 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         for path in attack_paths:
             path_id = str(path["path_id"])
             node_ids = [str(node_id) for node_id in path.get("path", [])]
+            if not self._is_persistable_attack_path(node_ids):
+                continue
             edges = list(path.get("edges", []))
             persisted_path_row_id = self._attack_path_row_id(path_id)
 
@@ -629,6 +631,10 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         if "node_ids" in attack_path_columns:
             row["node_ids"] = json.dumps(node_ids)
         return row
+
+    @staticmethod
+    def _is_persistable_attack_path(node_ids: list[str]) -> bool:
+        return len(node_ids) > 1 and node_ids[0] != node_ids[-1]
 
     def _graph_edge_row(
         self,

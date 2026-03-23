@@ -47,6 +47,25 @@ def test_find_all_paths_returns_deterministic_shortest_first_paths_with_explicit
     ]
 
 
+def test_find_all_paths_skips_entry_and_crown_pairs_with_no_path():
+    graph = nx.DiGraph()
+    graph.add_nodes_from(["entry", "mid", "crown"])
+    graph.add_edge("entry", "mid")
+
+    finder = PathFinder()
+
+    assert finder.find_all_paths(graph, ["entry"], ["crown"]) == []
+
+
+def test_find_all_paths_skips_self_pairs():
+    graph = nx.DiGraph()
+    graph.add_node("s3:bucket")
+
+    finder = PathFinder()
+
+    assert finder.find_all_paths(graph, ["s3:bucket"], ["s3:bucket"]) == []
+
+
 def test_find_all_paths_respects_zero_top_k():
     graph = nx.DiGraph()
     graph.add_edge("entry", "target")

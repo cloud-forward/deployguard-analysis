@@ -102,12 +102,11 @@ async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_rep
     cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     scan_repo.get_by_scan_id.side_effect = [
         _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id=cluster_id),
-        _make_scan("aws-1", SCANNER_TYPE_AWS, cluster_id=cluster_id),
+        _make_scan("aws-1", SCANNER_TYPE_AWS, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901"),
         _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id=cluster_id),
     ]
 
     result = await service.create_analysis_job(
-        cluster_id=cluster_id,
         k8s_scan_id="k8s-1",
         aws_scan_id="aws-1",
         image_scan_id="img-1",
@@ -135,7 +134,6 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
     ]
 
     await service.create_analysis_job(
-        cluster_id=cluster_id,
         k8s_scan_id="k8s-1",
         image_scan_id="img-1",
     )
@@ -148,6 +146,44 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
         expected_scans=["k8s", "image"],
     )
     assert scan_repo.set_analysis_run_id.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_create_analysis_job_derives_representative_cluster_from_image_when_k8s_absent(service, jobs_repo, scan_repo):
+    image_cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("aws-1", SCANNER_TYPE_AWS, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901"),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id=image_cluster_id),
+    ]
+
+    await service.create_analysis_job(
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+    )
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id=image_cluster_id,
+        k8s_scan_id=None,
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        expected_scans=["aws", "image"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_analysis_job_derives_representative_cluster_from_aws_when_only_aws(service, jobs_repo, scan_repo):
+    aws_cluster_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+    scan_repo.get_by_scan_id.return_value = _make_scan("aws-1", SCANNER_TYPE_AWS, cluster_id=aws_cluster_id)
+
+    await service.create_analysis_job(aws_scan_id="aws-1")
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id=aws_cluster_id,
+        k8s_scan_id=None,
+        aws_scan_id="aws-1",
+        image_scan_id=None,
+        expected_scans=["aws"],
+    )
 
 
 @pytest.mark.asyncio
@@ -199,17 +235,64 @@ async def test_get_analysis_job_missing_raises_404(service, jobs_repo):
 
 
 @pytest.mark.asyncio
-async def test_rejects_non_completed_scans(service, jobs_repo, scan_repo):
-    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+async def test_execute_analysis_debug_uses_explicit_scan_ids_only(service, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "k8s-1",
+        SCANNER_TYPE_K8S,
+        cluster_id="cluster-from-scan",
+    )
+    service.execute_analysis = AsyncMock(return_value={"ok": True})
+
+    result = await service.execute_analysis_debug(k8s_scan_id="k8s-1")
+
+    service.execute_analysis.assert_awaited_once_with(
+        cluster_id="cluster-from-scan",
+        k8s_scan_id="k8s-1",
+        aws_scan_id=None,
+        image_scan_id=None,
+        require_cluster_match=False,
+    )
+    assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_debug_rejects_wrong_scanner_type(service, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan("aws-1", SCANNER_TYPE_AWS)
+
+    with pytest.raises(ValueError, match="expected k8s"):
+        await service.execute_analysis_debug(k8s_scan_id="aws-1")
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_debug_rejects_non_completed_scan(service, scan_repo):
     scan_repo.get_by_scan_id.return_value = _make_scan(
         "k8s-1",
         SCANNER_TYPE_K8S,
         status="processing",
-        cluster_id=cluster_id,
+    )
+
+    with pytest.raises(ValueError, match="is not completed"):
+        await service.execute_analysis_debug(k8s_scan_id="k8s-1")
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_debug_requires_at_least_one_scan_id(service):
+    with pytest.raises(HTTPException) as exc_info:
+        await service.execute_analysis_debug()
+
+    assert exc_info.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_rejects_non_completed_scans(service, jobs_repo, scan_repo):
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "k8s-1",
+        SCANNER_TYPE_K8S,
+        status="processing",
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.create_analysis_job(cluster_id=cluster_id, k8s_scan_id="k8s-1")
+        await service.create_analysis_job(k8s_scan_id="k8s-1")
 
     assert exc_info.value.status_code == 400
     jobs_repo.create_analysis_job.assert_not_awaited()
@@ -217,18 +300,54 @@ async def test_rejects_non_completed_scans(service, jobs_repo, scan_repo):
 
 @pytest.mark.asyncio
 async def test_rejects_mismatched_scanner_type(service, jobs_repo, scan_repo):
-    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     scan_repo.get_by_scan_id.return_value = _make_scan(
         "aws-1",
         SCANNER_TYPE_AWS,
-        cluster_id=cluster_id,
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.create_analysis_job(cluster_id=cluster_id, k8s_scan_id="aws-1")
+        await service.create_analysis_job(k8s_scan_id="aws-1")
 
     assert exc_info.value.status_code == 400
     jobs_repo.create_analysis_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejects_k8s_image_cluster_mismatch(service, jobs_repo, scan_repo):
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901"),
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.create_analysis_job(k8s_scan_id="k8s-1", image_scan_id="img-1")
+
+    assert exc_info.value.status_code == 400
+    assert "must belong to the same cluster" in exc_info.value.detail
+    jobs_repo.create_analysis_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allows_aws_scan_from_different_cluster_than_k8s_image(service, jobs_repo, scan_repo):
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+        _make_scan("aws-1", SCANNER_TYPE_AWS, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901"),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+    ]
+
+    await service.create_analysis_job(
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+    )
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        k8s_scan_id="k8s-1",
+        aws_scan_id="aws-1",
+        image_scan_id="img-1",
+        expected_scans=["k8s", "aws", "image"],
+    )
 
 
 @pytest.mark.asyncio
@@ -471,3 +590,5 @@ def test_openapi_docs_distinguish_standard_and_debug_analysis_flows():
     assert "표준 프론트엔드/제품 흐름이 아닙니다" in execute_debug["description"]
     assert "선택된 scan_id와 실행 상태" in get_job["description"]
     assert "persisted analysis job 목록" in list_jobs["description"]
+    assert "cluster_id" not in openapi["components"]["schemas"]["AnalysisJobRequest"]["properties"]
+    assert "cluster_id" not in openapi["components"]["schemas"]["DebugAnalysisExecuteRequest"]["properties"]

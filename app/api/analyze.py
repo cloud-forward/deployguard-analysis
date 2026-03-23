@@ -7,6 +7,7 @@ from app.models.schemas import (
     AnalysisJobRequest,
     AnalysisJobResponse,
     ClusterAnalysisJobListResponse,
+    DebugAnalysisExecuteRequest,
 )
 from app.application.di import get_analysis_service
 from app.application.services.analysis_service import AnalysisService
@@ -38,7 +39,6 @@ async def create_analysis_job(
     service: AnalysisService = Depends(get_analysis_service),
 ):
     return await service.create_analysis_job(
-        cluster_id=str(request.cluster_id),
         k8s_scan_id=request.k8s_scan_id,
         aws_scan_id=request.aws_scan_id,
         image_scan_id=request.image_scan_id,
@@ -140,10 +140,7 @@ async def execute_analysis_job(
 표준 제품 흐름은 `POST /api/v1/analysis/jobs` 후 `POST /api/v1/analysis/jobs/{job_id}/execute`를 사용해야 합니다.""",
 )
 async def execute_analysis_endpoint(
-    cluster_id: str,
-    k8s_scan_id: str,
-    aws_scan_id: str,
-    image_scan_id: str,
+    request: DebugAnalysisExecuteRequest,
     service: AnalysisService = Depends(get_analysis_service),
 ):
     """
@@ -152,13 +149,14 @@ async def execute_analysis_endpoint(
     This endpoint bypasses the job queue and executes analysis immediately.
     """
     try:
-        result = await service.execute_analysis(
-            cluster_id=cluster_id,
-            k8s_scan_id=k8s_scan_id,
-            aws_scan_id=aws_scan_id,
-            image_scan_id=image_scan_id,
+        result = await service.execute_analysis_debug(
+            k8s_scan_id=request.k8s_scan_id,
+            aws_scan_id=request.aws_scan_id,
+            image_scan_id=request.image_scan_id,
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,

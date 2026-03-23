@@ -83,42 +83,18 @@ class AnalysisService:
 
     async def create_analysis_job(
         self,
-        cluster_id: str,
         k8s_scan_id: str | None = None,
         aws_scan_id: str | None = None,
         image_scan_id: str | None = None,
     ) -> AnalysisJobResponse:
-        selected_scans = [
-            (SCANNER_TYPE_K8S, "k8s_scan_id", k8s_scan_id),
-            (SCANNER_TYPE_AWS, "aws_scan_id", aws_scan_id),
-            (SCANNER_TYPE_IMAGE, "image_scan_id", image_scan_id),
-        ]
-        provided = [(scanner_type, field_name, scan_id) for scanner_type, field_name, scan_id in selected_scans if scan_id]
-        if not provided:
-            raise HTTPException(status_code=422, detail="At least one scan ID must be provided")
-
-        for scanner_type, field_name, scan_id in provided:
-            record = await self._scans.get_by_scan_id(scan_id)
-            if record is None:
-                raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
-            if str(record.cluster_id) != str(cluster_id):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Scan {scan_id} does not belong to cluster {cluster_id}",
-                )
-            if record.scanner_type != scanner_type:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Scan {scan_id} has scanner_type={record.scanner_type}, expected {scanner_type} for {field_name}",
-                )
-            if record.status != "completed":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Scan {scan_id} is not completed",
-                )
-
-        expected_scans = [scanner_type for scanner_type, _, _ in provided]
-        normalized_cluster_id = str(UUID(str(cluster_id)))
+        resolved = await self._resolve_analysis_job_inputs(
+            k8s_scan_id=k8s_scan_id,
+            aws_scan_id=aws_scan_id,
+            image_scan_id=image_scan_id,
+        )
+        normalized_cluster_id = str(UUID(resolved["cluster_id"]))
+        expected_scans = resolved["expected_scans"]
+        selected_scan_ids = resolved["selected_scan_ids"]
         job_id = await self._jobs.create_analysis_job(
             cluster_id=normalized_cluster_id,
             k8s_scan_id=k8s_scan_id,
@@ -126,7 +102,7 @@ class AnalysisService:
             image_scan_id=image_scan_id,
             expected_scans=expected_scans,
         )
-        for _, _, scan_id in provided:
+        for scan_id in selected_scan_ids:
             await self._scans.set_analysis_run_id(scan_id, job_id)
 
         return AnalysisJobResponse(
@@ -170,6 +146,28 @@ class AnalysisService:
         await self._jobs.mark_completed(job.id, result.get("stats", {}))
         return result
 
+    async def execute_analysis_debug(
+        self,
+        k8s_scan_id: str | None = None,
+        aws_scan_id: str | None = None,
+        image_scan_id: str | None = None,
+    ) -> Dict[str, Any]:
+        if not any((k8s_scan_id, aws_scan_id, image_scan_id)):
+            raise HTTPException(status_code=422, detail="At least one scan ID must be provided")
+
+        resolved_cluster_id = await self._resolve_cluster_id_for_debug(
+            k8s_scan_id=k8s_scan_id,
+            aws_scan_id=aws_scan_id,
+            image_scan_id=image_scan_id,
+        )
+        return await self.execute_analysis(
+            cluster_id=resolved_cluster_id,
+            k8s_scan_id=k8s_scan_id,
+            aws_scan_id=aws_scan_id,
+            image_scan_id=image_scan_id,
+            require_cluster_match=False,
+        )
+
     async def execute_analysis(
         self,
         cluster_id: str,
@@ -177,6 +175,7 @@ class AnalysisService:
         aws_scan_id: str | None,
         image_scan_id: str | None,
         analysis_job_id: str | None = None,
+        require_cluster_match: bool = True,
     ) -> Dict[str, Any]:
         """
         Execute full attack path analysis.
@@ -203,17 +202,17 @@ class AnalysisService:
 
             await self._update_step(analysis_job_id, "fact_extraction")
             k8s_scan = (
-                await self._load_scan_data(cluster_id, k8s_scan_id, SCANNER_TYPE_K8S)
+                await self._load_scan_data(cluster_id, k8s_scan_id, SCANNER_TYPE_K8S, require_cluster_match=require_cluster_match)
                 if k8s_scan_id else
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_K8S, "scan_id": None}
             )
             aws_scan = (
-                await self._load_scan_data(cluster_id, aws_scan_id, SCANNER_TYPE_AWS)
+                await self._load_scan_data(cluster_id, aws_scan_id, SCANNER_TYPE_AWS, require_cluster_match=require_cluster_match)
                 if aws_scan_id else
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_AWS, "scan_id": None}
             )
             image_scan = (
-                await self._load_scan_data(cluster_id, image_scan_id, SCANNER_TYPE_IMAGE)
+                await self._load_scan_data(cluster_id, image_scan_id, SCANNER_TYPE_IMAGE, require_cluster_match=require_cluster_match)
                 if image_scan_id else
                 {"cluster_id": cluster_id, "scanner_type": SCANNER_TYPE_IMAGE, "scan_id": None}
             )
@@ -541,7 +540,11 @@ class AnalysisService:
         )
 
     async def _load_scan_data(
-        self, cluster_id: str, scan_id: str, scanner_type: str
+        self,
+        cluster_id: str,
+        scan_id: str,
+        scanner_type: str,
+        require_cluster_match: bool = True,
     ) -> Dict[str, Any]:
         """Load explicit scan raw JSON from S3 using the selected scan record."""
         if self._s3 is None:
@@ -550,7 +553,7 @@ class AnalysisService:
         record = await self._scans.get_by_scan_id(scan_id)
         if record is None:
             raise ValueError(f"Scan record not found: {scan_id}")
-        if str(record.cluster_id) != str(cluster_id):
+        if require_cluster_match and str(record.cluster_id) != str(cluster_id):
             raise ValueError(f"Scan {scan_id} does not belong to cluster {cluster_id}")
         if record.scanner_type != scanner_type:
             raise ValueError(
@@ -572,6 +575,93 @@ class AnalysisService:
         payload.setdefault("cluster_id", str(cluster_id))
         payload.setdefault("scanner_type", scanner_type)
         return payload
+
+    async def _resolve_cluster_id_for_debug(
+        self,
+        *,
+        k8s_scan_id: str | None,
+        aws_scan_id: str | None,
+        image_scan_id: str | None,
+    ) -> str:
+        selected_scans = [
+            (SCANNER_TYPE_K8S, k8s_scan_id),
+            (SCANNER_TYPE_AWS, aws_scan_id),
+            (SCANNER_TYPE_IMAGE, image_scan_id),
+        ]
+        for scanner_type, scan_id in selected_scans:
+            if not scan_id:
+                continue
+            record = await self._scans.get_by_scan_id(scan_id)
+            if record is None:
+                raise ValueError(f"Scan record not found: {scan_id}")
+            if record.scanner_type != scanner_type:
+                raise ValueError(
+                    f"Scan {scan_id} has scanner_type={record.scanner_type}, expected {scanner_type}"
+                )
+            if record.status != "completed":
+                raise ValueError(f"Scan {scan_id} is not completed")
+            return str(record.cluster_id)
+        raise ValueError("At least one scan ID is required for analysis execution")
+
+    async def _resolve_analysis_job_inputs(
+        self,
+        *,
+        k8s_scan_id: str | None,
+        aws_scan_id: str | None,
+        image_scan_id: str | None,
+    ) -> Dict[str, Any]:
+        selected_scans = [
+            (SCANNER_TYPE_K8S, "k8s_scan_id", k8s_scan_id),
+            (SCANNER_TYPE_AWS, "aws_scan_id", aws_scan_id),
+            (SCANNER_TYPE_IMAGE, "image_scan_id", image_scan_id),
+        ]
+        provided = [(scanner_type, field_name, scan_id) for scanner_type, field_name, scan_id in selected_scans if scan_id]
+        if not provided:
+            raise HTTPException(status_code=422, detail="At least one scan ID must be provided")
+
+        records_by_field: dict[str, Any] = {}
+        expected_scans: list[str] = []
+        for scanner_type, field_name, scan_id in provided:
+            record = await self._scans.get_by_scan_id(scan_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
+            if record.scanner_type != scanner_type:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Scan {scan_id} has scanner_type={record.scanner_type}, expected {scanner_type} for {field_name}",
+                )
+            if record.status != "completed":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Scan {scan_id} is not completed",
+                )
+            records_by_field[field_name] = record
+            expected_scans.append(scanner_type)
+
+        k8s_record = records_by_field.get("k8s_scan_id")
+        image_record = records_by_field.get("image_scan_id")
+        if k8s_record is not None and image_record is not None and str(k8s_record.cluster_id) != str(image_record.cluster_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "k8s_scan_id and image_scan_id must belong to the same cluster: "
+                    f"{k8s_scan_id}={k8s_record.cluster_id}, {image_scan_id}={image_record.cluster_id}"
+                ),
+            )
+
+        representative_cluster_id = None
+        if k8s_record is not None:
+            representative_cluster_id = str(k8s_record.cluster_id)
+        elif image_record is not None:
+            representative_cluster_id = str(image_record.cluster_id)
+        else:
+            representative_cluster_id = str(records_by_field["aws_scan_id"].cluster_id)
+
+        return {
+            "cluster_id": representative_cluster_id,
+            "expected_scans": expected_scans,
+            "selected_scan_ids": [scan_id for _, _, scan_id in provided],
+        }
 
     @staticmethod
     def _select_scan_payload_key(s3_keys: list[str]) -> str:

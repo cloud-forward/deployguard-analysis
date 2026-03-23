@@ -24,14 +24,12 @@ RequestSource = Literal["manual", "scheduled"]
 
 
 class AnalysisJobRequest(BaseModel):
-    cluster_id: UUID = Field(..., description="분석 대상 클러스터 UUID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     k8s_scan_id: str | None = Field(None, description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
     aws_scan_id: str | None = Field(None, description="AWS 스캔 세션 ID", example="20260309T113020-aws")
     image_scan_id: str | None = Field(None, description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
-            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "k8s_scan_id": "20260309T113020-k8s",
             "aws_scan_id": "20260309T113020-aws",
             "image_scan_id": "20260309T113020-image",
@@ -40,6 +38,25 @@ class AnalysisJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_at_least_one_scan(self) -> "AnalysisJobRequest":
+        if not any((self.k8s_scan_id, self.aws_scan_id, self.image_scan_id)):
+            raise ValueError("At least one scan ID must be provided")
+        return self
+
+
+class DebugAnalysisExecuteRequest(BaseModel):
+    k8s_scan_id: str | None = Field(None, description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
+    aws_scan_id: str | None = Field(None, description="AWS 스캔 세션 ID", example="20260309T113020-aws")
+    image_scan_id: str | None = Field(None, description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "k8s_scan_id": "20260309T113020-k8s",
+            "image_scan_id": "20260309T113020-image",
+        }
+    ]})
+
+    @model_validator(mode="after")
+    def validate_at_least_one_scan(self) -> "DebugAnalysisExecuteRequest":
         if not any((self.k8s_scan_id, self.aws_scan_id, self.image_scan_id)):
             raise ValueError("At least one scan ID must be provided")
         return self

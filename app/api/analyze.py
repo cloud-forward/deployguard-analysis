@@ -15,7 +15,6 @@ from app.application.services.analysis_service import AnalysisService
 router = APIRouter()
 
 
-# 기존 엔드포인트 (Job Queue 방식)
 @router.post(
     "/analysis/jobs",
     response_model=AnalysisJobResponse,

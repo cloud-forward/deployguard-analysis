@@ -8,6 +8,7 @@ from datetime import datetime, UTC
 from app.application.services.analysis_service import AnalysisService
 from app.core.constants import SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE, SCANNER_TYPE_K8S
 from app.main import app
+from src.facts.canonical_fact import Fact
 from src.graph.builders.aws_graph_builder import GraphEdge as AWSGraphEdge
 from src.graph.builders.aws_graph_builder import GraphNode as AWSGraphNode
 from src.graph.builders.aws_scanner_types import IAMRoleScan
@@ -70,7 +71,11 @@ def jobs_repo():
     repo = AsyncMock()
     repo.create_analysis_job = AsyncMock(return_value="job-123")
     repo.get_analysis_job = AsyncMock()
+    repo.rollback = AsyncMock()
     repo.persist_attack_paths = AsyncMock(return_value="11111111-1111-1111-1111-111111111111")
+    repo.persist_facts = AsyncMock()
+    repo.persist_graph = AsyncMock()
+    repo.finalize_graph_snapshot = AsyncMock()
     repo.persist_remediation_recommendations = AsyncMock()
     return repo
 
@@ -96,6 +101,7 @@ def service(jobs_repo, scan_repo, s3_service):
 
 def test_analysis_service_uses_direct_fact_extractors_instead_of_orchestrator(service):
     assert hasattr(service, "_k8s_extractor")
+    assert hasattr(service, "_aws_extractor")
     assert hasattr(service, "_lateral_extractor")
     assert not hasattr(service, "_fact_orchestrator")
 
@@ -413,8 +419,67 @@ async def test_execute_analysis_job_marks_failed_on_execution_error(service, job
         await service.execute_analysis_job("job-123")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
+    jobs_repo.rollback.assert_awaited_once_with()
     jobs_repo.mark_failed.assert_awaited_once_with("job-123", "raw load failed")
     jobs_repo.mark_completed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_job_uses_snapshotted_scalars_after_repo_state_changes(service, jobs_repo):
+    class ExpiringJob:
+        def __init__(self) -> None:
+            self._expired = False
+
+        @property
+        def id(self):
+            if self._expired:
+                raise RuntimeError("expired job.id access")
+            return "job-123"
+
+        @property
+        def cluster_id(self):
+            if self._expired:
+                raise RuntimeError("expired job.cluster_id access")
+            return "cluster-1"
+
+        @property
+        def k8s_scan_id(self):
+            if self._expired:
+                raise RuntimeError("expired job.k8s_scan_id access")
+            return "k8s-explicit"
+
+        @property
+        def aws_scan_id(self):
+            if self._expired:
+                raise RuntimeError("expired job.aws_scan_id access")
+            return "aws-explicit"
+
+        @property
+        def image_scan_id(self):
+            if self._expired:
+                raise RuntimeError("expired job.image_scan_id access")
+            return "img-explicit"
+
+    job = ExpiringJob()
+    jobs_repo.get_analysis_job.return_value = job
+
+    async def expire_after_mark_running(*args, **kwargs):
+        job._expired = True
+
+    jobs_repo.mark_running.side_effect = expire_after_mark_running
+    service.execute_analysis = AsyncMock(return_value={"stats": {"graph": {"nodes": 1}}})
+
+    result = await service.execute_analysis_job("job-123")
+
+    service.execute_analysis.assert_awaited_once_with(
+        cluster_id="cluster-1",
+        k8s_scan_id="k8s-explicit",
+        aws_scan_id="aws-explicit",
+        image_scan_id="img-explicit",
+        analysis_job_id="job-123",
+    )
+    jobs_repo.mark_completed.assert_awaited_once_with("job-123", {"graph": {"nodes": 1}})
+    assert result == {"stats": {"graph": {"nodes": 1}}}
 
 
 @pytest.mark.asyncio
@@ -603,9 +668,28 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
     graph.add_node("iam:123456789012:AppRole", id="iam:123456789012:AppRole", type="iam_role", is_entry_point=False, is_crown_jewel=True, base_risk=0.9, metadata={})
     graph.add_edge("pod:prod:api", "iam:123456789012:AppRole", type="service_account_assumes_iam_role", metadata={})
 
+    k8s_fact = Fact(
+            fact_type="pod_uses_service_account",
+            subject_id="pod:prod:api",
+            subject_type="pod",
+            object_id="sa:prod:api",
+            object_type="service_account",
+        )
+    setattr(k8s_fact, "_persisted_scan_id", "k8s-1")
+    aws_fact = Fact(
+            fact_type="service_account_assumes_iam_role",
+            subject_id="sa:prod:api",
+            subject_type="service_account",
+            object_id="iam:123456789012:AppRole",
+            object_type="iam_role",
+        )
+    setattr(aws_fact, "_persisted_scan_id", "aws-1")
+
     service._build_k8s_result = MagicMock(return_value=k8s_result)
+    service._extract_k8s_facts = MagicMock(return_value=[k8s_fact])
     service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
     service._bridge_builder.build = MagicMock(return_value=bridge_result)
+    service._extract_aws_facts = MagicMock(return_value=[aws_fact])
     service._build_aws_result = MagicMock(return_value=aws_result)
     service._unified_graph_builder.build = MagicMock(return_value=unified_result)
     service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
@@ -637,6 +721,18 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
             "edges": [{"source": "pod:prod:api", "target": "iam:123456789012:AppRole", "type": "service_account_assumes_iam_role"}],
         }],
     )
+    jobs_repo.persist_facts.assert_awaited_once()
+    assert jobs_repo.persist_facts.await_args.kwargs["cluster_id"] == "cluster-1"
+    assert jobs_repo.persist_facts.await_args.kwargs["graph_id"] == "11111111-1111-1111-1111-111111111111"
+    persisted_facts = jobs_repo.persist_facts.await_args.kwargs["facts"]
+    assert len(persisted_facts) == result["stats"]["facts"]["total"]
+    assert [fact.fact_type for fact in persisted_facts] == [
+        "pod_uses_service_account",
+        "service_account_assumes_iam_role",
+    ]
+    facts_by_type = {fact.fact_type: getattr(fact, "_persisted_scan_id", None) for fact in persisted_facts}
+    assert facts_by_type["pod_uses_service_account"] == "k8s-1"
+    assert facts_by_type["service_account_assumes_iam_role"] == "aws-1"
     jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
         cluster_id="cluster-1",
         graph_id="11111111-1111-1111-1111-111111111111",
@@ -644,6 +740,16 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         remediation_optimization={"summary": {"selected_count": 1}, "recommendations": []},
+    )
+    jobs_repo.persist_graph.assert_awaited_once()
+    assert jobs_repo.persist_graph.await_args.kwargs["graph_id"] == "11111111-1111-1111-1111-111111111111"
+    assert jobs_repo.persist_graph.await_args.kwargs["graph"] is graph
+    jobs_repo.finalize_graph_snapshot.assert_awaited_once_with(
+        graph_id="11111111-1111-1111-1111-111111111111",
+        node_count=2,
+        edge_count=1,
+        entry_point_count=1,
+        crown_jewel_count=1,
     )
     assert result["stats"]["graph"]["nodes"] == 2
     assert result["stats"]["paths"]["total"] == 1

@@ -24,19 +24,42 @@ RequestSource = Literal["manual", "scheduled"]
 
 
 class AnalysisJobRequest(BaseModel):
-    cluster_id: UUID = Field(..., description="분석 대상 클러스터 UUID", example="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-    k8s_scan_id: str = Field(..., description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
-    aws_scan_id: str = Field(..., description="AWS 스캔 세션 ID", example="20260309T113020-aws")
-    image_scan_id: str = Field(..., description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
+    k8s_scan_id: str | None = Field(None, description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
+    aws_scan_id: str | None = Field(None, description="AWS 스캔 세션 ID", example="20260309T113020-aws")
+    image_scan_id: str | None = Field(None, description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
-            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "k8s_scan_id": "20260309T113020-k8s",
             "aws_scan_id": "20260309T113020-aws",
             "image_scan_id": "20260309T113020-image",
         }
     ]})
+
+    @model_validator(mode="after")
+    def validate_at_least_one_scan(self) -> "AnalysisJobRequest":
+        if not any((self.k8s_scan_id, self.aws_scan_id, self.image_scan_id)):
+            raise ValueError("At least one scan ID must be provided")
+        return self
+
+
+class DebugAnalysisExecuteRequest(BaseModel):
+    k8s_scan_id: str | None = Field(None, description="Kubernetes 스캔 세션 ID", example="20260309T113020-k8s")
+    aws_scan_id: str | None = Field(None, description="AWS 스캔 세션 ID", example="20260309T113020-aws")
+    image_scan_id: str | None = Field(None, description="컨테이너 이미지 스캔 세션 ID", example="20260309T113020-image")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "k8s_scan_id": "20260309T113020-k8s",
+            "image_scan_id": "20260309T113020-image",
+        }
+    ]})
+
+    @model_validator(mode="after")
+    def validate_at_least_one_scan(self) -> "DebugAnalysisExecuteRequest":
+        if not any((self.k8s_scan_id, self.aws_scan_id, self.image_scan_id)):
+            raise ValueError("At least one scan ID must be provided")
+        return self
 
 
 class AnalysisJobResponse(BaseModel):
@@ -46,6 +69,87 @@ class AnalysisJobResponse(BaseModel):
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"job_id": "job-20260313-001", "status": "accepted", "message": "분석 작업이 시작되었습니다"}
+    ]})
+
+
+class AnalysisJobSummaryResponse(BaseModel):
+    job_id: str
+    status: str
+    current_step: str | None = None
+    k8s_scan_id: str | None = None
+    aws_scan_id: str | None = None
+    image_scan_id: str | None = None
+    expected_scans: list[str] = Field(default_factory=list)
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    graph_id: str | None = None
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "job_id": "job-20260313-001",
+            "status": "running",
+            "current_step": "graph_building",
+            "k8s_scan_id": "20260309T113020-k8s",
+            "aws_scan_id": None,
+            "image_scan_id": "20260309T113020-image",
+            "expected_scans": ["k8s", "image"],
+            "error_message": None,
+            "created_at": "2024-01-15T10:00:00Z",
+            "started_at": "2024-01-15T10:00:05Z",
+            "completed_at": None,
+            "graph_id": None,
+        }
+    ]})
+
+
+class AnalysisJobDetailResponse(AnalysisJobSummaryResponse):
+    cluster_id: str
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "job_id": "job-20260313-001",
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "status": "completed",
+            "current_step": None,
+            "k8s_scan_id": "20260309T113020-k8s",
+            "aws_scan_id": "20260309T113020-aws",
+            "image_scan_id": "20260309T113020-image",
+            "expected_scans": ["k8s", "aws", "image"],
+            "error_message": None,
+            "created_at": "2024-01-15T10:00:00Z",
+            "started_at": "2024-01-15T10:00:05Z",
+            "completed_at": "2024-01-15T10:00:45Z",
+            "graph_id": "graph-20260313-001",
+        }
+    ]})
+
+
+class ClusterAnalysisJobListResponse(BaseModel):
+    items: list[AnalysisJobSummaryResponse] = Field(default_factory=list)
+    total: int
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "items": [
+                {
+                    "job_id": "job-20260313-001",
+                    "status": "pending",
+                    "current_step": None,
+                    "k8s_scan_id": "20260309T113020-k8s",
+                    "aws_scan_id": None,
+                    "image_scan_id": "20260309T113020-image",
+                    "expected_scans": ["k8s", "image"],
+                    "error_message": None,
+                    "created_at": "2024-01-15T10:00:00Z",
+                    "started_at": None,
+                    "completed_at": None,
+                    "graph_id": None,
+                }
+            ],
+            "total": 1,
+        }
     ]})
 
 
@@ -61,24 +165,18 @@ class HealthResponse(BaseModel):
 class ScanStartRequest(BaseModel):
     cluster_id: UUID = Field(
         ...,
-        description="UUID of the Kubernetes cluster registered in DeployGuard",
+        description="UUID of the cluster registered in DeployGuard",
         example="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    )
-    scanner_type: ScannerType = Field(
-        ...,
-        description="Type of scanner to run. One of: k8s, aws, image",
-        example="k8s",
     )
     request_source: RequestSource = Field(
         default="manual",
-        description="Source of the scan request",
+        description="Source of the cluster-level scan request",
         example="manual",
     )
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
             "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-            "scanner_type": "k8s",
             "request_source": "manual",
         }
     ]})
@@ -104,16 +202,16 @@ class ScanCompleteRequest(BaseModel):
         ...,
         description="업로드된 S3 키 목록",
         example=[
-            "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
-            "scans/prod-cluster-01/20260309T113020-aws/aws/scan.json",
+            "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json",
+            "scans/prod-cluster-01/20260309T113020-aws/aws/aws-snapshot.json",
         ],
     )
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
             "files": [
-                "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
-                "scans/prod-cluster-01/20260309T113020-aws/aws/scan.json",
+                "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json",
+                "scans/prod-cluster-01/20260309T113020-aws/aws/aws-snapshot.json",
             ]
         }
     ]})
@@ -127,12 +225,30 @@ class ScanCompleteRequest(BaseModel):
 
 
 
-class ScanStartResponse(BaseModel):
+class ScanStartItemResponse(BaseModel):
     scan_id: str = Field(..., description="생성된 스캔 세션 ID", example="20260309T113020-k8s")
+    scanner_type: str = Field(..., description="생성된 스캐너 유형", example="k8s")
     status: str = Field(default=SCAN_STATUS_CREATED, description="스캔 세션 상태")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
-        {"scan_id": "20260309T113020-k8s", "status": "created"}
+        {"scan_id": "20260309T113020-k8s", "scanner_type": "k8s", "status": "created"}
+    ]})
+
+
+class ScanStartResponse(BaseModel):
+    cluster_id: str = Field(..., description="스캔 작업이 생성된 클러스터 ID")
+    status: str = Field(default=SCAN_STATUS_CREATED, description="스캔 생성 요청 처리 상태")
+    scans: list[ScanStartItemResponse] = Field(default_factory=list, description="생성된 pending scan_records 목록")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "status": "created",
+            "scans": [
+                {"scan_id": "20260309T113020-k8s", "scanner_type": "k8s", "status": "created"},
+                {"scan_id": "20260309T113020-image", "scanner_type": "image", "status": "created"},
+            ],
+        }
     ]})
 
 
@@ -141,14 +257,14 @@ class UploadUrlResponse(BaseModel):
     s3_key: str = Field(
         ...,
         description="파일의 S3 오브젝트 키",
-        example="scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
+        example="scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json",
     )
     expires_in: int = Field(default=600, description="URL 만료 시간(초)")
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
-            "upload_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
-            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
+            "upload_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json",
             "expires_in": 600,
         }
     ]})
@@ -181,7 +297,7 @@ class ScanStatusResponse(BaseModel):
             "created_at": "2024-01-15T10:00:00Z",
             "completed_at": None,
             "files": [
-                "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json"
+                "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json"
             ],
         }
     ]})
@@ -205,7 +321,7 @@ class ScanDetailResponse(BaseModel):
             "created_at": "2024-01-15T10:00:00Z",
             "completed_at": "2024-01-15T10:30:00Z",
             "s3_keys": [
-                "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json"
+                "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json"
             ],
         }
     ]})
@@ -220,8 +336,8 @@ class RawScanResultUrlResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
             "scan_id": "20260309T113020-k8s",
-            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json",
-            "download_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/scan.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+            "s3_key": "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json",
+            "download_url": "https://dg-raw-scans.s3.ap-northeast-2.amazonaws.com/scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
             "expires_in": 600,
         }
     ]})

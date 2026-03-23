@@ -58,3 +58,7 @@ class ScanRepository(Protocol):
     ) -> object | None:
         """Atomically claim one created scan for a worker. Returns claimed ScanRecord or None."""
         ...
+
+    async def set_analysis_run_id(self, scan_id: str, analysis_run_id: str) -> object:
+        """Attach an analysis run id to a scan record. Returns updated ScanRecord."""
+        ...

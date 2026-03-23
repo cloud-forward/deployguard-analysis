@@ -97,7 +97,7 @@ class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'fact_extraction', 'graph_building', 'path_discovery', "
+            "status IN ('pending', 'running', 'fact_extraction', 'graph_building', 'path_discovery', "
             "'risk_calculation', 'optimization', 'completed', 'failed')",
             name="ck_analysis_jobs_status",
         ),
@@ -131,6 +131,12 @@ class AnalysisJob(Base):
     k8s_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     aws_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     image_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expected_scans: Mapped[list] = mapped_column(
+        JSONB_COMPAT,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

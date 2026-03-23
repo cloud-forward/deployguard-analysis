@@ -18,6 +18,7 @@ from app.core.constants import (
     SCAN_STATUS_CREATED,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
+    canonical_scan_file_name,
 )
 from app.main import app
 from app.models.schemas import ClusterResponse
@@ -128,7 +129,7 @@ class FakeScanRepository:
 
 class FakeS3Service:
     def generate_presigned_upload_url(self, cluster_id, scan_id, scanner_type, file_name, expires_in=600):
-        s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"
+        s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{canonical_scan_file_name(scanner_type)}"
         return f"https://fake-s3.example.com/{s3_key}", s3_key
 
     def generate_presigned_download_url(self, s3_key: str, expires_in: int = 600) -> str:
@@ -141,6 +142,31 @@ class FakeS3Service:
 class FakeS3ServiceMissingFile(FakeS3Service):
     def verify_file_exists(self, s3_key: str) -> bool:
         return False
+
+
+class FakeClusterRepository:
+    def __init__(self):
+        self._clusters = {
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890": ClusterResponse(
+                id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                name="test-cluster",
+                description=None,
+                cluster_type="eks",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            ),
+            "b2c3d4e5-f6a7-8901-bcde-f12345678901": ClusterResponse(
+                id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                name="aws-cluster",
+                description=None,
+                cluster_type="aws",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            ),
+        }
+
+    async def get_by_id(self, cluster_id: str):
+        return self._clusters.get(cluster_id)
 
 
 class FakeAnalysisJobRepository:
@@ -167,7 +193,8 @@ class FakeAnalysisJobRepository:
 def client():
     repo = FakeScanRepository()
     s3 = FakeS3Service()
-    service = ScanService(scan_repository=repo, s3_service=s3)
+    clusters = FakeClusterRepository()
+    service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
     async def _fake_auth_cluster():
         return ClusterResponse(
@@ -188,7 +215,8 @@ def client():
 def client_with_repo():
     repo = FakeScanRepository()
     s3 = FakeS3Service()
-    service = ScanService(scan_repository=repo, s3_service=s3)
+    clusters = FakeClusterRepository()
+    service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
     async def _fake_auth_cluster():
         return ClusterResponse(
@@ -209,7 +237,8 @@ def client_with_repo():
 def client_missing_s3():
     repo = FakeScanRepository()
     s3 = FakeS3ServiceMissingFile()
-    service = ScanService(scan_repository=repo, s3_service=s3)
+    clusters = FakeClusterRepository()
+    service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
     async def _fake_auth_cluster():
         return ClusterResponse(
@@ -230,7 +259,8 @@ def client_missing_s3():
 def client_missing_s3_with_repo():
     repo = FakeScanRepository()
     s3 = FakeS3ServiceMissingFile()
-    service = ScanService(scan_repository=repo, s3_service=s3)
+    clusters = FakeClusterRepository()
+    service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
     async def _fake_auth_cluster():
         return ClusterResponse(
@@ -251,9 +281,10 @@ def client_missing_s3_with_repo():
 def client_with_analysis_repo():
     repo = FakeScanRepository()
     s3 = FakeS3Service()
+    clusters = FakeClusterRepository()
     jobs_repo = FakeAnalysisJobRepository()
     analysis = AnalysisService(jobs_repo=jobs_repo, scan_repo=repo)
-    service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis)
+    service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
     async def _fake_auth_cluster():
         return ClusterResponse(
@@ -273,13 +304,18 @@ def client_with_analysis_repo():
 def _start(
     client,
     cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    scanner_type="k8s",
     request_source="manual",
 ):
     return client.post(
         "/api/v1/scans/start",
-        json={"cluster_id": cluster_id, "scanner_type": scanner_type, "request_source": request_source},
+        json={"cluster_id": cluster_id, "request_source": request_source},
     )
+
+
+def _scan_id_for(response, scanner_type: str) -> str:
+    scans = response.json()["scans"]
+    match = next(scan for scan in scans if scan["scanner_type"] == scanner_type)
+    return match["scan_id"]
 
 
 def _upload_url(client, scan_id, file_name="scan.json"):
@@ -321,20 +357,24 @@ def _scan_log_records(caplog):
 
 
 class TestScanStart:
-    def test_creates_scan_record(self, client):
+    def test_k8s_cluster_creates_k8s_and_image_scan_records(self, client):
         resp = _start(client)
         assert resp.status_code == 201
         data = resp.json()
-        assert "scan_id" in data
         assert data["status"] == SCAN_STATUS_CREATED
+        assert [scan["scanner_type"] for scan in data["scans"]] == ["k8s", "image"]
 
-    def test_scan_id_contains_scanner_type(self, client):
-        resp = _start(client, scanner_type="aws")
-        assert "aws" in resp.json()["scan_id"]
+    def test_aws_cluster_creates_only_aws_scan_record(self, client):
+        resp = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901")
+        assert resp.status_code == 201
+        data = resp.json()
+        assert [scan["scanner_type"] for scan in data["scans"]] == ["aws"]
 
-    def test_invalid_scanner_type_rejected(self, client):
-        resp = _start(client, scanner_type="unknown-scanner")
-        assert resp.status_code == 422
+    def test_scan_ids_contain_scanner_types(self, client):
+        resp = _start(client)
+        data = resp.json()
+        assert "k8s" in _scan_id_for(resp, "k8s")
+        assert "image" in _scan_id_for(resp, "image")
 
     def test_manual_request_source_accepted(self, client):
         resp = _start(client, request_source="manual")
@@ -349,7 +389,6 @@ class TestScanStart:
             "/api/v1/scans/start",
             json={
                 "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-                "scanner_type": "k8s",
             },
         )
         assert resp.status_code == 201
@@ -365,32 +404,28 @@ class TestScanStart:
         assert repo._store == {}
 
     def test_missing_cluster_id_rejected(self, client):
-        resp = client.post("/api/v1/scans/start", json={"scanner_type": "k8s"})
-        assert resp.status_code == 422
-
-    def test_missing_scanner_type_rejected(self, client):
-        resp = client.post("/api/v1/scans/start", json={"cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"})
+        resp = client.post("/api/v1/scans/start", json={})
         assert resp.status_code == 422
 
     def test_duplicate_active_scan_rejected(self, client):
-        _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
-        resp = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
+        _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        resp = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         assert resp.status_code == 409
 
-    def test_different_scanner_types_allowed_same_cluster(self, client):
-        assert _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s").status_code == 201
-        assert _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="aws").status_code == 201
+    def test_different_cluster_types_fan_out_differently(self, client):
+        assert _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890").status_code == 201
+        assert _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901").status_code == 201
 
     def test_same_scanner_type_different_clusters_allowed(self, client):
-        r1 = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890", scanner_type="k8s")
-        r2 = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901", scanner_type="aws")
+        r1 = _start(client, cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        r2 = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901")
         assert r1.status_code == 201
         assert r2.status_code == 201
-        assert r1.json()["scan_id"] != r2.json()["scan_id"]
+        assert _scan_id_for(r1, "k8s") != _scan_id_for(r2, "aws")
 
-    def test_scan_start_with_unknown_cluster_still_creates_record(self, client):
+    def test_scan_start_with_unknown_cluster_returns_404(self, client):
         resp = _start(client, cluster_id="ffffffff-ffff-ffff-ffff-ffffffffffff")
-        assert resp.status_code == 201
+        assert resp.status_code == 404
 
     def test_start_emits_lifecycle_logs(self, client, caplog):
         with caplog.at_level(logging.INFO):
@@ -399,7 +434,6 @@ class TestScanStart:
                 headers={"X-Request-ID": "req-start-1"},
                 json={
                     "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-                    "scanner_type": "k8s",
                     "request_source": "manual",
                 },
             )
@@ -413,21 +447,17 @@ class TestScanStart:
         request_received = next(record for record in records if record.getMessage() == "scan.start.request_received")
         assert request_received.request_id == "req-start-1"
         assert request_received.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        assert request_received.scanner_type == "k8s"
         assert request_received.request_source == "manual"
 
-        record_created = next(record for record in records if record.getMessage() == "scan.start.record_created")
-        assert record_created.request_id == "req-start-1"
-        assert record_created.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        assert record_created.scanner_type == "k8s"
-        assert record_created.request_source == "manual"
-        assert record_created.status_after == SCAN_STATUS_CREATED
-        assert record_created.scan_id == resp.json()["scan_id"]
+        created_records = [record for record in records if record.getMessage() == "scan.start.record_created"]
+        assert len(created_records) == 2
+        assert {record.scanner_type for record in created_records} == {"k8s", "image"}
 
 
 class TestUploadUrl:
     def test_returns_upload_url_and_s3_key(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        start_resp = _start(client)
+        scan_id = _scan_id_for(start_resp, "k8s")
         _claim(client)
         resp = _upload_url(client, scan_id)
         assert resp.status_code == 200
@@ -436,13 +466,13 @@ class TestUploadUrl:
         assert "s3_key" in data
 
     def test_s3_key_contains_scan_id(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         resp = _upload_url(client, scan_id)
         assert scan_id in resp.json()["s3_key"]
 
     def test_updates_status_to_uploading(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         _upload_url(client, scan_id)
         status = client.get(f"/api/v1/scans/{scan_id}/status").json()["status"]
@@ -453,28 +483,28 @@ class TestUploadUrl:
         assert resp.status_code == 404
 
     def test_non_json_file_rejected(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         resp = _upload_url(client, scan_id, file_name="scan.txt")
         assert resp.status_code == 422
 
     def test_s3_keys_updated_on_upload(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         resp = _upload_url(client, scan_id)
-        assert resp.json()["s3_key"].endswith("scan.json")
+        assert resp.json()["s3_key"].endswith("k8s-snapshot.json")
 
 
 class TestCompleteScan:
     def test_complete_updates_status_to_completed(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         resp = _complete(client, scan_id)
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_COMPLETED
 
     def test_complete_stores_s3_keys(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         url_resp = _upload_url(client, scan_id)
         s3_key = url_resp.json()["s3_key"]
@@ -483,7 +513,7 @@ class TestCompleteScan:
         assert s3_key in status_resp["files"]
 
     def test_complete_sets_completed_at(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         _complete(client, scan_id)
 
@@ -493,11 +523,11 @@ class TestCompleteScan:
         assert data["completed_at"] is not None
 
     def test_complete_from_processing_transitions_to_completed(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         resp = client.post(
             f"/api/v1/scans/{scan_id}/complete",
-            json={"files": [f"scans/a1b2c3d4-e5f6-7890-abcd-ef1234567890/{scan_id}/k8s/scan.json"]},
+            json={"files": [f"scans/a1b2c3d4-e5f6-7890-abcd-ef1234567890/{scan_id}/k8s/k8s-snapshot.json"]},
         )
         assert resp.status_code == 202
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
@@ -507,35 +537,35 @@ class TestCompleteScan:
         assert resp.status_code == 404
 
     def test_complete_requires_processing_or_uploading(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         resp = client.post(
             f"/api/v1/scans/{scan_id}/complete",
-            json={"files": ["scans/c1/s1/k8s/f.json"]},
+            json={"files": ["scans/c1/s1/k8s/k8s-snapshot.json"]},
         )
         assert resp.status_code == 409
 
     def test_complete_rejects_other_cluster_scan(self, client):
-        scan_id = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901").json()["scan_id"]
+        scan_id = _scan_id_for(_start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901"), "aws")
         resp = client.post(
             f"/api/v1/scans/{scan_id}/complete",
-            json={"files": [f"scans/other/{scan_id}/k8s/scan.json"]},
+            json={"files": [f"scans/other/{scan_id}/k8s/k8s-snapshot.json"]},
         )
         assert resp.status_code == 403
 
     def test_complete_empty_files_rejected(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         resp = client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": []})
         assert resp.status_code == 422
 
     def test_complete_missing_s3_file_returns_400(self, client_missing_s3):
-        scan_id = _start(client_missing_s3).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client_missing_s3), "k8s")
         _claim(client_missing_s3)
         resp = _complete(client_missing_s3, scan_id)
         assert resp.status_code == 400
 
     def test_complete_missing_s3_file_keeps_scan_not_completed(self, client_missing_s3_with_repo):
         client, repo = client_missing_s3_with_repo
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
 
         resp = _complete(client, scan_id)
@@ -547,24 +577,26 @@ class TestCompleteScan:
 
     def test_complete_keeps_analysis_lifecycle_separate(self, client_with_analysis_repo):
         client, repo, jobs_repo = client_with_analysis_repo
+        k8s_start = _start(client)
 
-        for scanner_type in ("k8s", "aws", "image"):
-            scan_id = _start(client, scanner_type=scanner_type).json()["scan_id"]
+        for scanner_type, scan_id in (
+            ("k8s", _scan_id_for(k8s_start, "k8s")),
+            ("image", _scan_id_for(k8s_start, "image")),
+        ):
             _claim(client, scanner_type=scanner_type)
             resp = _complete(client, scan_id)
             assert resp.status_code == 202
             assert repo._store[scan_id].status == SCAN_STATUS_COMPLETED
 
-        assert len(jobs_repo.jobs) == 1
-        assert jobs_repo.jobs[0]["cluster_id"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        assert jobs_repo.jobs[0]["status"] == "pending"
+        assert jobs_repo.jobs == []
         assert all(record.status == SCAN_STATUS_COMPLETED for record in repo._store.values())
 
     def test_complete_emits_lifecycle_logs(self, caplog):
         repo = FakeScanRepository()
         s3 = FakeS3Service()
+        clusters = FakeClusterRepository()
         analysis = AnalysisService(jobs_repo=FakeAnalysisJobRepository(), scan_repo=repo)
-        service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis)
+        service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis, cluster_repository=clusters)
         app.dependency_overrides[get_scan_service] = lambda: service
 
         async def _fake_auth_cluster():
@@ -581,7 +613,7 @@ class TestCompleteScan:
         try:
             with caplog.at_level(logging.INFO):
                 with TestClient(app) as client:
-                    scan_id = _start(client).json()["scan_id"]
+                    scan_id = _scan_id_for(_start(client), "k8s")
                     _claim(client)
                     s3_key = _upload_url(client, scan_id).json()["s3_key"]
                     complete_resp = client.post(
@@ -595,7 +627,6 @@ class TestCompleteScan:
             events = [record.getMessage() for record in records]
             assert "scan.complete.request_received" in events
             assert "scan.complete.accepted" in events
-            assert "scan.analysis.trigger_check_invoked" in events
 
             request_received = next(record for record in records if record.getMessage() == "scan.complete.request_received")
             assert request_received.request_id == "req-complete-1"
@@ -609,17 +640,13 @@ class TestCompleteScan:
             assert accepted.scanner_type == "k8s"
             assert accepted.status_before == SCAN_STATUS_UPLOADING
             assert accepted.status_after == SCAN_STATUS_COMPLETED
-
-            trigger_check = next(record for record in records if record.getMessage() == "scan.analysis.trigger_check_invoked")
-            assert trigger_check.request_id == "req-complete-1"
-            assert trigger_check.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         finally:
             app.dependency_overrides.clear()
 
 
 class TestScanStatus:
     def test_get_status_created(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         resp = client.get(f"/api/v1/scans/{scan_id}/status")
         assert resp.status_code == 200
         data = resp.json()
@@ -631,7 +658,7 @@ class TestScanStatus:
         assert resp.status_code == 404
 
     def test_status_transitions_created_processing_uploading_completed(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_CREATED
         _claim(client)
         assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
@@ -643,7 +670,7 @@ class TestScanStatus:
 
 class TestScanDetail:
     def test_get_detail_returns_scan_metadata(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
 
         resp = client.get(f"/api/v1/scans/{scan_id}")
 
@@ -658,7 +685,7 @@ class TestScanDetail:
         assert data["completed_at"] is None
 
     def test_get_detail_returns_s3_keys_after_complete(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         s3_key = _upload_url(client, scan_id).json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
@@ -679,7 +706,7 @@ class TestScanDetail:
 
 class TestRawScanResultUrl:
     def test_get_raw_result_url_returns_presigned_download_url(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         s3_key = _upload_url(client, scan_id).json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
@@ -698,7 +725,7 @@ class TestRawScanResultUrl:
         assert resp.status_code == 404
 
     def test_get_raw_result_url_not_found_when_no_s3_keys(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
 
         resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
 
@@ -706,10 +733,10 @@ class TestRawScanResultUrl:
 
     def test_get_raw_result_url_rejects_multiple_s3_keys(self, client_with_repo):
         client, repo = client_with_repo
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         record = repo._store[scan_id]
         record.s3_keys = [
-            f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/scan.json",
+            f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/{record.scanner_type}-snapshot.json",
             f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/extra.json",
         ]
 
@@ -726,7 +753,7 @@ class TestClusterScanList:
             cluster_id="cluster-1",
             scanner_type="k8s",
             status=SCAN_STATUS_COMPLETED,
-            s3_keys=["scans/cluster-1/older-scan/k8s/scan.json"],
+            s3_keys=["scans/cluster-1/older-scan/k8s/k8s-snapshot.json"],
             created_at=datetime(2026, 3, 9, 10, 0, 0),
             completed_at=datetime(2026, 3, 9, 10, 5, 0),
             request_source="manual",
@@ -780,7 +807,7 @@ class TestClusterScanList:
 
 class TestClaimPendingScan:
     def test_claims_one_created_scan(self, client):
-        scan_id = _start(client).json()["scan_id"]
+        scan_id = _scan_id_for(_start(client), "k8s")
         resp = client.get(
             "/api/v1/scans/pending",
             params={
@@ -801,9 +828,8 @@ class TestClaimPendingScan:
     def test_claim_returns_only_matching_cluster_and_scanner(self, client):
         auth_cluster = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         other_cluster = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
-        target = _start(client, cluster_id=auth_cluster, scanner_type="k8s").json()["scan_id"]
-        _start(client, cluster_id=auth_cluster, scanner_type="aws")
-        _start(client, cluster_id=other_cluster, scanner_type="image")
+        target = _scan_id_for(_start(client, cluster_id=auth_cluster), "k8s")
+        _start(client, cluster_id=other_cluster)
 
         resp = _claim(client, scanner_type="k8s", claimed_by="worker-1")
         assert resp.status_code == 200
@@ -831,7 +857,7 @@ class TestClaimPendingScan:
     def test_pending_logs_distinguish_no_work_and_claimed(self, client, caplog):
         with caplog.at_level(logging.INFO):
             no_work = _claim(client, scanner_type="k8s", claimed_by="worker-a")
-            _start(client, scanner_type="k8s")
+            _start(client)
             claimed = _claim(client, scanner_type="k8s", claimed_by="worker-b")
 
         assert no_work.status_code == 204

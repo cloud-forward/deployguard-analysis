@@ -41,12 +41,14 @@ class TestSqlAlchemyAnalysisJobRepository:
             k8s_scan_id="20260309T113020-k8s",
             aws_scan_id="20260309T113020-aws",
             image_scan_id="20260309T113020-image",
+            expected_scans=["k8s", "aws", "image"],
         )
 
         job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
         assert job is not None
         assert job.cluster_id == cluster_id_from_scan_record
         assert job.status == "pending"
+        assert job.expected_scans == ["k8s", "aws", "image"]
 
     @pytest.mark.asyncio
     async def test_create_analysis_job_rejects_non_uuid_cluster_id(self, repo_and_session):
@@ -58,10 +60,65 @@ class TestSqlAlchemyAnalysisJobRepository:
                 k8s_scan_id="20260309T113020-k8s",
                 aws_scan_id="20260309T113020-aws",
                 image_scan_id="20260309T113020-image",
+                expected_scans=["k8s", "aws", "image"],
             )
 
         total = await session.scalar(select(func.count()).select_from(AnalysisJob))
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_get_analysis_job_returns_row_by_id(self, repo_and_session):
+        repo, _ = repo_and_session
+        job_id = await repo.create_analysis_job(
+            cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            k8s_scan_id="k8s-1",
+            aws_scan_id=None,
+            image_scan_id="img-1",
+            expected_scans=["k8s", "image"],
+        )
+
+        job = await repo.get_analysis_job(job_id)
+
+        assert job is not None
+        assert job.id == job_id
+        assert job.k8s_scan_id == "k8s-1"
+
+    @pytest.mark.asyncio
+    async def test_list_analysis_jobs_filters_by_cluster_and_status(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        other_cluster_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+
+        pending_job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id=None,
+            image_scan_id="img-1",
+            expected_scans=["k8s", "image"],
+        )
+        running_job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-2",
+            aws_scan_id=None,
+            image_scan_id="img-2",
+            expected_scans=["k8s", "image"],
+        )
+        await repo.create_analysis_job(
+            cluster_id=other_cluster_id,
+            k8s_scan_id="k8s-3",
+            aws_scan_id=None,
+            image_scan_id="img-3",
+            expected_scans=["k8s", "image"],
+        )
+        running_job = await session.get(AnalysisJob, running_job_id)
+        running_job.status = "running"
+        await session.commit()
+
+        cluster_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id)
+        running_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id, status="running")
+
+        assert {job.id for job in cluster_jobs} == {pending_job_id, running_job_id}
+        assert [job.id for job in running_jobs] == [running_job_id]
 
     @pytest.mark.asyncio
     async def test_persist_attack_paths_creates_graph_snapshot_links_job_and_stores_edges(self, repo_and_session):
@@ -73,6 +130,7 @@ class TestSqlAlchemyAnalysisJobRepository:
             k8s_scan_id="k8s-1",
             aws_scan_id="aws-1",
             image_scan_id="img-1",
+            expected_scans=["k8s", "aws", "image"],
         )
 
         await repo.persist_attack_paths(
@@ -136,6 +194,7 @@ class TestSqlAlchemyAnalysisJobRepository:
             k8s_scan_id="k8s-1",
             aws_scan_id="aws-1",
             image_scan_id="img-1",
+            expected_scans=["k8s", "aws", "image"],
         )
 
         await repo.persist_remediation_recommendations(

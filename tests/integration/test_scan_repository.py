@@ -72,10 +72,10 @@ class TestSQLAlchemyScanRepository:
     async def test_update_files(self, repo):
         """update_files stores S3 key list"""
         await repo.create(scan_id="test-003", cluster_id=CLUSTER_1, scanner_type="k8s")
-        await repo.update_files("test-003", ["scans/c1/test-003/k8s.json"])
+        await repo.update_files("test-003", ["scans/c1/test-003/k8s/k8s-snapshot.json"])
 
         found = await repo.get_by_scan_id("test-003")
-        assert "scans/c1/test-003/k8s.json" in found.s3_keys
+        assert "scans/c1/test-003/k8s/k8s-snapshot.json" in found.s3_keys
 
     @pytest.mark.asyncio
     async def test_list_by_cluster(self, repo):

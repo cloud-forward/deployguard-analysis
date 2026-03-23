@@ -264,3 +264,32 @@ class SQLAlchemyScanRepository(ScanRepository):
                 status_after=SCAN_STATUS_PROCESSING,
             )
             raise
+
+    async def set_analysis_run_id(self, scan_id: str, analysis_run_id: str) -> ScanRecord:
+        result = await self._session.execute(
+            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        )
+        record = result.scalars().first()
+        record.analysis_run_id = analysis_run_id
+        try:
+            await self._session.commit()
+            await self._session.refresh(record)
+            return record
+        except IntegrityError as exc:
+            await self._rollback_and_log(
+                "scan.repository.integrity_error",
+                exc,
+                operation="set_analysis_run_id",
+                scan_id=scan_id,
+                analysis_run_id=analysis_run_id,
+            )
+            raise
+        except SQLAlchemyError as exc:
+            await self._rollback_and_log(
+                "scan.repository.database_error",
+                exc,
+                operation="set_analysis_run_id",
+                scan_id=scan_id,
+                analysis_run_id=analysis_run_id,
+            )
+            raise

@@ -235,6 +235,37 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert snapshot.image_scan_id == "img-1"
 
     @pytest.mark.asyncio
+    async def test_persist_attack_paths_skips_zero_hop_self_paths(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="k8s-1-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:s3:244105859679:testbed-bucket-02",
+                    "path": ["s3:244105859679:testbed-bucket-02"],
+                    "raw_final_risk": 0.91,
+                    "risk_score": 0.91,
+                    "length": 1,
+                    "edges": [],
+                }
+            ],
+        )
+
+        path_count = await session.scalar(
+            select(func.count()).select_from(AttackPath).where(AttackPath.graph_id == graph_id)
+        )
+        edge_count = await session.scalar(select(func.count()).select_from(AttackPathEdge))
+
+        assert path_count == 0
+        assert edge_count == 0
+
+    @pytest.mark.asyncio
     async def test_persist_remediation_recommendations_stores_ranked_rows_for_graph(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

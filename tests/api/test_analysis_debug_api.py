@@ -39,6 +39,19 @@ class TestAnalysisDebugApi:
             image_scan_id="img-1",
         )
 
+    def test_debug_execute_supports_aws_only_request(self, client, analysis_service):
+        response = client.post(
+            "/api/v1/analysis/execute",
+            json={"aws_scan_id": "aws-1"},
+        )
+
+        assert response.status_code == 200
+        analysis_service.execute_analysis_debug.assert_awaited_once_with(
+            k8s_scan_id=None,
+            aws_scan_id="aws-1",
+            image_scan_id=None,
+        )
+
     def test_debug_execute_requires_at_least_one_scan_id(self, client, analysis_service):
         response = client.post("/api/v1/analysis/execute", json={})
 

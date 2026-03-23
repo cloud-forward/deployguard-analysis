@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -30,6 +32,19 @@ class TestSqlAlchemyAnalysisJobRepository:
     def test_analysis_job_graph_id_has_graph_snapshots_fk(self):
         foreign_keys = {fk.target_fullname for fk in AnalysisJob.__table__.c.graph_id.foreign_keys}
         assert foreign_keys == {"graph_snapshots.id"}
+
+    def test_graph_snapshot_has_required_cluster_fk(self):
+        foreign_keys = {fk.target_fullname for fk in GraphSnapshot.__table__.c.cluster_id.foreign_keys}
+        assert foreign_keys == {"clusters.id"}
+        assert GraphSnapshot.__table__.c.cluster_id.nullable is False
+
+    def test_attack_path_edges_matches_real_schema_without_graph_id(self):
+        columns = AttackPathEdge.__table__.c
+        assert "graph_id" not in columns
+        assert "sequence" in columns
+        assert columns.path_id.nullable is False
+        foreign_keys = {fk.target_fullname for fk in columns.path_id.foreign_keys}
+        assert foreign_keys == {"attack_paths.id"}
 
     @pytest.mark.asyncio
     async def test_create_analysis_job_persists_uuid_cluster_id(self, repo_and_session):
@@ -124,7 +139,6 @@ class TestSqlAlchemyAnalysisJobRepository:
     async def test_persist_attack_paths_creates_graph_snapshot_links_job_and_stores_edges(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        graph_id = "k8s-1-graph"
         job_id = await repo.create_analysis_job(
             cluster_id=cluster_id,
             k8s_scan_id="k8s-1",
@@ -133,9 +147,9 @@ class TestSqlAlchemyAnalysisJobRepository:
             expected_scans=["k8s", "aws", "image"],
         )
 
-        await repo.persist_attack_paths(
+        graph_id = await repo.persist_attack_paths(
             cluster_id=cluster_id,
-            graph_id=graph_id,
+            graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
             aws_scan_id="aws-1",
             image_scan_id="img-1",
@@ -154,18 +168,21 @@ class TestSqlAlchemyAnalysisJobRepository:
             ],
         )
 
+        uuid.UUID(graph_id)
+
         snapshot = await session.get(GraphSnapshot, graph_id)
         job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
         path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
         edge_rows = (
             await session.execute(
                 select(AttackPathEdge)
-                .where(AttackPathEdge.graph_id == graph_id)
-                .order_by(AttackPathEdge.edge_index)
+                .where(AttackPathEdge.path_id == path.id)
+                .order_by(AttackPathEdge.sequence)
             )
         ).scalars().all()
 
         assert snapshot is not None
+        assert snapshot.cluster_id == cluster_id
         assert job is not None
         assert job.graph_id == graph_id
         assert path is not None
@@ -174,27 +191,34 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert path.entry_node_id == "ingress:prod:web"
         assert path.target_node_id == "s3:123:data"
         assert path.node_ids == ["ingress:prod:web", "pod:prod:api", "s3:123:data"]
-        assert path.edge_ids == [
-            "path:0:ingress:prod:web->s3:123:data:edge:0",
-            "path:0:ingress:prod:web->s3:123:data:edge:1",
-        ]
-        assert [edge.edge_index for edge in edge_rows] == [0, 1]
+        assert len(path.edge_ids) == 2
+        assert [edge.id for edge in edge_rows] == path.edge_ids
+        assert [edge.sequence for edge in edge_rows] == [0, 1]
         assert [edge.edge_type for edge in edge_rows] == [
             "ingress_exposes_service",
             "iam_role_access_resource",
         ]
+        assert all(edge.path_id == path.id for edge in edge_rows)
 
     @pytest.mark.asyncio
     async def test_persist_remediation_recommendations_stores_ranked_rows_for_graph(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        graph_id = "k8s-1-graph"
         job_id = await repo.create_analysis_job(
             cluster_id=cluster_id,
             k8s_scan_id="k8s-1",
             aws_scan_id="aws-1",
             image_scan_id="img-1",
             expected_scans=["k8s", "aws", "image"],
+        )
+
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="k8s-1-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[],
         )
 
         await repo.persist_remediation_recommendations(
@@ -251,6 +275,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         ).scalars().all()
 
         assert snapshot is not None
+        assert snapshot.cluster_id == cluster_id
         assert job is not None
         assert job.graph_id == graph_id
         assert [row.recommendation_rank for row in rows] == [0, 1]

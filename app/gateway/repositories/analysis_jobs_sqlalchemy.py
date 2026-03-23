@@ -4,7 +4,7 @@ SQLAlchemy implementation of AnalysisJobRepository.
 from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
@@ -114,21 +114,18 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         self,
         *,
         cluster_id: str | UUID,
-        graph_id: str,
+        graph_id: str | None,
         k8s_scan_id: str,
         aws_scan_id: str,
         image_scan_id: str,
         attack_paths: list[Dict[str, Any]],
-    ) -> None:
+    ) -> str:
         normalized_cluster_id = str(UUID(str(cluster_id)))
+        persisted_graph_id = await self._ensure_graph_snapshot(graph_id, normalized_cluster_id)
 
-        snapshot = await self._session.get(GraphSnapshot, graph_id)
-        if snapshot is None:
-            self._session.add(GraphSnapshot(id=graph_id))
-            await self._session.flush()
-
-        await self._session.execute(delete(AttackPathEdge).where(AttackPathEdge.graph_id == graph_id))
-        await self._session.execute(delete(AttackPath).where(AttackPath.graph_id == graph_id))
+        path_ids_subquery = select(AttackPath.id).where(AttackPath.graph_id == persisted_graph_id)
+        await self._session.execute(delete(AttackPathEdge).where(AttackPathEdge.path_id.in_(path_ids_subquery)))
+        await self._session.execute(delete(AttackPath).where(AttackPath.graph_id == persisted_graph_id))
 
         matching_job = await self._session.scalar(
             select(AnalysisJob)
@@ -142,7 +139,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             .limit(1)
         )
         if matching_job is not None:
-            matching_job.graph_id = graph_id
+            matching_job.graph_id = persisted_graph_id
 
         for path in attack_paths:
             path_id = str(path["path_id"])
@@ -150,54 +147,49 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             edges = list(path.get("edges", []))
             edge_ids = [self._edge_id(path_id, index) for index, _ in enumerate(edges)]
 
-            self._session.add(
-                AttackPath(
-                    graph_id=graph_id,
-                    path_id=path_id,
-                    title=self._path_title(path),
-                    risk_level=self._risk_level(path.get("raw_final_risk", path.get("risk_score"))),
-                    risk_score=self._as_float(path.get("risk_score")),
-                    raw_final_risk=self._as_float(path.get("raw_final_risk", path.get("risk_score"))),
-                    hop_count=max(len(node_ids) - 1, 0),
-                    entry_node_id=node_ids[0] if node_ids else None,
-                    target_node_id=node_ids[-1] if node_ids else None,
-                    node_ids=node_ids,
-                    edge_ids=edge_ids,
-                )
+            attack_path = AttackPath(
+                graph_id=persisted_graph_id,
+                path_id=path_id,
+                title=self._path_title(path),
+                risk_level=self._risk_level(path.get("raw_final_risk", path.get("risk_score"))),
+                risk_score=self._as_float(path.get("risk_score")),
+                raw_final_risk=self._as_float(path.get("raw_final_risk", path.get("risk_score"))),
+                hop_count=max(len(node_ids) - 1, 0),
+                entry_node_id=node_ids[0] if node_ids else None,
+                target_node_id=node_ids[-1] if node_ids else None,
+                node_ids=node_ids,
+                edge_ids=edge_ids,
             )
+            self._session.add(attack_path)
+            await self._session.flush()
 
             for index, edge in enumerate(edges):
                 self._session.add(
                     AttackPathEdge(
-                        graph_id=graph_id,
-                        path_id=path_id,
-                        edge_id=edge_ids[index],
-                        edge_index=index,
+                        id=edge_ids[index],
+                        path_id=attack_path.id,
+                        sequence=index,
                         source_node_id=str(edge.get("source", "")),
                         target_node_id=str(edge.get("target", "")),
                         edge_type=str(edge.get("type", "")),
-                        metadata_json={},
                     )
                 )
 
         await self._session.commit()
+        return persisted_graph_id
 
     async def persist_remediation_recommendations(
         self,
         *,
         cluster_id: str | UUID,
-        graph_id: str,
+        graph_id: str | None,
         k8s_scan_id: str,
         aws_scan_id: str,
         image_scan_id: str,
         remediation_optimization: Dict[str, Any],
     ) -> None:
         normalized_cluster_id = str(UUID(str(cluster_id)))
-
-        snapshot = await self._session.get(GraphSnapshot, graph_id)
-        if snapshot is None:
-            self._session.add(GraphSnapshot(id=graph_id))
-            await self._session.flush()
+        persisted_graph_id = await self._ensure_graph_snapshot(graph_id, normalized_cluster_id)
 
         matching_job = await self._session.scalar(
             select(AnalysisJob)
@@ -211,17 +203,17 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             .limit(1)
         )
         if matching_job is not None:
-            matching_job.graph_id = graph_id
+            matching_job.graph_id = persisted_graph_id
 
         await self._session.execute(
-            delete(RemediationRecommendation).where(RemediationRecommendation.graph_id == graph_id)
+            delete(RemediationRecommendation).where(RemediationRecommendation.graph_id == persisted_graph_id)
         )
 
         recommendations = list(remediation_optimization.get("recommendations", []))
         for rank, recommendation in enumerate(recommendations):
             self._session.add(
                 RemediationRecommendation(
-                    graph_id=graph_id,
+                    graph_id=persisted_graph_id,
                     recommendation_id=str(recommendation.get("id", f"recommendation:{rank}")),
                     recommendation_rank=rank,
                     edge_source=self._as_str(recommendation.get("edge_source")),
@@ -240,6 +232,21 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             )
 
         await self._session.commit()
+
+    async def _ensure_graph_snapshot(self, graph_id: str | None, cluster_id: str) -> str:
+        normalized_graph_id = self._normalize_graph_id(graph_id)
+        if normalized_graph_id is not None:
+            snapshot = await self._session.get(GraphSnapshot, normalized_graph_id)
+            if snapshot is None:
+                snapshot = GraphSnapshot(id=normalized_graph_id, cluster_id=cluster_id)
+                self._session.add(snapshot)
+                await self._session.flush()
+            return snapshot.id
+
+        snapshot = GraphSnapshot(cluster_id=cluster_id)
+        self._session.add(snapshot)
+        await self._session.flush()
+        return snapshot.id
 
     @staticmethod
     def _risk_level(value: Any) -> str:
@@ -263,7 +270,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
 
     @staticmethod
     def _edge_id(path_id: str, edge_index: int) -> str:
-        return f"{path_id}:edge:{edge_index}"
+        return str(uuid4())
 
     @staticmethod
     def _as_float(value: Any) -> float | None:
@@ -299,3 +306,12 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             except (TypeError, ValueError):
                 continue
         return normalized
+
+    @staticmethod
+    def _normalize_graph_id(value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError):
+            return None

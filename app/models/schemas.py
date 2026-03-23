@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_PROCESSING,
 )
 
 
@@ -274,7 +275,7 @@ class PendingScanClaimResponse(BaseModel):
     scan_id: str
     cluster_id: str
     scanner_type: str
-    status: str = Field(..., description="processing")
+    status: str = Field(default=SCAN_STATUS_PROCESSING, description="processing")
     claimed_by: str
     claimed_at: datetime
     started_at: datetime

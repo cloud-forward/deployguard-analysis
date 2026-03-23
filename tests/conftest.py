@@ -18,7 +18,7 @@ from app.api.auth import get_authenticated_cluster
 from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
-from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_QUEUED
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED, SCAN_STATUS_PROCESSING
 from app.models.schemas import ClusterResponse
 
 
@@ -33,7 +33,7 @@ class FakeScanRepository:
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = SCAN_STATUS_QUEUED,
+        status: str = SCAN_STATUS_CREATED,
         request_source: str = "manual",
         requested_at=None,
     ):
@@ -89,13 +89,13 @@ class FakeScanRepository:
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
             r for r in self._store.values()
-            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "queued"
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == SCAN_STATUS_CREATED
         ]
         if not queued:
             return None
         queued.sort(key=lambda r: r.requested_at)
         record = queued[0]
-        record.status = "running"
+        record.status = SCAN_STATUS_PROCESSING
         record.claimed_by = claimed_by
         record.claimed_at = started_at
         record.started_at = started_at

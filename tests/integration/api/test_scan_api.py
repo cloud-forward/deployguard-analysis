@@ -51,7 +51,7 @@ class FakeScanRepository:
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
-        status: str = "queued",
+        status: str = "created",
         request_source: str = "manual",
         requested_at=None,
     ):
@@ -107,13 +107,13 @@ class FakeScanRepository:
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
             r for r in self._store.values()
-            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "queued"
+            if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status == "created"
         ]
         if not queued:
             return None
         queued.sort(key=lambda r: r.requested_at)
         record = queued[0]
-        record.status = "running"
+        record.status = "processing"
         record.claimed_by = claimed_by
         record.claimed_at = started_at
         record.started_at = started_at
@@ -233,7 +233,7 @@ def client_with_completed_scan():
 class TestStartScan:
 
     def test_start_scan_success(self, client):
-        """Returns 201 with scan_id and status=queued."""
+        """Returns 201 with scan_id and status=created."""
         response = client.post("/api/v1/scans/start", json={
             "cluster_id": AUTH_CLUSTER_ID,
             "scanner_type": "k8s",
@@ -241,7 +241,7 @@ class TestStartScan:
         assert response.status_code == 201
         data = response.json()
         assert "scan_id" in data
-        assert data["status"] == "queued"
+        assert data["status"] == "created"
 
     def test_start_scan_id_format(self, client):
         """scan_id must match YYYYMMDDTHHmmSS-{scanner_type}."""
@@ -441,7 +441,7 @@ class TestScanStatus:
         assert data["scan_id"] == scan_id
         assert data["cluster_id"] == AUTH_CLUSTER_ID
         assert data["scanner_type"] == "k8s"
-        assert data["status"] == "queued"
+        assert data["status"] == "created"
         assert "created_at" in data
 
     def test_get_status_not_found(self, client):
@@ -449,18 +449,21 @@ class TestScanStatus:
         response = client.get("/api/v1/scans/nonexistent/status")
         assert response.status_code == 404
 
-    def test_status_transitions_queued_uploading_completed(self, client):
-        """Validates full status transition: queued → uploading → completed."""
+    def test_status_transitions_created_processing_uploading_completed(self, client):
+        """Validates full status transition: created → processing → uploading → completed."""
         start_resp = client.post("/api/v1/scans/start", json={
             "cluster_id": AUTH_CLUSTER_ID, "scanner_type": "image"
         })
         scan_id = start_resp.json()["scan_id"]
 
-        # queued
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "queued"
+        # created
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "created"
 
         claim_resp = _claim(client, scanner_type="image")
         assert claim_resp.status_code == 200
+
+        # processing
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == "processing"
 
         # uploading
         url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "cve.json"})

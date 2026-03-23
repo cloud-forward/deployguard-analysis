@@ -18,7 +18,12 @@ from app.api.auth import get_authenticated_cluster
 from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
-from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED, SCAN_STATUS_PROCESSING
+from app.core.constants import (
+    ACTIVE_SCAN_STATUSES,
+    SCAN_STATUS_CREATED,
+    SCAN_STATUS_PROCESSING,
+    canonical_scan_file_name,
+)
 from app.models.schemas import ClusterResponse
 
 
@@ -122,12 +127,35 @@ class FakeS3Service:
     def generate_presigned_upload_url(
         self, cluster_id: str, scan_id: str, scanner_type: str, file_name: str, expires_in: int = 600
     ) -> tuple[str, str]:
-        s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{file_name}"
+        s3_key = f"scans/{cluster_id}/{scan_id}/{scanner_type}/{canonical_scan_file_name(scanner_type)}"
         fake_url = f"https://fake-s3.example.com/{s3_key}?X-Amz-Expires={expires_in}"
         return fake_url, s3_key
 
     def verify_file_exists(self, s3_key: str) -> bool:
         return True
+
+
+class FakeClusterRepository:
+    async def get_by_id(self, cluster_id: str):
+        if cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890":
+            return ClusterResponse(
+                id=cluster_id,
+                name="test-cluster",
+                description=None,
+                cluster_type="eks",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        if cluster_id == "b2c3d4e5-f6a7-8901-bcde-f12345678901":
+            return ClusterResponse(
+                id=cluster_id,
+                name="aws-cluster",
+                description=None,
+                cluster_type="aws",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        return None
 
 
 @pytest.fixture
@@ -139,7 +167,8 @@ def client():
     """
     fake_repo = FakeScanRepository()
     fake_s3 = FakeS3Service()
-    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3)  # noqa
+    fake_clusters = FakeClusterRepository()
+    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3, cluster_repository=fake_clusters)  # noqa
 
     app.dependency_overrides[get_scan_service] = lambda: fake_service
     async def _fake_auth_cluster():

@@ -21,6 +21,7 @@ from app.application.services.scan_service import ScanService
 from app.core.constants import (
     ACTIVE_SCAN_STATUSES,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
     SCAN_STATUS_PROCESSING,
     canonical_scan_file_name,
 )
@@ -90,6 +91,22 @@ class FakeScanRepository:
             if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
                 return r
         return None
+
+    async def list_active_scans(self, cluster_id: str, scanner_types: list[str] | None = None):
+        records = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.status in ACTIVE_SCAN_STATUSES
+        ]
+        if scanner_types is not None:
+            records = [r for r in records if r.scanner_type in scanner_types]
+        return records
+
+    async def mark_failed(self, scan_id: str, completed_at=None):
+        record = self._store.get(scan_id)
+        if record:
+            record.status = SCAN_STATUS_FAILED
+            record.completed_at = completed_at
+        return record
 
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
@@ -183,6 +200,7 @@ def client():
     app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
 
     with TestClient(app) as c:
+        c.app_state["repo"] = fake_repo
         yield c
 
     app.dependency_overrides.clear()

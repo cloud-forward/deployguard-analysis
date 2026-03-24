@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Optional
 from unittest.mock import AsyncMock
@@ -12,10 +12,12 @@ from app.api.auth import get_authenticated_cluster
 from app.application.services.analysis_service import AnalysisService
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
+from app.config import settings
 from app.core.constants import (
     ACTIVE_SCAN_STATUSES,
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
     canonical_scan_file_name,
@@ -99,6 +101,22 @@ class FakeScanRepository:
             if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
                 return r
         return None
+
+    async def list_active_scans(self, cluster_id: str, scanner_types: list[str] | None = None):
+        records = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.status in ACTIVE_SCAN_STATUSES
+        ]
+        if scanner_types is not None:
+            records = [r for r in records if r.scanner_type in scanner_types]
+        return records
+
+    async def mark_failed(self, scan_id: str, completed_at=None):
+        record = self._store.get(scan_id)
+        if record:
+            record.status = SCAN_STATUS_FAILED
+            record.completed_at = completed_at
+        return record
 
     async def get_latest_completed_scans(self, cluster_id: str):
         completed = {}
@@ -357,6 +375,101 @@ def _scan_log_records(caplog):
 
 
 class TestScanStart:
+    def test_stale_created_scan_auto_failed_before_new_start(self, client_with_repo):
+        client, repo = client_with_repo
+        start = _start(client)
+        scan_id = _scan_id_for(start, "k8s")
+        image_scan_id = _scan_id_for(start, "image")
+        image_record = repo._store.pop(image_scan_id)
+        image_record.scan_id = "20000101T000000-image"
+        image_record.status = SCAN_STATUS_FAILED
+        repo._store[image_record.scan_id] = image_record
+        record = repo._store.pop(scan_id)
+        record.scan_id = "20000101T000000-k8s"
+        record.requested_at = datetime.utcnow() - timedelta(
+            seconds=settings.SCAN_CREATED_STALE_SECONDS + 5
+        )
+        repo._store[record.scan_id] = record
+
+        resp = _start(client)
+
+        assert resp.status_code == 201
+        assert repo._store["20000101T000000-k8s"].status == SCAN_STATUS_FAILED
+
+    def test_stale_processing_scan_auto_failed_before_new_start(self, client_with_repo):
+        client, repo = client_with_repo
+        start = _start(client)
+        scan_id = _scan_id_for(start, "k8s")
+        image_scan_id = _scan_id_for(start, "image")
+        image_record = repo._store.pop(image_scan_id)
+        image_record.scan_id = "20000101T000001-image"
+        image_record.status = SCAN_STATUS_FAILED
+        repo._store[image_record.scan_id] = image_record
+        _claim(client, scanner_type="k8s")
+        record = repo._store.pop(scan_id)
+        record.scan_id = "20000101T000001-k8s"
+        record.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
+        repo._store[record.scan_id] = record
+
+        resp = _start(client)
+
+        assert resp.status_code == 201
+        assert repo._store["20000101T000001-k8s"].status == SCAN_STATUS_FAILED
+
+    def test_stale_uploading_scan_auto_failed_before_new_start(self, client_with_repo):
+        client, repo = client_with_repo
+        start = _start(client)
+        scan_id = _scan_id_for(start, "k8s")
+        image_scan_id = _scan_id_for(start, "image")
+        image_record = repo._store.pop(image_scan_id)
+        image_record.scan_id = "20000101T000002-image"
+        image_record.status = SCAN_STATUS_FAILED
+        repo._store[image_record.scan_id] = image_record
+        _claim(client, scanner_type="k8s")
+        repo._store[scan_id].status = SCAN_STATUS_UPLOADING
+        record = repo._store.pop(scan_id)
+        record.scan_id = "20000101T000002-k8s"
+        record.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
+        repo._store[record.scan_id] = record
+
+        resp = _start(client)
+
+        assert resp.status_code == 201
+        assert repo._store["20000101T000002-k8s"].status == SCAN_STATUS_FAILED
+
+    def test_terminal_scans_ignored_by_auto_cleanup(self, client_with_repo):
+        client, repo = client_with_repo
+        completed_scan_id = "completed-aws"
+        failed_scan_id = "failed-aws"
+        repo._store[completed_scan_id] = _FakeScanRecord(
+            scan_id=completed_scan_id,
+            cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            scanner_type="aws",
+            status=SCAN_STATUS_COMPLETED,
+            s3_keys=[],
+            created_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            request_source="manual",
+            requested_at=datetime.utcnow(),
+        )
+        repo._store[failed_scan_id] = _FakeScanRecord(
+            scan_id=failed_scan_id,
+            cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            scanner_type="aws",
+            status=SCAN_STATUS_FAILED,
+            s3_keys=[],
+            created_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            request_source="manual",
+            requested_at=datetime.utcnow(),
+        )
+
+        resp = _start(client, cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901")
+
+        assert resp.status_code == 201
+        assert repo._store[completed_scan_id].status == SCAN_STATUS_COMPLETED
+        assert repo._store[failed_scan_id].status == SCAN_STATUS_FAILED
+
     def test_k8s_cluster_creates_k8s_and_image_scan_records(self, client):
         resp = _start(client)
         assert resp.status_code == 201
@@ -452,6 +565,42 @@ class TestScanStart:
         created_records = [record for record in records if record.getMessage() == "scan.start.record_created"]
         assert len(created_records) == 2
         assert {record.scanner_type for record in created_records} == {"k8s", "image"}
+
+    def test_stale_cleanup_emits_auto_fail_log(self, client_with_repo, caplog):
+        client, repo = client_with_repo
+        start = _start(client)
+        scan_id = _scan_id_for(start, "k8s")
+        image_scan_id = _scan_id_for(start, "image")
+        image_record = repo._store.pop(image_scan_id)
+        image_record.scan_id = "20000101T000003-image"
+        image_record.status = SCAN_STATUS_FAILED
+        repo._store[image_record.scan_id] = image_record
+        record = repo._store.pop(scan_id)
+        record.scan_id = "20000101T000003-k8s"
+        record.requested_at = datetime.utcnow() - timedelta(
+            seconds=settings.SCAN_CREATED_STALE_SECONDS + 5
+        )
+        repo._store[record.scan_id] = record
+
+        with caplog.at_level(logging.WARNING):
+            resp = client.post(
+                "/api/v1/scans/start",
+                headers={"X-Request-ID": "req-stale-1"},
+                json={
+                    "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "request_source": "manual",
+                },
+            )
+
+        assert resp.status_code == 201
+        log_record = next(record for record in caplog.records if record.getMessage() == "scan.stale.auto_failed")
+        assert log_record.request_id == "req-stale-1"
+        assert log_record.scan_id == "20000101T000003-k8s"
+        assert log_record.status_before == SCAN_STATUS_CREATED
+        assert log_record.status_after == SCAN_STATUS_FAILED
+        assert log_record.stale_rule == "created_timeout"
+        assert log_record.failure_source == "auto"
+        assert log_record.trigger_endpoint == "/api/v1/scans/start"
 
 
 class TestUploadUrl:
@@ -642,6 +791,77 @@ class TestCompleteScan:
             assert accepted.status_after == SCAN_STATUS_COMPLETED
         finally:
             app.dependency_overrides.clear()
+
+
+class TestManualFail:
+    def test_manual_fail_created_scan(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == SCAN_STATUS_FAILED
+        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_FAILED
+
+    def test_manual_fail_processing_scan(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+        _claim(client)
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == SCAN_STATUS_FAILED
+
+    def test_manual_fail_uploading_scan(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+        _claim(client)
+        _upload_url(client, scan_id)
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == SCAN_STATUS_FAILED
+
+    def test_manual_fail_completed_is_idempotent(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+        _claim(client)
+        s3_key = _upload_url(client, scan_id).json()["s3_key"]
+        _complete(client, scan_id, files=[s3_key])
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == SCAN_STATUS_COMPLETED
+
+    def test_manual_fail_failed_is_idempotent(self, client_with_repo):
+        client, repo = client_with_repo
+        scan_id = _scan_id_for(_start(client), "k8s")
+        repo._store[scan_id].status = SCAN_STATUS_FAILED
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == SCAN_STATUS_FAILED
+
+    def test_manual_fail_emits_logs(self, client, caplog):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        with caplog.at_level(logging.INFO):
+            resp = client.post(
+                f"/api/v1/scans/{scan_id}/fail",
+                headers={"X-Request-ID": "req-fail-1"},
+            )
+
+        assert resp.status_code == 202
+        events = [record.getMessage() for record in caplog.records]
+        assert "scan.fail.request_received" in events
+        assert "scan.fail.accepted" in events
+        accepted = next(record for record in caplog.records if record.getMessage() == "scan.fail.accepted")
+        assert accepted.request_id == "req-fail-1"
+        assert accepted.scan_id == scan_id
+        assert accepted.status_before == SCAN_STATUS_CREATED
+        assert accepted.status_after == SCAN_STATUS_FAILED
+        assert accepted.failure_source == "manual"
 
 
 class TestScanStatus:

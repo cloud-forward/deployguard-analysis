@@ -8,7 +8,12 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_CREATED, SCAN_STATUS_PROCESSING
+from app.core.constants import (
+    ACTIVE_SCAN_STATUSES,
+    SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
+    SCAN_STATUS_PROCESSING,
+)
 from app.domain.repositories.scan_repository import ScanRepository
 from app.gateway.models import ScanRecord
 from app.models.schemas import RequestSource
@@ -210,6 +215,19 @@ class SQLAlchemyScanRepository(ScanRepository):
             )
         )
         return result.scalars().first()
+
+    async def list_active_scans(self, cluster_id: str, scanner_types: list[str] | None = None) -> list[ScanRecord]:
+        stmt = select(ScanRecord).where(
+            ScanRecord.cluster_id == str(cluster_id),
+            ScanRecord.status.in_(ACTIVE_SCAN_STATUSES),
+        )
+        if scanner_types is not None:
+            stmt = stmt.where(ScanRecord.scanner_type.in_(scanner_types))
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> ScanRecord:
+        return await self.update_status(scan_id, SCAN_STATUS_FAILED, completed_at=completed_at)
 
     async def claim_next_queued_scan(
         self,

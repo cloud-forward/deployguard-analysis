@@ -1,12 +1,15 @@
 import re
 import logging
+from datetime import datetime, timedelta
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from app.application.services.scan_service import ScanService
+from app.config import settings
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
 )
@@ -22,6 +25,8 @@ def make_service():
     mock_s3.generate_presigned_download_url.return_value = "https://download-url"
     mock_s3.verify_file_exists.return_value = True
     mock_clusters.get_by_id.return_value = SimpleNamespace(id="prod-01", cluster_type="eks")
+    mock_repo.list_active_scans.return_value = []
+    mock_repo.find_active_scan.return_value = None
     svc = ScanService(scan_repository=mock_repo, s3_service=mock_s3, cluster_repository=mock_clusters)
     return svc, mock_repo, mock_s3, mock_clusters
 
@@ -126,6 +131,117 @@ class TestScanServiceStartScan:
 
         assert result.status == SCAN_STATUS_CREATED
         repo.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_scan_auto_fails_stale_created_scan(self):
+        svc, repo, _, _ = make_service()
+        stale = SimpleNamespace(
+            scan_id="stale-created",
+            cluster_id="prod-01",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+            requested_at=datetime.utcnow() - timedelta(seconds=settings.SCAN_CREATED_STALE_SECONDS + 5),
+            created_at=datetime.utcnow() - timedelta(seconds=settings.SCAN_CREATED_STALE_SECONDS + 5),
+            started_at=None,
+            lease_expires_at=None,
+        )
+        repo.list_active_scans.return_value = [stale]
+
+        await svc.start_scan("prod-01", "manual")
+
+        repo.mark_failed.assert_awaited_once()
+        assert repo.mark_failed.await_args.args[0] == "stale-created"
+
+    @pytest.mark.asyncio
+    async def test_start_scan_auto_fails_stale_processing_scan(self):
+        svc, repo, _, _ = make_service()
+        stale = SimpleNamespace(
+            scan_id="stale-processing",
+            cluster_id="prod-01",
+            scanner_type="k8s",
+            status=SCAN_STATUS_PROCESSING,
+            requested_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+            started_at=datetime.utcnow() - timedelta(minutes=10),
+            lease_expires_at=datetime.utcnow() - timedelta(seconds=1),
+        )
+        repo.list_active_scans.return_value = [stale]
+
+        await svc.start_scan("prod-01", "manual")
+
+        repo.mark_failed.assert_awaited_once()
+        assert repo.mark_failed.await_args.args[0] == "stale-processing"
+
+    @pytest.mark.asyncio
+    async def test_start_scan_auto_fails_stale_uploading_scan(self):
+        svc, repo, _, _ = make_service()
+        stale = SimpleNamespace(
+            scan_id="stale-uploading",
+            cluster_id="prod-01",
+            scanner_type="image",
+            status=SCAN_STATUS_UPLOADING,
+            requested_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+            started_at=datetime.utcnow() - timedelta(minutes=10),
+            lease_expires_at=datetime.utcnow() - timedelta(seconds=1),
+        )
+        repo.list_active_scans.return_value = [stale]
+
+        await svc.start_scan("prod-01", "manual")
+
+        repo.mark_failed.assert_awaited_once()
+        assert repo.mark_failed.await_args.args[0] == "stale-uploading"
+
+    @pytest.mark.asyncio
+    async def test_start_scan_auto_cleanup_ignores_terminal_scans(self):
+        svc, repo, _, _ = make_service()
+        completed = SimpleNamespace(
+            scan_id="done-1",
+            cluster_id="prod-01",
+            scanner_type="k8s",
+            status=SCAN_STATUS_COMPLETED,
+        )
+        failed = SimpleNamespace(
+            scan_id="fail-1",
+            cluster_id="prod-01",
+            scanner_type="image",
+            status=SCAN_STATUS_FAILED,
+        )
+
+        assert svc._stale_rule_for_record(completed, datetime.utcnow()) is None
+        assert svc._stale_rule_for_record(failed, datetime.utcnow()) is None
+
+    @pytest.mark.asyncio
+    async def test_start_scan_stale_cleanup_logs_auto_fail(self, caplog):
+        svc, repo, _, _ = make_service()
+        stale = SimpleNamespace(
+            scan_id="stale-created",
+            cluster_id="prod-01",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+            requested_at=datetime.utcnow() - timedelta(seconds=settings.SCAN_CREATED_STALE_SECONDS + 5),
+            created_at=datetime.utcnow() - timedelta(seconds=settings.SCAN_CREATED_STALE_SECONDS + 5),
+            started_at=None,
+            lease_expires_at=None,
+        )
+        repo.list_active_scans.return_value = [stale]
+
+        with caplog.at_level(logging.WARNING):
+            await svc.start_scan(
+                "prod-01",
+                "manual",
+                request_id="req-stale-1",
+                endpoint_path="/api/v1/scans/start",
+            )
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.stale.auto_failed")
+        assert record.request_id == "req-stale-1"
+        assert record.scan_id == "stale-created"
+        assert record.status_before == SCAN_STATUS_CREATED
+        assert record.status_after == SCAN_STATUS_FAILED
+        assert record.stale_rule == "created_timeout"
+        assert record.failure_source == "auto"
+        assert record.trigger_endpoint == "/api/v1/scans/start"
 
 
 class TestScanServiceUploadUrl:
@@ -665,3 +781,120 @@ class TestScanServiceClaimPending:
 
         assert result.scan_id == "s1"
         repo.claim_next_queued_scan.assert_called_once()
+
+
+class TestScanServiceFailScan:
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_marks_created_as_failed(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+        )
+
+        result = await svc.fail_scan("s1")
+
+        assert result.status == SCAN_STATUS_FAILED
+        repo.mark_failed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_marks_processing_as_failed(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_PROCESSING,
+        )
+
+        result = await svc.fail_scan("s1")
+
+        assert result.status == SCAN_STATUS_FAILED
+        repo.mark_failed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_marks_uploading_as_failed(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_UPLOADING,
+        )
+
+        result = await svc.fail_scan("s1")
+
+        assert result.status == SCAN_STATUS_FAILED
+        repo.mark_failed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_completed_is_idempotent(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_COMPLETED,
+        )
+
+        result = await svc.fail_scan("s1")
+
+        assert result.status == SCAN_STATUS_COMPLETED
+        repo.mark_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_failed_is_idempotent(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_FAILED,
+        )
+
+        result = await svc.fail_scan("s1")
+
+        assert result.status == SCAN_STATUS_FAILED
+        repo.mark_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_logs_accepted(self, caplog):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+        )
+
+        with caplog.at_level(logging.INFO):
+            await svc.fail_scan("s1", request_id="req-fail-1", endpoint_path="/api/v1/scans/s1/fail")
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.fail.accepted")
+        assert record.request_id == "req-fail-1"
+        assert record.scan_id == "s1"
+        assert record.status_before == SCAN_STATUS_CREATED
+        assert record.status_after == SCAN_STATUS_FAILED
+        assert record.failure_source == "manual"
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_logs_already_terminal(self, caplog):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_COMPLETED,
+        )
+
+        with caplog.at_level(logging.INFO):
+            await svc.fail_scan("s1", request_id="req-fail-2", endpoint_path="/api/v1/scans/s1/fail")
+
+        record = next(record for record in caplog.records if record.getMessage() == "scan.fail.already_terminal")
+        assert record.request_id == "req-fail-2"
+        assert record.scan_id == "s1"
+        assert record.status_before == SCAN_STATUS_COMPLETED
+        assert record.status_after == SCAN_STATUS_COMPLETED

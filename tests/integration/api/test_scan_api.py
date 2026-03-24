@@ -8,15 +8,16 @@ Uses FastAPI TestClient with:
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.auth import get_authenticated_cluster
-from app.main import app
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
-from app.core.constants import ACTIVE_SCAN_STATUSES, canonical_scan_file_name
+from app.config import settings
+from app.core.constants import ACTIVE_SCAN_STATUSES, SCAN_STATUS_FAILED, canonical_scan_file_name
+from app.main import app
 from app.models.schemas import ClusterResponse
 
 AUTH_CLUSTER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -103,6 +104,22 @@ class FakeScanRepository:
             if r.cluster_id == cluster_id and r.scanner_type == scanner_type and r.status in ACTIVE_SCAN_STATUSES:
                 return r
         return None
+
+    async def list_active_scans(self, cluster_id: str, scanner_types: list[str] | None = None):
+        records = [
+            r for r in self._store.values()
+            if r.cluster_id == cluster_id and r.status in ACTIVE_SCAN_STATUSES
+        ]
+        if scanner_types is not None:
+            records = [r for r in records if r.scanner_type in scanner_types]
+        return records
+
+    async def mark_failed(self, scan_id: str, completed_at=None):
+        record = self._store.get(scan_id)
+        if record:
+            record.status = SCAN_STATUS_FAILED
+            record.completed_at = completed_at
+        return record
 
     async def claim_next_queued_scan(self, cluster_id: str, scanner_type: str, claimed_by: str, lease_expires_at, started_at):
         queued = [
@@ -201,7 +218,9 @@ def make_client(file_exists: bool = True) -> TestClient:
             updated_at=datetime.utcnow(),
         )
     app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
-    return TestClient(app)
+    client = TestClient(app)
+    client.app_state["repo"] = fake_repo
+    return client
 
 
 @pytest.fixture
@@ -310,6 +329,21 @@ class TestStartScan:
 
         new_resp = client.post("/api/v1/scans/start", json={"cluster_id": AUTH_CLUSTER_ID})
         assert new_resp.status_code == 201
+
+    def test_stale_created_scan_no_longer_blocks_future_start(self, client):
+        first = client.post("/api/v1/scans/start", json={"cluster_id": OTHER_CLUSTER_ID})
+        scan_id = _scan_id_for(first, "aws")
+        record = client.app_state["repo"]._store.pop(scan_id)
+        record.scan_id = "20000101T000010-aws"
+        record.requested_at = datetime.utcnow() - timedelta(
+            seconds=settings.SCAN_CREATED_STALE_SECONDS + 5
+        )
+        client.app_state["repo"]._store[record.scan_id] = record
+
+        second = client.post("/api/v1/scans/start", json={"cluster_id": OTHER_CLUSTER_ID})
+
+        assert second.status_code == 201
+        assert client.app_state["repo"]._store["20000101T000010-aws"].status == "failed"
 
     def test_start_scan_missing_fields(self, client):
         """Missing required fields returns 422."""
@@ -428,6 +462,41 @@ class TestCompleteScan:
         scan_id, s3_key = self._start_and_get_key(client_missing_s3)
         response = client_missing_s3.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
         assert response.status_code == 400
+
+
+class TestManualFail:
+
+    def _start_and_get_key(self, client, cluster_id=AUTH_CLUSTER_ID, scanner_type="k8s") -> tuple[str, str]:
+        start = client.post("/api/v1/scans/start", json={
+            "cluster_id": cluster_id
+        })
+        scan_id = _scan_id_for(start, scanner_type)
+        claim_resp = _claim(client, scanner_type=scanner_type)
+        assert claim_resp.status_code == 200
+        url_resp = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"})
+        s3_key = url_resp.json()["s3_key"]
+        return scan_id, s3_key
+
+    def test_manual_fail_created_scan(self, client):
+        start = client.post("/api/v1/scans/start", json={"cluster_id": AUTH_CLUSTER_ID})
+        scan_id = _scan_id_for(start, "k8s")
+
+        response = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "failed"
+
+    def test_manual_fail_terminal_scan_is_idempotent(self, client):
+        start = client.post("/api/v1/scans/start", json={"cluster_id": AUTH_CLUSTER_ID})
+        scan_id = _scan_id_for(start, "k8s")
+        _claim(client)
+        s3_key = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"}).json()["s3_key"]
+        client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
+
+        response = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "completed"
 
     def test_complete_scan_empty_files_rejected(self, client):
         """Empty files list returns 422 (schema validation)."""

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/deployguard"
+    SCAN_CREATED_STALE_SECONDS: int = 1800
 
     S3_BUCKET_NAME: str = "dg-raw-scans"
     AWS_REGION: str = "ap-northeast-2"

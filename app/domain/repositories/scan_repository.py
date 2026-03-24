@@ -44,6 +44,9 @@ class ScanRepository(Protocol):
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> object | None:
         """Return an active ScanRecord (status in created/processing/uploading) for the given cluster and scanner_type, or None."""
         ...
+    async def list_active_scans(self, cluster_id: str, scanner_types: list[str] | None = None) -> list:
+        """Return active ScanRecords for the given cluster, optionally filtered by scanner_type."""
+        ...
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
         """Return a dict mapping scanner_type -> latest completed ScanRecord for the given cluster."""
         ...
@@ -61,4 +64,8 @@ class ScanRepository(Protocol):
 
     async def set_analysis_run_id(self, scan_id: str, analysis_run_id: str) -> object:
         """Attach an analysis run id to a scan record. Returns updated ScanRecord."""
+        ...
+
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> object:
+        """Mark a ScanRecord as failed. Returns updated ScanRecord."""
         ...

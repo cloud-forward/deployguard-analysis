@@ -8,19 +8,24 @@ from datetime import datetime
 from datetime import timedelta
 from uuid import UUID
 from fastapi import HTTPException
+from app.config import settings
 from app.models.schemas import ScannerType, RequestSource
 from app.domain.repositories.cluster_repository import ClusterRepository
 from app.core.constants import (
+    ACTIVE_SCAN_STATUSES,
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
     SCAN_STATUS_PROCESSING,
     SCAN_STATUS_UPLOADING,
+    TERMINAL_SCAN_STATUSES,
 )
 from app.models.schemas import (
     ClusterScanListResponse,
     RawScanResultUrlResponse,
     ScanSummaryItemResponse,
     ScanCompleteResponse,
+    ScanFailResponse,
     ScanDetailResponse,
     ScanStartItemResponse,
     ScanStartResponse,
@@ -73,6 +78,10 @@ def _get_record_s3_keys(record) -> list[str]:
     return list(s3_keys or [])
 
 
+def _stale_timestamp_iso(value):
+    return value.isoformat() if value is not None else None
+
+
 class ScanService:
     def __init__(self, scan_repository, s3_service, analysis_service=None, cluster_repository: ClusterRepository | None = None):
         self._repo = scan_repository
@@ -90,6 +99,12 @@ class ScanService:
         cluster_id_str = str(cluster_id)
         cluster = await self._get_cluster(cluster_id_str)
         scanner_types = self._scanner_types_for_cluster_type(cluster.cluster_type)
+        await self._cleanup_stale_scans(
+            cluster_id=cluster_id_str,
+            scanner_types=scanner_types,
+            request_id=request_id,
+            trigger_endpoint=endpoint_path,
+        )
         requested_at = datetime.utcnow()
         for scanner_type_str in scanner_types:
             active = await self._repo.find_active_scan(cluster_id_str, scanner_type_str)
@@ -146,6 +161,64 @@ class ScanService:
             status=SCAN_STATUS_CREATED,
             scans=created_scans,
         )
+
+    async def _cleanup_stale_scans(
+        self,
+        cluster_id: str,
+        scanner_types: list[str],
+        request_id: str | None = None,
+        trigger_endpoint: str | None = None,
+    ) -> None:
+        now = datetime.utcnow()
+        active_records = await self._repo.list_active_scans(cluster_id=cluster_id, scanner_types=scanner_types)
+        for record in active_records:
+            stale_rule = self._stale_rule_for_record(record, now)
+            if stale_rule is None:
+                continue
+            status_before = record.status
+            requested_at = getattr(record, "requested_at", None)
+            created_at = getattr(record, "created_at", None)
+            started_at = getattr(record, "started_at", None)
+            lease_expires_at = getattr(record, "lease_expires_at", None)
+            completed_at = now
+            await self._repo.mark_failed(record.scan_id, completed_at=completed_at)
+            logger.warning(
+                "scan.stale.auto_failed",
+                extra=_context(
+                    request_id=request_id,
+                    scan_id=record.scan_id,
+                    cluster_id=record.cluster_id,
+                    scanner_type=record.scanner_type,
+                    status_before=status_before,
+                    status_after=SCAN_STATUS_FAILED,
+                    stale_rule=stale_rule,
+                    requested_at=_stale_timestamp_iso(requested_at),
+                    created_at=_stale_timestamp_iso(created_at),
+                    started_at=_stale_timestamp_iso(started_at),
+                    lease_expires_at=_stale_timestamp_iso(lease_expires_at),
+                    trigger_endpoint=trigger_endpoint,
+                    failure_source="auto",
+                ),
+            )
+
+    @staticmethod
+    def _stale_rule_for_record(record, now: datetime) -> str | None:
+        status = getattr(record, "status", None)
+        if status not in ACTIVE_SCAN_STATUSES:
+            return None
+        if status == SCAN_STATUS_CREATED:
+            requested_at = getattr(record, "requested_at", None) or getattr(record, "created_at", None)
+            if requested_at is None:
+                return None
+            age_seconds = (now - requested_at).total_seconds()
+            if age_seconds >= settings.SCAN_CREATED_STALE_SECONDS:
+                return "created_timeout"
+            return None
+        if status in (SCAN_STATUS_PROCESSING, SCAN_STATUS_UPLOADING):
+            lease_expires_at = getattr(record, "lease_expires_at", None)
+            if lease_expires_at is not None and lease_expires_at <= now:
+                return "lease_expired"
+        return None
 
     async def _get_cluster(self, cluster_id: str):
         if self._clusters is None:
@@ -320,6 +393,48 @@ class ScanService:
             ),
         )
         return ScanCompleteResponse(scan_id=scan_id, status=SCAN_STATUS_COMPLETED)
+
+    async def fail_scan(
+        self,
+        scan_id: str,
+        request_id: str | None = None,
+        endpoint_path: str | None = None,
+    ) -> ScanFailResponse:
+        record = await self._repo.get_by_scan_id(scan_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
+        status_before = record.status
+        if record.status in TERMINAL_SCAN_STATUSES:
+            logger.info(
+                "scan.fail.already_terminal",
+                extra=_context(
+                    request_id=request_id,
+                    scan_id=scan_id,
+                    cluster_id=record.cluster_id,
+                    scanner_type=record.scanner_type,
+                    status_before=status_before,
+                    status_after=record.status,
+                    failure_source="manual",
+                    endpoint_path=endpoint_path,
+                ),
+            )
+            return ScanFailResponse(scan_id=scan_id, status=record.status)
+
+        await self._repo.mark_failed(scan_id, completed_at=datetime.utcnow())
+        logger.info(
+            "scan.fail.accepted",
+            extra=_context(
+                request_id=request_id,
+                scan_id=scan_id,
+                cluster_id=record.cluster_id,
+                scanner_type=record.scanner_type,
+                status_before=status_before,
+                status_after=SCAN_STATUS_FAILED,
+                failure_source="manual",
+                endpoint_path=endpoint_path,
+            ),
+        )
+        return ScanFailResponse(scan_id=scan_id, status=SCAN_STATUS_FAILED)
 
     async def get_scan_status(self, scan_id: str) -> ScanStatusResponse:
         record = await self._repo.get_by_scan_id(scan_id)

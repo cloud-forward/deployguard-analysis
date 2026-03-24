@@ -10,6 +10,7 @@ from app.models.schemas import (
     ScanStartRequest, ScanStartResponse,
     UploadUrlRequest, UploadUrlResponse,
     ScanCompleteRequest, ScanCompleteResponse,
+    ScanFailResponse,
     ScanDetailResponse,
     ScanStatusResponse,
     PendingScanClaimResponse,
@@ -233,6 +234,44 @@ async def complete_scan(
         scan_id=scan_id,
         files=request.files,
         authenticated_cluster_id=authenticated_cluster.id,
+        request_id=request_id,
+        endpoint_path=request_context.url.path,
+    )
+
+
+@router.post(
+    "/{scan_id}/fail",
+    response_model=ScanFailResponse,
+    status_code=202,
+    summary="스캔 세션 실패 처리",
+    description="""
+스캔 세션을 수동으로 `failed` 상태로 전이합니다.
+
+- `created`, `processing`, `uploading` 상태는 `failed`로 전이됩니다.
+- `completed`, `failed` 상태는 idempotent success로 처리됩니다.
+""",
+    responses={
+        202: {"description": "스캔 실패 처리가 접수되었습니다"},
+        404: {"description": "스캔 세션을 찾을 수 없습니다"},
+    },
+)
+async def fail_scan(
+    request_context: Request,
+    scan_id: str,
+    service: ScanService = Depends(get_scan_service),
+):
+    request_id = getattr(request_context.state, "request_id", None)
+    logger.info(
+        "scan.fail.request_received",
+        extra={
+            "request_id": request_id,
+            "scan_id": scan_id,
+            "endpoint_path": request_context.url.path,
+            "failure_source": "manual",
+        },
+    )
+    return await service.fail_scan(
+        scan_id=scan_id,
         request_id=request_id,
         endpoint_path=request_context.url.path,
     )

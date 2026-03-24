@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 from app.core.constants import (
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_CREATED,
+    SCAN_STATUS_FAILED,
     SCAN_STATUS_PROCESSING,
 )
 
@@ -284,6 +285,15 @@ class ScanCompleteResponse(BaseModel):
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {"scan_id": "20260309T113020-k8s", "status": "completed"}
+    ]})
+
+
+class ScanFailResponse(BaseModel):
+    scan_id: str
+    status: str = Field(default=SCAN_STATUS_FAILED, description="스캔 실패 상태")
+
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"scan_id": "20260309T113020-k8s", "status": "failed"}
     ]})
 
 

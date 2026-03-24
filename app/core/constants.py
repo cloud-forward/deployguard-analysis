@@ -65,6 +65,11 @@ ACTIVE_SCAN_STATUSES: tuple[str, ...] = (
     SCAN_STATUS_UPLOADING,
 )
 
+TERMINAL_SCAN_STATUSES: tuple[str, ...] = (
+    SCAN_STATUS_COMPLETED,
+    SCAN_STATUS_FAILED,
+)
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------

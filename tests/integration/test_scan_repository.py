@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
+from app.core.constants import SCAN_STATUS_FAILED
 
 CLUSTER_1 = "11111111-1111-1111-1111-111111111111"
 CLUSTER_2 = "22222222-2222-2222-2222-222222222222"
@@ -140,6 +141,36 @@ class TestSQLAlchemyScanRepository:
         found = await repo.get_by_scan_id("test-004")
         assert found.status == "completed"
         assert found.completed_at == completed
+
+    @pytest.mark.asyncio
+    async def test_list_active_scans_filters_to_active_statuses(self, repo):
+        await repo.create(scan_id="active-003", cluster_id=CLUSTER_1, scanner_type="k8s")
+        await repo.create(scan_id="done-003", cluster_id=CLUSTER_1, scanner_type="aws")
+        await repo.update_status("done-003", "completed")
+
+        found = await repo.list_active_scans(CLUSTER_1)
+
+        assert [record.scan_id for record in found] == ["active-003"]
+
+    @pytest.mark.asyncio
+    async def test_list_active_scans_can_filter_scanner_types(self, repo):
+        await repo.create(scan_id="active-k8s", cluster_id=CLUSTER_1, scanner_type="k8s")
+        await repo.create(scan_id="active-aws", cluster_id=CLUSTER_1, scanner_type="aws")
+
+        found = await repo.list_active_scans(CLUSTER_1, scanner_types=["aws"])
+
+        assert [record.scan_id for record in found] == ["active-aws"]
+
+    @pytest.mark.asyncio
+    async def test_mark_failed_sets_failed_status_and_completed_at(self, repo):
+        completed_at = datetime(2026, 3, 9, 12, 5, 0)
+        await repo.create(scan_id="fail-002", cluster_id=CLUSTER_1, scanner_type="k8s")
+
+        await repo.mark_failed("fail-002", completed_at=completed_at)
+
+        found = await repo.get_by_scan_id("fail-002")
+        assert found.status == SCAN_STATUS_FAILED
+        assert found.completed_at == completed_at
 
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):

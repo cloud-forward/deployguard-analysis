@@ -51,6 +51,10 @@ EDGE_FIX_TYPE_MAP: dict[str, tuple[str, str]] = {
         "restrict_iam_policy",
         "restrict the instance profile trust or attached policy",
     ),
+    "iam_principal_assumes_iam_role": (
+        "restrict_iam_policy",
+        "restrict the AssumeRole permission or trust policy",
+    ),
     "iam_role_access_resource": (
         "restrict_iam_policy",
         "restrict the IAM policy",
@@ -96,6 +100,7 @@ EDGE_IMPACT_REASON_MAP: dict[str, str] = {
     "lateral_move": "this edge allows lateral movement between workloads or network zones",
     "service_account_assumes_iam_role": "this trust path lets a Kubernetes identity assume an IAM role",
     "instance_profile_assumes": "this trust path lets the instance profile assume broader IAM access",
+    "iam_principal_assumes_iam_role": "this IAM principal can explicitly assume the target IAM role",
     "iam_role_access_resource": "this policy edge grants direct resource access",
     "iam_user_access_resource": "this policy edge grants direct resource access",
     "pod_uses_service_account": "this workload inherits the service account permissions on the path",

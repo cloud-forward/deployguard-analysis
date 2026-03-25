@@ -59,6 +59,10 @@ class ValidationRules:
         FactType.SERVICE_ACCOUNT_ASSUMES_IAM_ROLE.value: {
             (NodeType.SERVICE_ACCOUNT.value, NodeType.IAM_ROLE.value),
         },
+        FactType.IAM_PRINCIPAL_ASSUMES_IAM_ROLE.value: {
+            (NodeType.IAM_USER.value, NodeType.IAM_ROLE.value),
+            (NodeType.IAM_ROLE.value, NodeType.IAM_ROLE.value),
+        },
         FactType.IAM_ROLE_ACCESS_RESOURCE.value: {
             (NodeType.IAM_ROLE.value, NodeType.S3_BUCKET.value),
             (NodeType.IAM_ROLE.value, NodeType.RDS.value),

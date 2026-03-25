@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from src.graph.builders.aws_scanner_types import AWSScanResult, EC2InstanceScan, IAMRoleScan, IAMUserScan, RDSInstanceScan, S3BucketScan, SecurityGroupScan
 from src.graph.builders.cross_domain_types import BridgeResult, IRSAMapping, SecretContainsCredentialsFact
-from src.graph.builders.iam_policy_types import IAMPolicyAnalysisResult, IAMUserPolicyAnalysisResult
+from src.graph.builders.iam_policy_types import IAMPolicyAnalysisResult, IAMUserPolicyAnalysisResult, ResourceAccess
 
 if TYPE_CHECKING:
     from src.graph.builders.build_result_types import AWSBuildResult
@@ -538,6 +538,12 @@ class AWSGraphBuilder:
             self._build_iam_access_edges(policy_results, scan)
         if user_policy_results:
             self._build_iam_user_access_edges(user_policy_results, scan)
+        if policy_results or user_policy_results:
+            self._build_explicit_assume_role_edges(
+                scan,
+                policy_results=policy_results or [],
+                user_policy_results=user_policy_results or [],
+            )
 
         self.graph_metadata = self._graph_metadata()
         return AWSBuildResult(
@@ -667,6 +673,107 @@ class AWSGraphBuilder:
                         },
                     ))
 
+    def _build_explicit_assume_role_edges(
+        self,
+        scan: AWSScanResult,
+        *,
+        policy_results: list[IAMPolicyAnalysisResult],
+        user_policy_results: list[IAMUserPolicyAnalysisResult],
+    ) -> None:
+        scanned_roles_by_arn = {
+            role.arn: role
+            for role in scan.iam_roles
+            if isinstance(role.arn, str) and role.arn
+        }
+        if not scanned_roles_by_arn:
+            return
+
+        role_arn_by_name = {
+            role.name: role.arn
+            for role in scan.iam_roles
+            if role.name and role.arn
+        }
+        user_arn_by_name = {
+            user.username: user.arn
+            for user in scan.iam_users
+            if user.username and user.arn
+        }
+
+        for analysis in policy_results:
+            source_principal_arn = role_arn_by_name.get(analysis.role_name)
+            if not source_principal_arn:
+                continue
+            self._add_explicit_assume_role_edges_for_access_entries(
+                source_id=f"iam:{self.account_id}:{analysis.role_name}",
+                source_principal_arn=source_principal_arn,
+                resource_access=analysis.resource_access,
+                scanned_roles_by_arn=scanned_roles_by_arn,
+            )
+
+        for analysis in user_policy_results:
+            source_principal_arn = user_arn_by_name.get(analysis.username)
+            if not source_principal_arn:
+                continue
+            self._add_explicit_assume_role_edges_for_access_entries(
+                source_id=f"iam_user:{self.account_id}:{analysis.username}",
+                source_principal_arn=source_principal_arn,
+                resource_access=analysis.resource_access,
+                scanned_roles_by_arn=scanned_roles_by_arn,
+            )
+
+    def _add_explicit_assume_role_edges_for_access_entries(
+        self,
+        *,
+        source_id: str,
+        source_principal_arn: str,
+        resource_access: list[ResourceAccess],
+        scanned_roles_by_arn: dict[str, IAMRoleScan],
+    ) -> None:
+        seen_targets: set[str] = set()
+
+        for access in resource_access:
+            if access.effect != "Allow" or access.service != "sts":
+                continue
+            if access.is_wildcard_resource:
+                continue
+
+            actions = {
+                str(action).strip().lower()
+                for action in access.actions
+                if isinstance(action, str) and action.strip()
+            }
+            if "sts:assumerole" not in actions:
+                continue
+
+            for target_role_arn in access.resource_arns:
+                if not self._is_explicit_same_account_role_arn(target_role_arn):
+                    continue
+                target_role = scanned_roles_by_arn.get(target_role_arn)
+                if target_role is None:
+                    continue
+                if not self._trust_policy_explicitly_allows_principal(target_role.trust_policy, source_principal_arn):
+                    continue
+
+                target_role_name = target_role_arn.rsplit("/", 1)[-1]
+                target_id = f"iam:{self.account_id}:{target_role_name}"
+                if target_id in seen_targets:
+                    continue
+                seen_targets.add(target_id)
+
+                self._add_edge(GraphEdge(
+                    source=source_id,
+                    target=target_id,
+                    type="iam_principal_assumes_iam_role",
+                    metadata={
+                        "source_principal_arn": source_principal_arn,
+                        "target_role_arn": target_role_arn,
+                        "via": "explicit_sts_assumerole",
+                        "scan_id": self.scan_id,
+                        "source_type": "aws_scanner",
+                        "created_at": self._timestamp(),
+                    },
+                ))
+
     def _add_edge(self, edge: GraphEdge) -> None:
         """Add an edge to the graph.
 
@@ -676,3 +783,47 @@ class AWSGraphBuilder:
             edge: The GraphEdge to add.
         """
         self.edges.append(edge)
+
+    @staticmethod
+    def _trust_policy_explicitly_allows_principal(
+        trust_policy: dict[str, Any],
+        source_principal_arn: str,
+    ) -> bool:
+        statements = trust_policy.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+        if not isinstance(statements, list):
+            return False
+
+        for statement in statements:
+            if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+                continue
+            if statement.get("Condition"):
+                continue
+            principal = statement.get("Principal")
+            if not isinstance(principal, dict):
+                continue
+            aws_principals = principal.get("AWS", [])
+            if isinstance(aws_principals, str):
+                aws_principals = [aws_principals]
+            if not isinstance(aws_principals, list):
+                continue
+            if any(principal_arn == source_principal_arn for principal_arn in aws_principals):
+                return True
+        return False
+
+    def _is_explicit_same_account_role_arn(self, role_arn: Any) -> bool:
+        if not isinstance(role_arn, str) or not role_arn or "*" in role_arn:
+            return False
+
+        parts = role_arn.split(":", 5)
+        if len(parts) != 6:
+            return False
+        if parts[1] != "aws" or parts[2] != "iam" or parts[4] != self.account_id:
+            return False
+
+        resource = parts[5]
+        if not resource.startswith("role/"):
+            return False
+
+        return bool(resource[len("role/"):])

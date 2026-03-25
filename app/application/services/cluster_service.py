@@ -54,7 +54,7 @@ class ClusterService:
             ],
         )
 
-    async def create_cluster(self, request: ClusterCreateRequest) -> ClusterCreateResponse:
+    async def create_cluster(self, request: ClusterCreateRequest, user_id: Optional[str] = None) -> ClusterCreateResponse:
         existing = await self._repo.get_by_name(request.name)
         if existing:
             raise HTTPException(status_code=400, detail=f"Cluster with name '{request.name}' already exists")
@@ -63,6 +63,7 @@ class ClusterService:
         cluster = await self._repo.create(
             name=request.name,
             cluster_type=request.cluster_type,
+            user_id=user_id,
             description=request.description,
             api_token=api_token,
             aws_account_id=request.aws_account_id,

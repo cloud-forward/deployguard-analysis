@@ -18,6 +18,7 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         self,
         name: str,
         cluster_type: str,
+        user_id: Optional[str] = None,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
         aws_account_id: Optional[str] = None,
@@ -27,6 +28,7 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         cluster = Cluster(
             name=name,
             cluster_type=cluster_type,
+            user_id=user_id,
             description=description,
             api_token=api_token,
             aws_account_id=aws_account_id,

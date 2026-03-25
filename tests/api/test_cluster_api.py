@@ -20,6 +20,8 @@ from app.models.schemas import (
 from app.application.services.cluster_service import ClusterService
 from app.main import app
 
+USER_HEADERS = {"X-User-Id": "user-1"}
+
 
 class _FakeClusterRecord:
     def __init__(
@@ -31,6 +33,7 @@ class _FakeClusterRecord:
         api_token,
         created_at,
         updated_at,
+        user_id=None,
         aws_account_id=None,
         aws_role_arn=None,
         aws_region=None,
@@ -42,6 +45,7 @@ class _FakeClusterRecord:
         self.api_token = api_token
         self.created_at = created_at
         self.updated_at = updated_at
+        self.user_id = user_id
         self.aws_account_id = aws_account_id
         self.aws_role_arn = aws_role_arn
         self.aws_region = aws_region
@@ -60,6 +64,7 @@ class FakeClusterRepository:
         self,
         name: str,
         cluster_type: str,
+        user_id: Optional[str] = None,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
         aws_account_id: Optional[str] = None,
@@ -74,6 +79,7 @@ class FakeClusterRepository:
             api_token=api_token,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            user_id=user_id,
             aws_account_id=aws_account_id,
             aws_role_arn=aws_role_arn,
             aws_region=aws_region,
@@ -116,19 +122,24 @@ def client():
     service = ClusterService(cluster_repository=repo)
     app.dependency_overrides[get_cluster_service] = lambda: service
     with TestClient(app) as c:
+        c.app_state["cluster_repo"] = repo
         yield c
     app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def created_cluster(client):
-    resp = client.post("/api/v1/clusters", json={"name": "base-cluster", "cluster_type": "eks"})
+    resp = client.post("/api/v1/clusters", json={"name": "base-cluster", "cluster_type": "eks"}, headers=USER_HEADERS)
     assert resp.status_code == 201
     return resp.json()
 
 
 def test_create_cluster(client):
-    resp = client.post("/api/v1/clusters", json={"name": "my-cluster", "cluster_type": "eks", "description": "desc"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "my-cluster", "cluster_type": "eks", "description": "desc"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "my-cluster"
@@ -144,13 +155,21 @@ def test_create_cluster(client):
 
 
 def test_create_cluster_without_description(client):
-    resp = client.post("/api/v1/clusters", json={"name": "no-desc", "cluster_type": "self-managed"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "no-desc", "cluster_type": "self-managed"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 201
     assert resp.json()["description"] is None
 
 
 def test_create_cluster_with_aws_type(client):
-    resp = client.post("/api/v1/clusters", json={"name": "aws-cluster", "cluster_type": "aws"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "aws-cluster", "cluster_type": "aws"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["cluster_type"] == "aws"
@@ -167,7 +186,11 @@ def test_create_cluster_with_aws_type(client):
 
 
 def test_create_cluster_with_self_managed_type_uses_helm_onboarding(client):
-    resp = client.post("/api/v1/clusters", json={"name": "self-managed-cluster", "cluster_type": "self-managed"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "self-managed-cluster", "cluster_type": "self-managed"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["cluster_type"] == "self-managed"
@@ -178,24 +201,45 @@ def test_create_cluster_with_self_managed_type_uses_helm_onboarding(client):
 
 
 def test_create_cluster_duplicate_name_rejected(client, created_cluster):
-    resp = client.post("/api/v1/clusters", json={"name": created_cluster["name"], "cluster_type": "eks"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": created_cluster["name"], "cluster_type": "eks"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 400
     assert "already exists" in resp.json()["detail"]
 
 
 def test_create_cluster_invalid_type(client):
-    resp = client.post("/api/v1/clusters", json={"name": "bad-type", "cluster_type": "gke"})
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "bad-type", "cluster_type": "gke"},
+        headers=USER_HEADERS,
+    )
     assert resp.status_code == 422
 
 
 def test_create_cluster_missing_name(client):
-    resp = client.post("/api/v1/clusters", json={"cluster_type": "eks"})
+    resp = client.post("/api/v1/clusters", json={"cluster_type": "eks"}, headers=USER_HEADERS)
     assert resp.status_code == 422
 
 
 def test_create_cluster_missing_type(client):
-    resp = client.post("/api/v1/clusters", json={"name": "no-type"})
+    resp = client.post("/api/v1/clusters", json={"name": "no-type"}, headers=USER_HEADERS)
     assert resp.status_code == 422
+
+
+def test_create_cluster_uses_x_user_id_and_stores_user_id(client):
+    resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "owned-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-42"},
+    )
+
+    assert resp.status_code == 201
+    cluster_id = resp.json()["id"]
+    stored = client.app_state["cluster_repo"]._store[cluster_id]
+    assert stored.user_id == "user-42"
 
 
 def test_get_cluster_by_id(client, created_cluster):
@@ -213,8 +257,8 @@ def test_get_cluster_not_found(client):
 
 
 def test_list_clusters(client):
-    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"})
-    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"})
+    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"}, headers=USER_HEADERS)
+    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"}, headers=USER_HEADERS)
     resp = client.get("/api/v1/clusters")
     assert resp.status_code == 200
     names = [c["name"] for c in resp.json()]
@@ -320,7 +364,11 @@ def test_post_remediation_recommendation_explanation_manual_endpoint():
     app.dependency_overrides[get_cluster_service] = lambda: cluster_service
     app.dependency_overrides[get_recommendation_explanation_service] = lambda: explanation_service
     with TestClient(app) as client:
-        create_resp = client.post("/api/v1/clusters", json={"name": "explain-cluster", "cluster_type": "eks"})
+        create_resp = client.post(
+            "/api/v1/clusters",
+            json={"name": "explain-cluster", "cluster_type": "eks"},
+            headers=USER_HEADERS,
+        )
         cluster_id = create_resp.json()["id"]
         response = client.post(
             f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
@@ -344,7 +392,11 @@ def test_existing_remediation_detail_get_behavior_remains_unchanged():
     app.dependency_overrides[get_cluster_service] = lambda: cluster_service
     app.dependency_overrides[get_attack_graph_service] = lambda: FakeAttackGraphService()
     with TestClient(app) as client:
-        create_resp = client.post("/api/v1/clusters", json={"name": "detail-cluster", "cluster_type": "eks"})
+        create_resp = client.post(
+            "/api/v1/clusters",
+            json={"name": "detail-cluster", "cluster_type": "eks"},
+            headers=USER_HEADERS,
+        )
         cluster_id = create_resp.json()["id"]
         response = client.get(
             f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"

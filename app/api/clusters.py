@@ -51,9 +51,10 @@ logger = logging.getLogger(__name__)
 )
 async def create_cluster(
     request: ClusterCreateRequest,
+    user_id: str = Depends(get_request_user_id),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.create_cluster(request)
+    return await service.create_cluster(request, user_id=user_id)
 
 
 @router.get(

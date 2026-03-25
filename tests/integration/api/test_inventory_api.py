@@ -15,6 +15,8 @@ from app.gateway.repositories.cluster_repository import SQLAlchemyClusterReposit
 from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
 from app.main import app
 
+USER_HEADERS = {"X-User-Id": "user-1"}
+
 
 @pytest.fixture
 async def inventory_client(tmp_path: Path, monkeypatch):
@@ -63,6 +65,7 @@ async def inventory_client(tmp_path: Path, monkeypatch):
                 "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
                 "aws_region": "ap-northeast-2",
             },
+            headers=USER_HEADERS,
         )
         cluster_id = create_response.json()["id"]
         client.post(f"/api/v1/clusters/{cluster_id}/sync")
@@ -103,6 +106,7 @@ def test_get_cluster_assets_returns_empty_when_no_snapshot_exists(inventory_clie
             "aws_role_arn": "arn:aws:iam::999999999999:role/discovery",
             "aws_region": "us-west-2",
         },
+        headers=USER_HEADERS,
     )
     cluster_id = response.json()["id"]
 
@@ -226,6 +230,7 @@ def test_empty_result_payload_after_sync_maps_to_empty_assets(tmp_path: Path, mo
                 "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
                 "aws_region": "ap-northeast-2",
             },
+            headers=USER_HEADERS,
         )
         cluster_id = create_response.json()["id"]
         client.post(f"/api/v1/clusters/{cluster_id}/sync")

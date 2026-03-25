@@ -13,6 +13,9 @@ from app.gateway.db.base import Base
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 from app.main import app
 
+USER_HEADERS = {"X-User-Id": "user-1"}
+
+
 def test_create_cluster(client):
     response = client.post(
         "/api/v1/clusters",
@@ -20,7 +23,8 @@ def test_create_cluster(client):
             "name": "test-cluster",
             "cluster_type": "eks",
             "description": "A test cluster"
-        }
+        },
+        headers=USER_HEADERS,
     )
     assert response.status_code == 201
     data = response.json()
@@ -41,7 +45,8 @@ def test_create_cluster_with_aws_type(client):
         json={
             "name": "aws-test-cluster",
             "cluster_type": "aws",
-        }
+        },
+        headers=USER_HEADERS,
     )
     assert response.status_code == 201
     data = response.json()
@@ -64,7 +69,8 @@ def test_create_cluster_with_self_managed_type(client):
         json={
             "name": "self-managed-test-cluster",
             "cluster_type": "self-managed",
-        }
+        },
+        headers=USER_HEADERS,
     )
     assert response.status_code == 201
     data = response.json()
@@ -81,13 +87,15 @@ def test_create_cluster_invalid_type(client):
         json={
             "name": "invalid-cluster",
             "cluster_type": "invalid"
-        }
+        },
+        headers=USER_HEADERS,
     )
     assert response.status_code == 422
 
+
 def test_list_clusters(client):
-    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"})
-    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"})
+    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"}, headers=USER_HEADERS)
+    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"}, headers=USER_HEADERS)
     
     response = client.get("/api/v1/clusters")
     assert response.status_code == 200
@@ -96,7 +104,7 @@ def test_list_clusters(client):
     assert all("api_token" not in c for c in data)
 
 def test_get_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"}, headers=USER_HEADERS)
     cluster_id = create_resp.json()["id"]
     
     response = client.get(f"/api/v1/clusters/{cluster_id}")
@@ -105,7 +113,7 @@ def test_get_cluster(client):
     assert "api_token" not in response.json()
 
 def test_update_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "update-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "update-me", "cluster_type": "eks"}, headers=USER_HEADERS)
     cluster_id = create_resp.json()["id"]
     
     response = client.patch(
@@ -118,7 +126,7 @@ def test_update_cluster(client):
     assert data["cluster_type"] == "self-managed"
 
 def test_delete_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"}, headers=USER_HEADERS)
     cluster_id = create_resp.json()["id"]
     
     del_resp = client.delete(f"/api/v1/clusters/{cluster_id}")
@@ -135,6 +143,7 @@ def test_create_cluster_token_is_persisted_for_auth_lookup():
         create_resp = client.post(
             "/api/v1/clusters",
             json={"name": name, "cluster_type": "eks"},
+            headers=USER_HEADERS,
         )
         assert create_resp.status_code == 201
         token = create_resp.json()["api_token"]
@@ -240,7 +249,11 @@ async def attack_graph_client(tmp_path):
     app.dependency_overrides[get_attack_graph_service] = override_get_attack_graph_service
 
     with TestClient(app) as client:
-        create_resp = client.post("/api/v1/clusters", json={"name": "graph-cluster", "cluster_type": "eks"})
+        create_resp = client.post(
+            "/api/v1/clusters",
+            json={"name": "graph-cluster", "cluster_type": "eks"},
+            headers=USER_HEADERS,
+        )
         assert create_resp.status_code == 201
         yield {"client": client, "cluster_id": create_resp.json()["id"], "sessionmaker": sessionmaker}
 

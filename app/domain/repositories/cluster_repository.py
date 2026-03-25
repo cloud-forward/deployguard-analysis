@@ -11,6 +11,7 @@ class ClusterRepository(Protocol):
         self,
         name: str,
         cluster_type: str,
+        user_id: Optional[str] = None,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
         aws_account_id: Optional[str] = None,

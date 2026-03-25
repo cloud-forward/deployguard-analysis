@@ -15,6 +15,8 @@ from app.gateway.repositories.cluster_repository import SQLAlchemyClusterReposit
 from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
 from app.main import app
 
+USER_HEADERS = {"X-User-Id": "user-1"}
+
 
 @pytest.fixture
 async def inventory_client(tmp_path: Path, monkeypatch):
@@ -69,6 +71,7 @@ def test_sync_cluster_persists_snapshot(inventory_client):
             "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
             "aws_region": "ap-northeast-2",
         },
+        headers=USER_HEADERS,
     )
     cluster_id = create_response.json()["id"]
 
@@ -95,6 +98,7 @@ async def test_sync_cluster_persists_snapshot_row(inventory_client):
             "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
             "aws_region": "ap-northeast-2",
         },
+        headers=USER_HEADERS,
     )
     cluster_id = create_response.json()["id"]
 
@@ -125,6 +129,7 @@ async def test_sync_cluster_missing_aws_config_returns_400(inventory_client):
             "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
             "aws_region": "ap-northeast-2",
         },
+        headers=USER_HEADERS,
     )
     cluster_id = create_response.json()["id"]
 
@@ -148,6 +153,7 @@ def test_sync_response_matches_schema_shape(inventory_client):
             "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
             "aws_region": "ap-northeast-2",
         },
+        headers=USER_HEADERS,
     )
     cluster_id = create_response.json()["id"]
 

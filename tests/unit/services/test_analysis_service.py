@@ -734,7 +734,9 @@ async def test_analysis_execution_uses_explicit_scan_ids_from_analysis_job(servi
     )
     service.execute_analysis = AsyncMock(return_value={"ok": True})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     service.execute_analysis.assert_awaited_once_with(
@@ -760,7 +762,9 @@ async def test_execute_analysis_job_marks_failed_on_execution_error(service, job
     service.execute_analysis = AsyncMock(side_effect=RuntimeError("raw load failed"))
 
     with pytest.raises(RuntimeError, match="raw load failed"):
-        await service.execute_analysis_job("job-123")
+        await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     jobs_repo.rollback.assert_awaited_once_with()
@@ -813,7 +817,9 @@ async def test_execute_analysis_job_uses_snapshotted_scalars_after_repo_state_ch
     jobs_repo.mark_running.side_effect = expire_after_mark_running
     service.execute_analysis = AsyncMock(return_value={"stats": {"graph": {"nodes": 1}}})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     service.execute_analysis.assert_awaited_once_with(
         cluster_id="cluster-1",

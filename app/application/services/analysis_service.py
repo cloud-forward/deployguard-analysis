@@ -172,8 +172,8 @@ class AnalysisService:
             links=self._build_analysis_result_links(job_detail),
         )
 
-    async def execute_analysis_job(self, job_id: str) -> Dict[str, Any]:
-        job = await self._jobs.get_analysis_job(job_id)
+    async def execute_analysis_job(self, job_id: str, user_id: str | None = None) -> Dict[str, Any]:
+        job = await self._jobs.get_analysis_job(job_id, user_id=user_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
         persisted_job_id = str(job.id)

@@ -105,8 +105,10 @@ class FakeScanRepository:
             return None
         return record
 
-    async def update_status(self, scan_id: str, status: str, **kwargs):
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = status
             if "completed_at" in kwargs:
@@ -148,8 +150,10 @@ class FakeScanRepository:
             records = [r for r in records if r.scanner_type in scanner_types]
         return records
 
-    async def mark_failed(self, scan_id: str, completed_at=None):
+    async def mark_failed(self, scan_id: str, completed_at=None, user_id: str | None = None):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = SCAN_STATUS_FAILED
             record.completed_at = completed_at
@@ -540,7 +544,7 @@ class TestManualFail:
         start = client.post("/api/v1/scans/start", headers=_auth_headers(client), json={"cluster_id": AUTH_CLUSTER_ID})
         scan_id = _scan_id_for(start, "k8s")
 
-        response = client.post(f"/api/v1/scans/{scan_id}/fail")
+        response = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert response.status_code == 202
         assert response.json()["status"] == "failed"
@@ -552,10 +556,18 @@ class TestManualFail:
         s3_key = client.post(f"/api/v1/scans/{scan_id}/upload-url", json={"file_name": "scan.json"}).json()["s3_key"]
         client.post(f"/api/v1/scans/{scan_id}/complete", json={"files": [s3_key]})
 
-        response = client.post(f"/api/v1/scans/{scan_id}/fail")
+        response = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert response.status_code == 202
         assert response.json()["status"] == "completed"
+
+    def test_manual_fail_not_visible_to_other_user(self, client):
+        start = client.post("/api/v1/scans/start", headers=_auth_headers(client), json={"cluster_id": AUTH_CLUSTER_ID})
+        scan_id = _scan_id_for(start, "k8s")
+
+        response = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client, "user-2"))
+
+        assert response.status_code == 404
 
     def test_complete_scan_empty_files_rejected(self, client):
         """Empty files list returns 422 (schema validation)."""

@@ -850,6 +850,21 @@ class TestScanServiceFailScan:
         repo.mark_failed.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_fail_scan_passes_user_id_through(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+        )
+
+        await svc.fail_scan("s1", user_id="user-1")
+
+        repo.get_by_scan_id.assert_awaited_with("s1", user_id="user-1")
+        assert repo.mark_failed.await_args.kwargs["user_id"] == "user-1"
+
+    @pytest.mark.asyncio
     async def test_fail_scan_marks_processing_as_failed(self):
         svc, repo, _, _ = make_service()
         repo.get_by_scan_id.return_value = SimpleNamespace(

@@ -32,7 +32,7 @@ class AnalysisJobRepository(Protocol):
     async def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         ...
 
-    async def get_analysis_job(self, job_id: str) -> object | None:
+    async def get_analysis_job(self, job_id: str, user_id: str | None = None) -> object | None:
         """Fetch a persisted analysis job record by id."""
         ...
 

@@ -120,10 +120,11 @@ async def get_analysis_result(
 )
 async def execute_analysis_job(
     job_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AnalysisService = Depends(get_analysis_service),
 ):
     try:
-        return await service.execute_analysis_job(job_id)
+        return await service.execute_analysis_job(job_id, user_id=current_user.id)
     except HTTPException:
         raise
     except Exception as e:

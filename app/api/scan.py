@@ -262,6 +262,7 @@ async def fail_scan(
     request_context: Request,
     scan_id: str,
     service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
 ):
     request_id = getattr(request_context.state, "request_id", None)
     logger.info(
@@ -275,6 +276,7 @@ async def fail_scan(
     )
     return await service.fail_scan(
         scan_id=scan_id,
+        user_id=current_user.id,
         request_id=request_id,
         endpoint_path=request_context.url.path,
     )

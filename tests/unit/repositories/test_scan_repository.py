@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
-from app.core.constants import SCAN_STATUS_FAILED
+from app.core.constants import SCAN_STATUS_CREATED, SCAN_STATUS_FAILED
 
 CLUSTER_1 = "11111111-1111-1111-1111-111111111111"
 CLUSTER_2 = "22222222-2222-2222-2222-222222222222"
@@ -205,6 +205,17 @@ class TestSQLAlchemyScanRepository:
         found = await repo.get_by_scan_id("fail-002")
         assert found.status == SCAN_STATUS_FAILED
         assert found.completed_at == completed_at
+
+    @pytest.mark.asyncio
+    async def test_mark_failed_respects_user_id_filter(self, repo):
+        completed_at = datetime(2026, 3, 9, 12, 6, 0)
+        await repo.create(scan_id="fail-003", cluster_id=CLUSTER_1, scanner_type="k8s", user_id="user-1")
+
+        missing = await repo.mark_failed("fail-003", completed_at=completed_at, user_id="user-2")
+        found = await repo.get_by_scan_id("fail-003", user_id="user-1")
+
+        assert missing is None
+        assert found.status == SCAN_STATUS_CREATED
 
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):

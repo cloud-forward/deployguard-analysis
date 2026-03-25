@@ -92,11 +92,14 @@ class SQLAlchemyScanRepository(ScanRepository):
         result = await self._session.execute(stmt)
         return result.scalars().first()
 
-    async def update_status(self, scan_id: str, status: str, **kwargs) -> ScanRecord:
-        result = await self._session.execute(
-            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
-        )
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs) -> ScanRecord:
+        stmt = select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        if user_id is not None:
+            stmt = stmt.where(ScanRecord.user_id == user_id)
+        result = await self._session.execute(stmt)
         record = result.scalars().first()
+        if record is None:
+            return None
         record.status = status
         if "completed_at" in kwargs:
             record.completed_at = kwargs["completed_at"]
@@ -230,8 +233,8 @@ class SQLAlchemyScanRepository(ScanRepository):
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> ScanRecord:
-        return await self.update_status(scan_id, SCAN_STATUS_FAILED, completed_at=completed_at)
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None, user_id: str | None = None) -> ScanRecord:
+        return await self.update_status(scan_id, SCAN_STATUS_FAILED, user_id=user_id, completed_at=completed_at)
 
     async def claim_next_queued_scan(
         self,

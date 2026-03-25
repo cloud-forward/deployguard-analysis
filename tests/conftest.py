@@ -68,8 +68,10 @@ class FakeScanRepository:
             return None
         return record
 
-    async def update_status(self, scan_id: str, status: str, **kwargs):
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = status
             if "completed_at" in kwargs:
@@ -111,8 +113,10 @@ class FakeScanRepository:
             records = [r for r in records if r.scanner_type in scanner_types]
         return records
 
-    async def mark_failed(self, scan_id: str, completed_at=None):
+    async def mark_failed(self, scan_id: str, completed_at=None, user_id: str | None = None):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = SCAN_STATUS_FAILED
             record.completed_at = completed_at

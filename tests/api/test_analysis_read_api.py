@@ -94,6 +94,7 @@ def analysis_service():
             "link_scope": "cluster_latest_view",
         },
     }
+    service.execute_analysis_job.return_value = {"status": "ok"}
     return service
 
 
@@ -197,3 +198,31 @@ class TestAnalysisReadApi:
 
         assert response.status_code == 401
         analysis_service.list_analysis_jobs.assert_not_called()
+
+    def test_execute_analysis_job_uses_jwt_current_user(self, client, analysis_service):
+        response = client.post("/api/v1/analysis/jobs/job-123/execute", headers=_auth_headers(client, "user-1"))
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        analysis_service.execute_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
+
+    def test_execute_analysis_job_non_owned_returns_not_found(self, client, analysis_service):
+        analysis_service.execute_analysis_job.side_effect = HTTPException(
+            status_code=404,
+            detail="Analysis job not found: job-123",
+        )
+
+        response = client.post("/api/v1/analysis/jobs/job-123/execute", headers=_auth_headers(client, "user-2"))
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Analysis job not found: job-123"
+        analysis_service.execute_analysis_job.assert_awaited_once_with("job-123", user_id="user-2")
+
+    def test_execute_analysis_job_requires_jwt_and_ignores_x_user_id_only(self, client, analysis_service):
+        response = client.post(
+            "/api/v1/analysis/jobs/job-123/execute",
+            headers={"X-User-Id": "user-1"},
+        )
+
+        assert response.status_code == 401
+        analysis_service.execute_analysis_job.assert_not_called()

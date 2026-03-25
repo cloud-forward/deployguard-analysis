@@ -27,7 +27,7 @@ class ScanRepository(Protocol):
         """Fetch a ScanRecord by scan_id. Returns None if not found."""
         ...
 
-    async def update_status(self, scan_id: str, status: str, **kwargs) -> object:
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs) -> object:
         """Update the status (and optional fields) of a ScanRecord. Returns updated ScanRecord."""
         ...
 
@@ -67,6 +67,6 @@ class ScanRepository(Protocol):
         """Attach an analysis run id to a scan record. Returns updated ScanRecord."""
         ...
 
-    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> object:
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None, user_id: str | None = None) -> object:
         """Mark a ScanRecord as failed. Returns updated ScanRecord."""
         ...

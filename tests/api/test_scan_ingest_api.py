@@ -103,8 +103,10 @@ class FakeScanRepository:
             return None
         return record
 
-    async def update_status(self, scan_id: str, status: str, **kwargs):
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = status
             if "completed_at" in kwargs:
@@ -146,8 +148,10 @@ class FakeScanRepository:
             records = [r for r in records if r.scanner_type in scanner_types]
         return records
 
-    async def mark_failed(self, scan_id: str, completed_at=None):
+    async def mark_failed(self, scan_id: str, completed_at=None, user_id: str | None = None):
         record = self._store.get(scan_id)
+        if record and user_id is not None and record.user_id != user_id:
+            return None
         if record:
             record.status = SCAN_STATUS_FAILED
             record.completed_at = completed_at
@@ -906,10 +910,17 @@ class TestCompleteScan:
 
 
 class TestManualFail:
-    def test_manual_fail_created_scan(self, client):
+    def test_manual_fail_requires_jwt(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
 
         resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+
+        assert resp.status_code == 401
+
+    def test_manual_fail_created_scan(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_FAILED
@@ -919,7 +930,7 @@ class TestManualFail:
         scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
 
-        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_FAILED
@@ -929,7 +940,7 @@ class TestManualFail:
         _claim(client)
         _upload_url(client, scan_id)
 
-        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_FAILED
@@ -940,7 +951,7 @@ class TestManualFail:
         s3_key = _upload_url(client, scan_id).json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
 
-        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_COMPLETED
@@ -950,10 +961,27 @@ class TestManualFail:
         scan_id = _scan_id_for(_start(client), "k8s")
         repo._store[scan_id].status = SCAN_STATUS_FAILED
 
-        resp = client.post(f"/api/v1/scans/{scan_id}/fail")
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_FAILED
+
+    def test_manual_fail_not_visible_to_other_user(self, client_with_repo):
+        client, repo = client_with_repo
+        scan_id = _scan_id_for(_start(client), "k8s")
+        repo._store[scan_id].user_id = "user-1"
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client, "user-2"))
+
+        assert resp.status_code == 404
+        assert repo._store[scan_id].status == SCAN_STATUS_CREATED
+
+    def test_x_user_id_alone_does_not_drive_fail_route(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        resp = client.post(f"/api/v1/scans/{scan_id}/fail", headers={"X-User-Id": "user-1"})
+
+        assert resp.status_code == 401
 
     def test_manual_fail_emits_logs(self, client, caplog):
         scan_id = _scan_id_for(_start(client), "k8s")
@@ -961,7 +989,7 @@ class TestManualFail:
         with caplog.at_level(logging.INFO):
             resp = client.post(
                 f"/api/v1/scans/{scan_id}/fail",
-                headers={"X-Request-ID": "req-fail-1"},
+                headers={**_auth_headers(client), "X-Request-ID": "req-fail-1"},
             )
 
         assert resp.status_code == 202

@@ -399,10 +399,11 @@ class ScanService:
     async def fail_scan(
         self,
         scan_id: str,
+        user_id: str | None = None,
         request_id: str | None = None,
         endpoint_path: str | None = None,
     ) -> ScanFailResponse:
-        record = await self._repo.get_by_scan_id(scan_id)
+        record = await self._repo.get_by_scan_id(scan_id, user_id=user_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
         status_before = record.status
@@ -422,7 +423,7 @@ class ScanService:
             )
             return ScanFailResponse(scan_id=scan_id, status=record.status)
 
-        await self._repo.mark_failed(scan_id, completed_at=datetime.utcnow())
+        await self._repo.mark_failed(scan_id, completed_at=datetime.utcnow(), user_id=user_id)
         logger.info(
             "scan.fail.accepted",
             extra=_context(

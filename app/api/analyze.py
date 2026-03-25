@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.models.schemas import (
+    AnalysisResultResponse,
     AnalysisJobDetailResponse,
     AnalysisJobRequest,
     AnalysisJobResponse,
@@ -84,6 +85,7 @@ async def get_analysis_job(
 # ✨ 새로운 엔드포인트 1: 분석 결과 조회
 @router.get(
     "/analysis/{job_id}/result",
+    response_model=AnalysisResultResponse,
     tags=["Analysis"],
     summary="분석 결과 조회",
 )
@@ -96,12 +98,7 @@ async def get_analysis_result(
     
     Returns attack paths and risk scores.
     """
-    # TODO: Implement job result retrieval from database
-    return {
-        "job_id": job_id,
-        "status": "completed",
-        "message": "Analysis result retrieval not yet implemented",
-    }
+    return await service.get_analysis_result(job_id)
 
 
 # ✨ 새로운 엔드포인트 2: 즉시 실행 (테스트용)

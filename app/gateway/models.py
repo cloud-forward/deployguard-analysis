@@ -309,6 +309,38 @@ class RemediationRecommendation(Base):
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
 
 
+class LLMProviderConfig(Base):
+    __tablename__ = "llm_provider_configs"
+    __table_args__ = (
+        Index("idx_llm_provider_configs_provider", "provider"),
+        Index("idx_llm_provider_configs_is_active", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    default_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("FALSE"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+
 class Cluster(Base):
     """
     Model representing a cluster in DeployGuard.

@@ -135,6 +135,26 @@ class AnalysisJobDetailResponse(AnalysisJobSummaryResponse):
     ]})
 
 
+class AnalysisResultSummaryResponse(BaseModel):
+    graph_id: str | None = None
+    generated_at: datetime | None = None
+    graph_status: str | None = None
+    node_count: int = 0
+    edge_count: int = 0
+    entry_point_count: int = 0
+    crown_jewel_count: int = 0
+    attack_path_count: int = 0
+    remediation_recommendation_count: int = 0
+
+
+class AnalysisResultLinksResponse(BaseModel):
+    analysis_job: str
+    attack_graph: str | None = None
+    attack_paths: str | None = None
+    remediation_recommendations: str | None = None
+    link_scope: str = "cluster_latest_view"
+
+
 class ClusterAnalysisJobListResponse(BaseModel):
     items: list[AnalysisJobSummaryResponse] = Field(default_factory=list)
     total: int
@@ -727,6 +747,42 @@ class RemediationRecommendationDetailEnvelopeResponse(BaseModel):
     recommendation: Optional[RemediationRecommendationDetailResponse] = Field(
         None, description="Requested remediation recommendation detail"
     )
+
+
+class ExplanationProviderName(str, Enum):
+    openai = "openai"
+    xai = "xai"
+
+
+class RecommendationExplanationRequest(BaseModel):
+    provider: ExplanationProviderName | None = Field(
+        None,
+        description="Optional provider override",
+    )
+    model: str | None = Field(
+        None,
+        description="Optional model override for the selected provider",
+    )
+
+
+class RecommendationExplanationResponse(BaseModel):
+    cluster_id: str
+    recommendation_id: str
+    explanation_status: str
+    used_llm: bool
+    base_explanation: str
+    final_explanation: str
+    provider: str | None = None
+    model: str | None = None
+    fallback_reason: str | None = None
+
+
+class AnalysisResultResponse(BaseModel):
+    job: AnalysisJobDetailResponse
+    summary: AnalysisResultSummaryResponse
+    attack_paths_preview: list[AttackPathListItemResponse] = Field(default_factory=list)
+    remediation_preview: list[RemediationRecommendationListItemResponse] = Field(default_factory=list)
+    links: AnalysisResultLinksResponse
 
 
 class SyncResponse(BaseModel):

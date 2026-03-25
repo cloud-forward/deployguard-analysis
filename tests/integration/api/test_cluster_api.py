@@ -1,12 +1,14 @@
 import pytest
 from uuid import uuid4
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.di import get_attack_graph_service, get_cluster_service
+from app.application.di import get_attack_graph_service, get_cluster_service, get_recommendation_explanation_service
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
+from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.gateway.db.base import Base
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 from app.main import app
@@ -584,6 +586,130 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
 
 
 @pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_latest_graph_has_no_rows(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-empty"
+    analysis_run_id = "analysis-recommendations-empty"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:30:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:30:00', '2026-03-22 14:35:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:35:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_table_is_missing(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-table"
+    analysis_run_id = "analysis-recommendations-missing-table"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("DROP TABLE IF EXISTS remediation_recommendations"))
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:40:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:40:00', '2026-03-22 14:45:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:45:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_orders_by_rank_then_cumulative_reduction_then_id(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-ordering"
+    analysis_run_id = "analysis-recommendations-ordering"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 16:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 16:00:00', '2026-03-22 16:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    (:graph_id, 'z-rank-0', 0, 'a', 'b', 'ingress_exposes_service',
+                     'restrict_ingress', 'rank 0 first', '["path-a"]', '[0]', 1.0, 0.5,
+                     0.5, 0.4, '{}'),
+                    (:graph_id, 'z-rank-1-lower-cumulative', 1, 'c', 'd', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 lower cumulative', '["path-b"]', '[1]', 1.0, 0.5,
+                     0.5, 0.5, '{}'),
+                    (:graph_id, 'a-rank-1-higher-cumulative', 1, 'e', 'f', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 higher cumulative', '["path-c"]', '[2]', 1.0, 0.5,
+                     0.5, 0.9, '{}'),
+                    (:graph_id, 'a-rank-1-same-cumulative', 1, 'g', 'h', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 same cumulative lower id', '["path-d"]', '[3]', 1.0, 0.5,
+                     0.5, 0.5, '{}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert [item["recommendation_id"] for item in body["items"]] == [
+        "z-rank-0",
+        "a-rank-1-higher-cumulative",
+        "a-rank-1-same-cumulative",
+        "z-rank-1-lower-cumulative",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_remediation_recommendation_detail_returns_persisted_row(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
     graph_id = "graph-recommendations-2"
@@ -647,6 +773,81 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
         "cumulative_risk_reduction": 0.9,
         "metadata": {"secret_type": "db"},
     }
+
+
+class _MissingConfigRepo:
+    async def get_active(self):
+        return None
+
+    async def get_by_provider(self, provider: str):
+        return None
+
+
+class _RecordingProvider:
+    provider_name = "openai"
+
+    def __init__(self):
+        self.calls = []
+
+    async def generate_explanation(self, prompt):
+        self.calls.append(prompt)
+        raise AssertionError("provider should not be called")
+
+
+@pytest.mark.asyncio
+async def test_post_remediation_recommendation_explanation_returns_no_target_when_row_missing_under_existing_graph(
+    attack_graph_client,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-target"
+    analysis_run_id = "analysis-recommendations-missing-target"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:00:00', '2026-03-22 15:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider()
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_MissingConfigRepo(),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/missing-rec/explanation",
+        json={},
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation_id"] == "missing-rec"
+    assert body["explanation_status"] == "no_target"
+    assert body["used_llm"] is False
+    assert body["provider"] is None
+    assert body["model"] is None
+    assert body["fallback_reason"] == "recommendation_not_found"
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

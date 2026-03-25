@@ -48,6 +48,29 @@ def analysis_service():
         "completed_at": None,
         "graph_id": None,
     }
+    service.get_analysis_result.return_value = {
+        "job": service.get_analysis_job.return_value,
+        "summary": {
+            "graph_id": None,
+            "generated_at": None,
+            "graph_status": None,
+            "node_count": 0,
+            "edge_count": 0,
+            "entry_point_count": 0,
+            "crown_jewel_count": 0,
+            "attack_path_count": 0,
+            "remediation_recommendation_count": 0,
+        },
+        "attack_paths_preview": [],
+        "remediation_preview": [],
+        "links": {
+            "analysis_job": "/api/v1/analysis/jobs/job-123",
+            "attack_graph": "/api/v1/clusters/a1b2c3d4-e5f6-7890-abcd-ef1234567890/attack-graph",
+            "attack_paths": "/api/v1/clusters/a1b2c3d4-e5f6-7890-abcd-ef1234567890/attack-paths",
+            "remediation_recommendations": "/api/v1/clusters/a1b2c3d4-e5f6-7890-abcd-ef1234567890/remediation-recommendations",
+            "link_scope": "cluster_latest_view",
+        },
+    }
     return service
 
 
@@ -98,3 +121,23 @@ class TestAnalysisReadApi:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Analysis job not found: missing-job"
+
+    def test_get_analysis_result_by_id(self, client, analysis_service):
+        response = client.get("/api/v1/analysis/job-123/result")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["job"]["job_id"] == "job-123"
+        assert body["summary"]["graph_id"] is None
+        assert body["attack_paths_preview"] == []
+        assert body["remediation_preview"] == []
+        assert body["links"]["link_scope"] == "cluster_latest_view"
+        analysis_service.get_analysis_result.assert_awaited_once_with("job-123")
+
+    def test_get_analysis_result_does_not_call_execution_methods(self, client, analysis_service):
+        response = client.get("/api/v1/analysis/job-123/result")
+
+        assert response.status_code == 200
+        analysis_service.get_analysis_result.assert_awaited_once_with("job-123")
+        analysis_service.execute_analysis_job.assert_not_called()
+        analysis_service.execute_analysis.assert_not_called()

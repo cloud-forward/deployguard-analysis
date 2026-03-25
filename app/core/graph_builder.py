@@ -185,20 +185,32 @@ class GraphBuilder:
                 attrs,
             )
     
-    def _is_pod_exposed_by_ingress(self, pod_id: str) -> bool:
-        """Check if pod is exposed by Ingress → Service → Pod path"""
+    def _is_pod_exposed_by_entry_service(self, pod_id: str) -> bool:
+        """Check if pod is exposed by an entry-point service."""
         # Find services targeting this pod
         services = []
         for pred in self.graph.predecessors(pod_id):
             if self.graph.nodes[pred].get("type") == NodeType.SERVICE.value:
                 services.append(pred)
         
-        # Check if any service is exposed by Ingress
+        # Check if any backing service is itself an entry point.
         for service_id in services:
-            for pred in self.graph.predecessors(service_id):
-                if self.graph.nodes[pred].get("type") == NodeType.INGRESS.value:
-                    return True
-        
+            service_attrs = self.graph.nodes.get(service_id, {})
+            if self._classify_entry_point(service_id, service_attrs):
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_externally_exposed_service_type(service_type: Any) -> bool:
+        normalized = str(service_type or "").strip()
+        return normalized in {"LoadBalancer", "NodePort"}
+
+    def _is_service_exposed_by_ingress(self, service_id: str) -> bool:
+        """Check if a service is directly exposed by an ingress-like entry point."""
+        for pred in self.graph.predecessors(service_id):
+            if self.graph.nodes[pred].get("type") == NodeType.INGRESS.value:
+                return True
         return False
     
     def _mark_crown_jewels(self):
@@ -215,10 +227,12 @@ class GraphBuilder:
             return True
 
         if node_type == NodeType.SERVICE.value:
+            if self._is_externally_exposed_service_type(metadata.get("service_type")):
+                return True
             return self._is_service_exposed_by_ingress(node_id)
 
         if node_type == NodeType.POD.value:
-            return self._is_pod_exposed_by_ingress(node_id)
+            return self._is_pod_exposed_by_entry_service(node_id)
 
         if node_type == NodeType.RDS.value:
             return bool(metadata.get("is_publicly_accessible"))
@@ -245,13 +259,6 @@ class GraphBuilder:
         if node_type in (NodeType.IAM_ROLE.value, NodeType.IAM_USER.value):
             return metadata.get("tier") in (1, 2)
 
-        return False
-
-    def _is_service_exposed_by_ingress(self, service_id: str) -> bool:
-        """Check if a service is directly exposed by an ingress-like entry point."""
-        for pred in self.graph.predecessors(service_id):
-            if self.graph.nodes[pred].get("type") == NodeType.INGRESS.value:
-                return True
         return False
 
     def _update_base_risk(self):

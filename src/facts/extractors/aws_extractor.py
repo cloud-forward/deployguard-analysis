@@ -86,6 +86,7 @@ class AWSFactExtractor(BaseExtractor):
 
             facts.extend(self._extract_iam_role_access_facts(aws_scan))
             facts.extend(self._extract_iam_user_access_facts(aws_scan))
+            facts.extend(self._extract_explicit_assume_role_facts(aws_scan))
             facts.extend(self._extract_security_group_facts(aws_scan))
             facts.extend(self._extract_instance_profile_facts(aws_scan))
 
@@ -96,6 +97,197 @@ class AWSFactExtractor(BaseExtractor):
             raise
 
         return facts, bridge_output
+
+    def _extract_explicit_assume_role_facts(self, aws_scan: AWSScanResult) -> List[Fact]:
+        facts: List[Fact] = []
+        account_id = aws_scan.aws_account_id
+        if not account_id:
+            return facts
+
+        scanned_roles_by_arn = {
+            role.arn: role
+            for role in aws_scan.iam_roles
+            if isinstance(role.arn, str) and role.arn
+        }
+        if not scanned_roles_by_arn:
+            return facts
+
+        seen_keys: set[tuple[str, str, str]] = set()
+
+        try:
+            role_results = parse_all_roles(aws_scan.iam_roles) if aws_scan.iam_roles else []
+        except Exception as e:
+            self.logger.error(f"Failed to parse IAM roles for explicit AssumeRole detection: {e}")
+            role_results = []
+
+        try:
+            user_results = parse_all_users(aws_scan.iam_users) if aws_scan.iam_users else []
+        except Exception as e:
+            self.logger.error(f"Failed to parse IAM users for explicit AssumeRole detection: {e}")
+            user_results = []
+
+        role_arn_by_name = {
+            role.name: role.arn
+            for role in aws_scan.iam_roles
+            if isinstance(role.name, str) and role.name and isinstance(role.arn, str) and role.arn
+        }
+        user_arn_by_name = {
+            user.username: user.arn
+            for user in aws_scan.iam_users
+            if isinstance(user.username, str) and user.username and isinstance(user.arn, str) and user.arn
+        }
+
+        for result in role_results:
+            source_arn = role_arn_by_name.get(result.role_name)
+            if not source_arn:
+                continue
+            source_id = self.id_gen.iam_role(account_id, result.role_name)
+            self._append_explicit_assume_role_facts(
+                facts,
+                seen_keys=seen_keys,
+                resource_access=result.resource_access,
+                source_id=source_id,
+                source_type=NodeType.IAM_ROLE.value,
+                source_principal_arn=source_arn,
+                current_account_id=account_id,
+                scanned_roles_by_arn=scanned_roles_by_arn,
+            )
+
+        for result in user_results:
+            source_arn = user_arn_by_name.get(result.username)
+            if not source_arn:
+                continue
+            source_id = self.id_gen.iam_user(account_id, result.username)
+            self._append_explicit_assume_role_facts(
+                facts,
+                seen_keys=seen_keys,
+                resource_access=result.resource_access,
+                source_id=source_id,
+                source_type=NodeType.IAM_USER.value,
+                source_principal_arn=source_arn,
+                current_account_id=account_id,
+                scanned_roles_by_arn=scanned_roles_by_arn,
+            )
+
+        return facts
+
+    def _append_explicit_assume_role_facts(
+        self,
+        facts: List[Fact],
+        *,
+        seen_keys: set[tuple[str, str, str]],
+        resource_access: List[Any],
+        source_id: str,
+        source_type: str,
+        source_principal_arn: str,
+        current_account_id: str,
+        scanned_roles_by_arn: Dict[str, IAMRoleScan],
+    ) -> None:
+        for access in resource_access:
+            if access.effect != "Allow" or access.service != "sts":
+                continue
+            if not self._resource_access_allows_explicit_assume_role(access):
+                continue
+
+            for target_role_arn in access.resource_arns:
+                if not self._is_explicit_same_account_role_arn(
+                    target_role_arn,
+                    account_id=current_account_id,
+                ):
+                    continue
+
+                target_role = scanned_roles_by_arn.get(target_role_arn)
+                if target_role is None:
+                    continue
+
+                if not self._trust_policy_explicitly_allows_principal(
+                    target_role.trust_policy,
+                    source_principal_arn,
+                ):
+                    continue
+
+                target_role_name = target_role_arn.rsplit("/", 1)[-1]
+                fact_key = (
+                    source_id,
+                    self.id_gen.iam_role(current_account_id, target_role_name),
+                    FactType.IAM_PRINCIPAL_ASSUMES_IAM_ROLE.value,
+                )
+                if fact_key in seen_keys:
+                    continue
+                seen_keys.add(fact_key)
+
+                facts.append(
+                    Fact(
+                        fact_type=FactType.IAM_PRINCIPAL_ASSUMES_IAM_ROLE.value,
+                        subject_id=source_id,
+                        subject_type=source_type,
+                        object_id=self.id_gen.iam_role(current_account_id, target_role_name),
+                        object_type=NodeType.IAM_ROLE.value,
+                        metadata={
+                            "source_principal_arn": source_principal_arn,
+                            "target_role_arn": target_role_arn,
+                            "via": "explicit_sts_assumerole",
+                        },
+                    )
+                )
+
+    @staticmethod
+    def _resource_access_allows_explicit_assume_role(access: Any) -> bool:
+        if getattr(access, "is_wildcard_resource", False):
+            return False
+
+        actions = {
+            str(action).strip().lower()
+            for action in getattr(access, "actions", [])
+            if isinstance(action, str) and action.strip()
+        }
+        return "sts:assumerole" in actions
+
+    @staticmethod
+    def _is_explicit_same_account_role_arn(role_arn: Any, *, account_id: str) -> bool:
+        if not isinstance(role_arn, str) or not role_arn or "*" in role_arn:
+            return False
+
+        parts = role_arn.split(":", 5)
+        if len(parts) != 6:
+            return False
+        if parts[1] != "aws" or parts[2] != "iam" or parts[4] != account_id:
+            return False
+
+        resource = parts[5]
+        if not resource.startswith("role/"):
+            return False
+
+        role_name = resource[len("role/"):]
+        return bool(role_name)
+
+    @staticmethod
+    def _trust_policy_explicitly_allows_principal(
+        trust_policy: Dict[str, Any],
+        source_principal_arn: str,
+    ) -> bool:
+        statements = trust_policy.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+        if not isinstance(statements, list):
+            return False
+
+        for statement in statements:
+            if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+                continue
+            if statement.get("Condition"):
+                continue
+            principal = statement.get("Principal")
+            if not isinstance(principal, dict):
+                continue
+            aws_principals = principal.get("AWS", [])
+            if isinstance(aws_principals, str):
+                aws_principals = [aws_principals]
+            if not isinstance(aws_principals, list):
+                continue
+            if any(principal_arn == source_principal_arn for principal_arn in aws_principals):
+                return True
+        return False
 
     def _parse_aws_scan(self, scan_data: Dict[str, Any] | AWSScanResult) -> AWSScanResult:
         """

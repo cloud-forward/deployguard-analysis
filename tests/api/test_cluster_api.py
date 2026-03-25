@@ -7,7 +7,16 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.application.di import get_cluster_service
+from app.application.di import (
+    get_attack_graph_service,
+    get_cluster_service,
+    get_recommendation_explanation_service,
+)
+from app.models.schemas import (
+    RecommendationExplanationResponse,
+    RemediationRecommendationDetailEnvelopeResponse,
+    RemediationRecommendationDetailResponse,
+)
 from app.application.services.cluster_service import ClusterService
 from app.main import app
 
@@ -258,6 +267,93 @@ def test_update_cluster_invalid_type(client, created_cluster):
 def test_update_cluster_not_found(client):
     resp = client.patch("/api/v1/clusters/ghost-id", json={"description": "x"})
     assert resp.status_code == 404
+
+
+class FakeAttackGraphService:
+    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str):
+        return RemediationRecommendationDetailEnvelopeResponse(
+            cluster_id=cluster_id,
+            analysis_run_id="analysis-1",
+            generated_at=None,
+            recommendation=RemediationRecommendationDetailResponse(
+                recommendation_id=recommendation_id,
+                recommendation_rank=0,
+                edge_source="secret:prod:db-creds",
+                edge_target="rds:prod-db",
+                edge_type="secret_contains_credentials",
+                fix_type="rotate_credentials",
+                fix_description="Rotate exposed database credentials.",
+                blocked_path_ids=["path-db"],
+                blocked_path_indices=[4],
+                fix_cost=1.3,
+                edge_score=0.9,
+                covered_risk=0.9,
+                cumulative_risk_reduction=0.9,
+                metadata={"secret_type": "db"},
+            ),
+        )
+
+
+class FakeRecommendationExplanationService:
+    def __init__(self):
+        self.calls = []
+
+    async def explain_recommendation(self, *, cluster_id: str, recommendation_id: str, request):
+        self.calls.append((cluster_id, recommendation_id, request))
+        return RecommendationExplanationResponse(
+            cluster_id=cluster_id,
+            recommendation_id=recommendation_id,
+            explanation_status="base_only",
+            used_llm=False,
+            base_explanation="Base explanation.",
+            final_explanation="Base explanation.",
+            provider=request.provider.value if request.provider is not None else None,
+            model=request.model,
+            fallback_reason="provider_not_configured",
+        )
+
+
+def test_post_remediation_recommendation_explanation_manual_endpoint():
+    repo = FakeClusterRepository()
+    cluster_service = ClusterService(cluster_repository=repo)
+    explanation_service = FakeRecommendationExplanationService()
+    app.dependency_overrides[get_cluster_service] = lambda: cluster_service
+    app.dependency_overrides[get_recommendation_explanation_service] = lambda: explanation_service
+    with TestClient(app) as client:
+        create_resp = client.post("/api/v1/clusters", json={"name": "explain-cluster", "cluster_type": "eks"})
+        cluster_id = create_resp.json()["id"]
+        response = client.post(
+            f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
+            json={"provider": "openai", "model": "gpt-4o-mini"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation_id"] == "rotate-credentials-1"
+    assert body["explanation_status"] == "base_only"
+    assert len(explanation_service.calls) == 1
+
+
+def test_existing_remediation_detail_get_behavior_remains_unchanged():
+    repo = FakeClusterRepository()
+    cluster_service = ClusterService(cluster_repository=repo)
+    app.dependency_overrides[get_cluster_service] = lambda: cluster_service
+    app.dependency_overrides[get_attack_graph_service] = lambda: FakeAttackGraphService()
+    with TestClient(app) as client:
+        create_resp = client.post("/api/v1/clusters", json={"name": "detail-cluster", "cluster_type": "eks"})
+        cluster_id = create_resp.json()["id"]
+        response = client.get(
+            f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation"]["recommendation_id"] == "rotate-credentials-1"
+    assert body["recommendation"]["fix_description"] == "Rotate exposed database credentials."
 
 
 def test_delete_cluster(client, created_cluster):

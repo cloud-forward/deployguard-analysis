@@ -1,12 +1,14 @@
 import pytest
 from uuid import uuid4
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.di import get_attack_graph_service, get_cluster_service
+from app.application.di import get_attack_graph_service, get_cluster_service, get_recommendation_explanation_service
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
+from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.gateway.db.base import Base
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 from app.main import app
@@ -706,6 +708,81 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
         "cumulative_risk_reduction": 0.9,
         "metadata": {"secret_type": "db"},
     }
+
+
+class _MissingConfigRepo:
+    async def get_active(self):
+        return None
+
+    async def get_by_provider(self, provider: str):
+        return None
+
+
+class _RecordingProvider:
+    provider_name = "openai"
+
+    def __init__(self):
+        self.calls = []
+
+    async def generate_explanation(self, prompt):
+        self.calls.append(prompt)
+        raise AssertionError("provider should not be called")
+
+
+@pytest.mark.asyncio
+async def test_post_remediation_recommendation_explanation_returns_no_target_when_row_missing_under_existing_graph(
+    attack_graph_client,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-target"
+    analysis_run_id = "analysis-recommendations-missing-target"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:00:00', '2026-03-22 15:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider()
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_MissingConfigRepo(),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/missing-rec/explanation",
+        json={},
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation_id"] == "missing-rec"
+    assert body["explanation_status"] == "no_target"
+    assert body["used_llm"] is False
+    assert body["provider"] is None
+    assert body["model"] is None
+    assert body["fallback_reason"] == "recommendation_not_found"
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

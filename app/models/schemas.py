@@ -749,6 +749,34 @@ class RemediationRecommendationDetailEnvelopeResponse(BaseModel):
     )
 
 
+class ExplanationProviderName(str, Enum):
+    openai = "openai"
+    xai = "xai"
+
+
+class RecommendationExplanationRequest(BaseModel):
+    provider: ExplanationProviderName | None = Field(
+        None,
+        description="Optional provider override",
+    )
+    model: str | None = Field(
+        None,
+        description="Optional model override for the selected provider",
+    )
+
+
+class RecommendationExplanationResponse(BaseModel):
+    cluster_id: str
+    recommendation_id: str
+    explanation_status: str
+    used_llm: bool
+    base_explanation: str
+    final_explanation: str
+    provider: str | None = None
+    model: str | None = None
+    fallback_reason: str | None = None
+
+
 class AnalysisResultResponse(BaseModel):
     job: AnalysisJobDetailResponse
     summary: AnalysisResultSummaryResponse

@@ -3,9 +3,14 @@ Cluster management API endpoints.
 """
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
-from app.application.di import get_attack_graph_service, get_cluster_service
+from app.application.di import (
+    get_attack_graph_service,
+    get_cluster_service,
+    get_recommendation_explanation_service,
+)
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
+from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.models.schemas import (
     AttackPathDetailEnvelopeResponse,
     AttackPathListResponse,
@@ -14,6 +19,8 @@ from app.models.schemas import (
     ClusterUpdateRequest,
     ClusterResponse,
     ClusterCreateResponse,
+    RecommendationExplanationRequest,
+    RecommendationExplanationResponse,
     RemediationRecommendationDetailEnvelopeResponse,
     RemediationRecommendationListResponse,
 )
@@ -166,6 +173,29 @@ async def get_remediation_recommendation_detail(
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     return await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+
+
+@router.post(
+    "/{cluster_id}/remediation-recommendations/{recommendation_id}/explanation",
+    response_model=RecommendationExplanationResponse,
+    summary="[신규] Remediation Recommendation 설명 생성",
+    description="수동 요청으로 특정 remediation recommendation 상세에 대한 설명을 생성합니다.",
+    responses={
+        200: {"description": "설명 생성 결과"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+    },
+)
+async def explain_remediation_recommendation(
+    cluster_id: str,
+    recommendation_id: str,
+    request: RecommendationExplanationRequest,
+    service: RecommendationExplanationService = Depends(get_recommendation_explanation_service),
+):
+    return await service.explain_recommendation(
+        cluster_id=cluster_id,
+        recommendation_id=recommendation_id,
+        request=request,
+    )
 
 
 @router.patch(

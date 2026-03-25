@@ -100,10 +100,12 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         aws_scan_id: str | None,
         image_scan_id: str | None,
         expected_scans: list[str],
+        user_id: str | None = None,
     ) -> str:
         normalized_cluster_id = str(UUID(str(cluster_id)))
         job = AnalysisJob(
             cluster_id=normalized_cluster_id,
+            user_id=user_id,
             k8s_scan_id=k8s_scan_id,
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,

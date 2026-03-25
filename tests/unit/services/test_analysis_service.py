@@ -289,11 +289,36 @@ async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_rep
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_args_list[0].args == ("k8s-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[1].args == ("aws-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[2].args == ("img-1", "job-123")
     assert result.job_id == "job-123"
+
+
+@pytest.mark.asyncio
+async def test_manual_analysis_job_creation_passes_user_id_through(service, jobs_repo, scan_repo):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id=cluster_id),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id=cluster_id),
+    ]
+
+    await service.create_analysis_job(
+        k8s_scan_id="k8s-1",
+        image_scan_id="img-1",
+        user_id="user-1",
+    )
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id=cluster_id,
+        k8s_scan_id="k8s-1",
+        aws_scan_id=None,
+        image_scan_id="img-1",
+        expected_scans=["k8s", "image"],
+        user_id="user-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -315,6 +340,7 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
         aws_scan_id=None,
         image_scan_id="img-1",
         expected_scans=["k8s", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_count == 2
 
@@ -339,6 +365,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_image_whe
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["aws", "image"],
+        user_id=None,
     )
 
 
@@ -355,6 +382,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_aws_when_
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["aws"],
+        user_id=None,
     )
 
 
@@ -378,6 +406,7 @@ async def test_create_analysis_job_prefers_k8s_cluster_over_aws_when_both_presen
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["k8s", "aws"],
+        user_id=None,
     )
 
 
@@ -689,6 +718,7 @@ async def test_allows_aws_scan_from_different_cluster_than_k8s_image(service, jo
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
 
 

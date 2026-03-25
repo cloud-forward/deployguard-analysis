@@ -51,6 +51,7 @@ class AnalysisJobRepository(Protocol):
         aws_scan_id: str | None,
         image_scan_id: str | None,
         expected_scans: list[str],
+        user_id: str | None = None,
     ) -> str:
         """Create an analysis job for a cluster with all required scan IDs. Returns job_id."""
         ...

@@ -101,6 +101,7 @@ class AnalysisService:
         k8s_scan_id: str | None = None,
         aws_scan_id: str | None = None,
         image_scan_id: str | None = None,
+        user_id: str | None = None,
     ) -> AnalysisJobResponse:
         resolved = await self._resolve_analysis_job_inputs(
             k8s_scan_id=k8s_scan_id,
@@ -116,6 +117,7 @@ class AnalysisService:
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,
             expected_scans=expected_scans,
+            user_id=user_id,
         )
         for scan_id in selected_scan_ids:
             await self._scans.set_analysis_run_id(scan_id, job_id)

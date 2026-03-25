@@ -2,6 +2,7 @@
 분석 작업 엔드포인트.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from app.api.auth import get_current_user
 from app.models.schemas import (
     AnalysisResultResponse,
     AnalysisJobDetailResponse,
@@ -9,6 +10,7 @@ from app.models.schemas import (
     AnalysisJobResponse,
     ClusterAnalysisJobListResponse,
     DebugAnalysisExecuteRequest,
+    UserSummaryResponse,
 )
 from app.application.di import get_analysis_service
 from app.application.services.analysis_service import AnalysisService
@@ -36,12 +38,14 @@ analysis_jobs에 저장된 명시적 scan IDs를 기준으로 진행됩니다.""
 )
 async def create_analysis_job(
     request: AnalysisJobRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AnalysisService = Depends(get_analysis_service),
 ):
     return await service.create_analysis_job(
         k8s_scan_id=request.k8s_scan_id,
         aws_scan_id=request.aws_scan_id,
         image_scan_id=request.image_scan_id,
+        user_id=current_user.id,
     )
 
 

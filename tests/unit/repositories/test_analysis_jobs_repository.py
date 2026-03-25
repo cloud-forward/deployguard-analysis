@@ -98,6 +98,23 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert job.expected_scans == ["k8s", "aws", "image"]
 
     @pytest.mark.asyncio
+    async def test_create_analysis_job_persists_user_id_when_provided(self, repo_and_session):
+        repo, session = repo_and_session
+
+        job_id = await repo.create_analysis_job(
+            cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            k8s_scan_id="20260309T113020-k8s",
+            aws_scan_id=None,
+            image_scan_id=None,
+            expected_scans=["k8s"],
+            user_id="user-1",
+        )
+
+        job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
+        assert job is not None
+        assert job.user_id == "user-1"
+
+    @pytest.mark.asyncio
     async def test_create_analysis_job_rejects_non_uuid_cluster_id(self, repo_and_session):
         repo, session = repo_and_session
 

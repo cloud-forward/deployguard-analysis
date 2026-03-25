@@ -4,6 +4,7 @@ Cluster management API endpoints.
 import logging
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
+from app.api.auth import get_request_user_id
 from app.application.di import (
     get_attack_graph_service,
     get_cluster_service,
@@ -254,6 +255,7 @@ async def explain_remediation_recommendation(
     cluster_id: str,
     recommendation_id: str,
     request: RecommendationExplanationRequest,
+    user_id: str = Depends(get_request_user_id),
     service: RecommendationExplanationService = Depends(get_recommendation_explanation_service),
 ):
     logger.info(
@@ -271,6 +273,7 @@ async def explain_remediation_recommendation(
         response = await service.explain_recommendation(
             cluster_id=cluster_id,
             recommendation_id=recommendation_id,
+            user_id=user_id,
             request=request,
         )
     except Exception as exc:

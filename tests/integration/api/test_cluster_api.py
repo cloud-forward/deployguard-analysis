@@ -776,10 +776,10 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
 
 
 class _MissingConfigRepo:
-    async def get_active(self):
+    async def get_active(self, user_id: str):
         return None
 
-    async def get_by_provider(self, provider: str):
+    async def get_by_provider(self, user_id: str, provider: str):
         return None
 
 
@@ -835,6 +835,7 @@ async def test_post_remediation_recommendation_explanation_returns_no_target_whe
     response = attack_graph_client["client"].post(
         f"/api/v1/clusters/{cluster_id}/remediation-recommendations/missing-rec/explanation",
         json={},
+        headers={"X-User-Id": "user-1"},
     )
     app.dependency_overrides.pop(get_recommendation_explanation_service, None)
 

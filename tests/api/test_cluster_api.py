@@ -298,8 +298,8 @@ class FakeRecommendationExplanationService:
     def __init__(self):
         self.calls = []
 
-    async def explain_recommendation(self, *, cluster_id: str, recommendation_id: str, request):
-        self.calls.append((cluster_id, recommendation_id, request))
+    async def explain_recommendation(self, *, cluster_id: str, recommendation_id: str, user_id: str, request):
+        self.calls.append((cluster_id, recommendation_id, user_id, request))
         return RecommendationExplanationResponse(
             cluster_id=cluster_id,
             recommendation_id=recommendation_id,
@@ -325,6 +325,7 @@ def test_post_remediation_recommendation_explanation_manual_endpoint():
         response = client.post(
             f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
             json={"provider": "openai", "model": "gpt-4o-mini"},
+            headers={"X-User-Id": "user-1"},
         )
     app.dependency_overrides.clear()
 
@@ -334,6 +335,7 @@ def test_post_remediation_recommendation_explanation_manual_endpoint():
     assert body["recommendation_id"] == "rotate-credentials-1"
     assert body["explanation_status"] == "base_only"
     assert len(explanation_service.calls) == 1
+    assert explanation_service.calls[0][2] == "user-1"
 
 
 def test_existing_remediation_detail_get_behavior_remains_unchanged():

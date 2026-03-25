@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Request, Security
+from fastapi import Depends, Header, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.application.di import get_cluster_service
@@ -33,3 +33,10 @@ async def get_authenticated_cluster(
     request.state.authenticated_cluster = cluster
     request.state.authenticated_cluster_id = cluster.id
     return cluster
+
+
+async def get_request_user_id(x_user_id: str = Header(..., alias="X-User-Id")) -> str:
+    user_id = x_user_id.strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    return user_id

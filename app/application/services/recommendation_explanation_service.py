@@ -49,6 +49,7 @@ class RecommendationExplanationService:
         *,
         cluster_id: str,
         recommendation_id: str,
+        user_id: str,
         request: RecommendationExplanationRequest,
     ) -> RecommendationExplanationResponse:
         requested_provider = request.provider.value if request.provider is not None else None
@@ -57,6 +58,7 @@ class RecommendationExplanationService:
             extra={
                 "cluster_id": cluster_id,
                 "recommendation_id": recommendation_id,
+                "user_id": user_id,
                 "requested_provider": requested_provider,
                 "requested_model": request.model,
             },
@@ -74,6 +76,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation_id,
+                    "user_id": user_id,
                     "stage": "detail_lookup",
                     "exception_type": type(exc).__name__,
                     "error_detail": str(exc.detail),
@@ -96,6 +99,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation_id,
+                    "user_id": user_id,
                     "eligibility_passed": False,
                     "fallback_reason": "recommendation_not_found",
                     "provider_call_skipped": True,
@@ -120,6 +124,7 @@ class RecommendationExplanationService:
             extra={
                 "cluster_id": cluster_id,
                 "recommendation_id": recommendation.recommendation_id,
+                "user_id": user_id,
                 "eligibility_passed": eligibility.explainable,
                 "fallback_reason": eligibility.fallback_reason,
                 "edge_type": recommendation.edge_type,
@@ -151,6 +156,7 @@ class RecommendationExplanationService:
 
         base_explanation = self._build_base_explanation(recommendation)
         selected_provider_name, selected_model, api_key, provider_fallback_reason = await self._resolve_provider(
+            user_id,
             requested_provider,
             request.model,
         )
@@ -160,6 +166,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation.recommendation_id,
+                    "user_id": user_id,
                     "requested_provider": requested_provider,
                     "requested_model": request.model,
                     "resolved_provider": selected_provider_name,
@@ -186,6 +193,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation.recommendation_id,
+                    "user_id": user_id,
                     "requested_provider": requested_provider,
                     "requested_model": request.model,
                     "resolved_provider": selected_provider_name,
@@ -223,6 +231,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation.recommendation_id,
+                    "user_id": user_id,
                     "provider": selected_provider_name,
                     "model": selected_model,
                 },
@@ -234,6 +243,7 @@ class RecommendationExplanationService:
                 extra={
                     "cluster_id": cluster_id,
                     "recommendation_id": recommendation.recommendation_id,
+                    "user_id": user_id,
                     "provider": selected_provider_name,
                     "model": selected_model,
                     "exception_type": type(exc).__name__,
@@ -257,6 +267,7 @@ class RecommendationExplanationService:
             extra={
                 "cluster_id": cluster_id,
                 "recommendation_id": recommendation.recommendation_id,
+                "user_id": user_id,
                 "provider": result.provider,
                 "model": result.model,
                 "used_llm": True,
@@ -276,17 +287,19 @@ class RecommendationExplanationService:
 
     async def _resolve_provider(
         self,
+        user_id: str,
         requested_provider: str | None,
         requested_model: str | None,
     ) -> tuple[str | None, str | None, str | None, str | None]:
         config = (
-            await self._provider_configs.get_by_provider(requested_provider)
+            await self._provider_configs.get_by_provider(user_id, requested_provider)
             if requested_provider
-            else await self._provider_configs.get_active()
+            else await self._provider_configs.get_active(user_id)
         )
         logger.info(
             "remediation_provider_config_lookup",
             extra={
+                "user_id": user_id,
                 "requested_provider": requested_provider,
                 "requested_model": requested_model,
                 "config_found": config is not None,

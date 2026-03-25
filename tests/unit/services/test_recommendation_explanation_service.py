@@ -25,12 +25,21 @@ class FakeProviderConfigRepository:
     def __init__(self, active=None, by_provider=None):
         self._active = active
         self._by_provider = by_provider or {}
+        self.calls = []
 
-    async def get_active(self):
+    async def get_active(self, user_id: str):
+        self.calls.append(("get_active", user_id))
+        if isinstance(self._active, dict):
+            return self._active.get(user_id)
         return self._active
 
-    async def get_by_provider(self, provider: str):
-        return self._by_provider.get(provider)
+    async def get_by_provider(self, user_id: str, provider: str):
+        self.calls.append(("get_by_provider", user_id, provider))
+        if isinstance(self._by_provider, dict):
+            scoped = self._by_provider.get(user_id, {})
+            if isinstance(scoped, dict):
+                return scoped.get(provider)
+        return None
 
 
 class FakeProvider:
@@ -115,6 +124,7 @@ async def test_recommendation_missing_returns_no_target_and_skips_provider():
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="missing-rec",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -137,6 +147,7 @@ async def test_missing_recommendation_http_404_is_normalized_to_no_target_and_sk
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="missing-rec",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -176,6 +187,7 @@ async def test_minimum_explainable_input_missing_returns_not_explainable_and_ski
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -205,6 +217,7 @@ async def test_explainable_recommendation_with_missing_provider_config_returns_b
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -229,7 +242,7 @@ async def test_explainable_recommendation_with_missing_api_key_returns_base_only
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
-            active=FakeProviderConfig(provider="openai", api_key="", default_model="gpt-4o-mini", is_active=True)
+            active={"user-1": FakeProviderConfig(provider="openai", api_key="", default_model="gpt-4o-mini", is_active=True)}
         ),
         providers={"openai": provider},
     )
@@ -237,6 +250,7 @@ async def test_explainable_recommendation_with_missing_api_key_returns_base_only
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -261,7 +275,7 @@ async def test_provider_success_returns_llm_generated():
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
-            active=FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)
+            active={"user-1": FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)}
         ),
         providers={"openai": provider},
     )
@@ -269,6 +283,7 @@ async def test_provider_success_returns_llm_generated():
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -294,7 +309,7 @@ async def test_provider_failure_returns_llm_failed_fallback():
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
-            active=FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)
+            active={"user-1": FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)}
         ),
         providers={"openai": provider},
     )
@@ -302,6 +317,7 @@ async def test_provider_failure_returns_llm_failed_fallback():
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(),
     )
 
@@ -326,8 +342,8 @@ async def test_request_time_provider_and_model_override_is_used_when_saved_confi
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
-            active=FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True),
-            by_provider={"xai": FakeProviderConfig(provider="xai", api_key="xai-key", default_model="grok-3-mini")},
+            active={"user-1": FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True)},
+            by_provider={"user-1": {"xai": FakeProviderConfig(provider="xai", api_key="xai-key", default_model="grok-3-mini")}},
         ),
         providers={"xai": provider},
     )
@@ -335,6 +351,7 @@ async def test_request_time_provider_and_model_override_is_used_when_saved_confi
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(provider="xai", model="grok-3-mini"),
     )
 
@@ -361,7 +378,7 @@ async def test_provider_override_with_no_saved_config_returns_base_only_and_skip
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
-            active=FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True),
+            active={"user-1": FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True)},
             by_provider={},
         ),
         providers={"xai": provider},
@@ -370,6 +387,7 @@ async def test_provider_override_with_no_saved_config_returns_base_only_and_skip
     result = await service.explain_recommendation(
         cluster_id="cluster-1",
         recommendation_id="rotate-credentials-1",
+        user_id="user-1",
         request=RecommendationExplanationRequest(provider="xai", model="grok-3-mini"),
     )
 
@@ -377,3 +395,106 @@ async def test_provider_override_with_no_saved_config_returns_base_only_and_skip
     assert result.used_llm is False
     assert result.fallback_reason == "provider_not_configured"
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_active_provider_config_lookup_is_scoped_by_user_id():
+    attack_service = FakeAttackGraphService(
+        RemediationRecommendationDetailEnvelopeResponse(
+            cluster_id="cluster-1",
+            analysis_run_id="analysis-1",
+            generated_at=None,
+            recommendation=make_recommendation(),
+        )
+    )
+    provider = FakeProvider(text="LLM rewritten explanation.")
+    repo = FakeProviderConfigRepository(
+        active={
+            "user-1": FakeProviderConfig(provider="openai", api_key="user-1-key", default_model="gpt-4o-mini", is_active=True),
+            "user-2": FakeProviderConfig(provider="openai", api_key="user-2-key", default_model="gpt-4o-mini", is_active=True),
+        }
+    )
+    service = RecommendationExplanationService(
+        attack_graph_service=attack_service,
+        provider_config_repository=repo,
+        providers={"openai": provider},
+    )
+
+    result = await service.explain_recommendation(
+        cluster_id="cluster-1",
+        recommendation_id="rotate-credentials-1",
+        user_id="user-1",
+        request=RecommendationExplanationRequest(),
+    )
+
+    assert result.explanation_status == "llm_generated"
+    assert provider.calls[0].api_key == "user-1-key"
+    assert ("get_active", "user-1") in repo.calls
+
+
+@pytest.mark.asyncio
+async def test_provider_override_lookup_is_scoped_by_user_id():
+    attack_service = FakeAttackGraphService(
+        RemediationRecommendationDetailEnvelopeResponse(
+            cluster_id="cluster-1",
+            analysis_run_id="analysis-1",
+            generated_at=None,
+            recommendation=make_recommendation(),
+        )
+    )
+    provider = FakeProvider(text="xAI explanation")
+    repo = FakeProviderConfigRepository(
+        by_provider={
+            "user-1": {"xai": FakeProviderConfig(provider="xai", api_key="user-1-xai-key", default_model="grok-3-mini")},
+            "user-2": {"xai": FakeProviderConfig(provider="xai", api_key="user-2-xai-key", default_model="grok-3-mini")},
+        }
+    )
+    service = RecommendationExplanationService(
+        attack_graph_service=attack_service,
+        provider_config_repository=repo,
+        providers={"xai": provider},
+    )
+
+    result = await service.explain_recommendation(
+        cluster_id="cluster-1",
+        recommendation_id="rotate-credentials-1",
+        user_id="user-1",
+        request=RecommendationExplanationRequest(provider="xai", model="grok-3-mini"),
+    )
+
+    assert result.explanation_status == "llm_generated"
+    assert provider.calls[0].api_key == "user-1-xai-key"
+    assert ("get_by_provider", "user-1", "xai") in repo.calls
+
+
+@pytest.mark.asyncio
+async def test_explanation_service_uses_requesting_users_config_not_another_users():
+    attack_service = FakeAttackGraphService(
+        RemediationRecommendationDetailEnvelopeResponse(
+            cluster_id="cluster-1",
+            analysis_run_id="analysis-1",
+            generated_at=None,
+            recommendation=make_recommendation(),
+        )
+    )
+    provider = FakeProvider(text="LLM rewritten explanation.")
+    service = RecommendationExplanationService(
+        attack_graph_service=attack_service,
+        provider_config_repository=FakeProviderConfigRepository(
+            active={
+                "user-1": FakeProviderConfig(provider="openai", api_key="user-1-key", default_model="gpt-4o-mini", is_active=True),
+                "user-2": FakeProviderConfig(provider="openai", api_key="user-2-key", default_model="gpt-4o-mini", is_active=True),
+            }
+        ),
+        providers={"openai": provider},
+    )
+
+    result = await service.explain_recommendation(
+        cluster_id="cluster-1",
+        recommendation_id="rotate-credentials-1",
+        user_id="user-2",
+        request=RecommendationExplanationRequest(),
+    )
+
+    assert result.explanation_status == "llm_generated"
+    assert provider.calls[0].api_key == "user-2-key"

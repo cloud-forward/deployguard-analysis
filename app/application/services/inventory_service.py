@@ -43,8 +43,8 @@ class InventoryService:
         clusters = await self._clusters.list_all(user_id)
         return ClusterListResponse(clusters=[_cluster_to_response(cluster) for cluster in clusters])
 
-    async def sync_cluster(self, cluster_id: str) -> SyncResponse:
-        cluster = await self._get_cluster_or_404(cluster_id)
+    async def sync_cluster(self, cluster_id: str, user_id: str | None = None) -> SyncResponse:
+        cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         if not cluster.aws_account_id or not cluster.aws_role_arn or not cluster.aws_region:
             raise HTTPException(status_code=400, detail="Cluster is missing AWS discovery configuration")
 
@@ -64,17 +64,17 @@ class InventoryService:
         )
         return SyncResponse(status="success", cluster_id=cluster_id, scan_id=result["scan_id"])
 
-    async def get_cluster_assets(self, cluster_id: str) -> AssetInventoryListResponse:
-        cluster = await self._get_cluster_or_404(cluster_id)
+    async def get_cluster_assets(self, cluster_id: str, user_id: str | None = None) -> AssetInventoryListResponse:
+        cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         snapshot = await self._snapshots.get_latest_by_cluster(cluster_id)
         if snapshot is None:
             return AssetInventoryListResponse(summary=InventorySummaryResponse(total_assets=0), assets=[])
         return build_inventory_list_response(_cluster_to_response(cluster), snapshot.raw_result_json)
 
-    async def get_asset_detail(self, asset_id: str) -> AssetDetailResponse:
+    async def get_asset_detail(self, asset_id: str, user_id: str | None = None) -> AssetDetailResponse:
         snapshots = await self._snapshots.list_latest()
         for snapshot in snapshots:
-            cluster = await self._clusters.get_by_id(snapshot.cluster_id)
+            cluster = await self._clusters.get_by_id(snapshot.cluster_id, user_id=user_id)
             if cluster is None:
                 continue
             inventory = build_inventory_list_response(_cluster_to_response(cluster), snapshot.raw_result_json)
@@ -83,8 +83,8 @@ class InventoryService:
                     return AssetDetailResponse(**asset.model_dump())
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    async def _get_cluster_or_404(self, cluster_id: str):
-        cluster = await self._clusters.get_by_id(cluster_id)
+    async def _get_cluster_or_404(self, cluster_id: str, user_id: str | None = None):
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
         return cluster

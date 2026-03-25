@@ -177,8 +177,8 @@ class InventoryViewService:
     # 내부 헬퍼
     # ------------------------------------------------------------------
 
-    async def _get_cluster_or_404(self, cluster_id: str):
-        cluster = await self._clusters.get_by_id(cluster_id)
+    async def _get_cluster_or_404(self, cluster_id: str, user_id: str | None = None):
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
         return cluster
@@ -361,8 +361,8 @@ class InventoryViewService:
     # GET /inventory/summary
     # ------------------------------------------------------------------
 
-    async def get_summary(self, cluster_id: str) -> InvSummaryResponse:
-        cluster = await self._get_cluster_or_404(cluster_id)
+    async def get_summary(self, cluster_id: str, user_id: str | None = None) -> InvSummaryResponse:
+        cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
         graph_snapshot = await self._get_latest_graph_snapshot(cluster_id)
 
@@ -428,14 +428,14 @@ class InventoryViewService:
     # GET /inventory/assets
     # ------------------------------------------------------------------
 
-    async def get_assets(self, cluster_id: str, domain: Optional[str] = None,
+    async def get_assets(self, cluster_id: str, user_id: str | None = None, domain: Optional[str] = None,
                           node_type: Optional[str] = None, is_entry_point: Optional[bool] = None,
                           is_crown_jewel: Optional[bool] = None, page: int = 1, page_size: int = 20) -> InvAssetListResponse:
         page_size = min(page_size, 200)
         if domain is not None and domain.lower() not in ("k8s", "aws"):
             raise HTTPException(status_code=400, detail="domain must be one of: k8s, aws")
 
-        cluster = await self._get_cluster_or_404(cluster_id)
+        cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
         graph_snapshot = await self._get_latest_graph_snapshot(cluster_id)
 
@@ -493,8 +493,8 @@ class InventoryViewService:
     # GET /inventory/risk-spotlight
     # ------------------------------------------------------------------
 
-    async def get_risk_spotlight(self, cluster_id: str) -> InvRiskSpotlightResponse:
-        await self._get_cluster_or_404(cluster_id)
+    async def get_risk_spotlight(self, cluster_id: str, user_id: str | None = None) -> InvRiskSpotlightResponse:
+        await self._get_cluster_or_404(cluster_id, user_id=user_id)
         graph_snapshot = await self._get_latest_graph_snapshot(cluster_id)
 
         if graph_snapshot is None:
@@ -538,8 +538,8 @@ class InventoryViewService:
     # GET /inventory/scanner-status
     # ------------------------------------------------------------------
 
-    async def get_scanner_status(self, cluster_id: str) -> InvScannerStatusResponse:
-        await self._get_cluster_or_404(cluster_id)
+    async def get_scanner_status(self, cluster_id: str, user_id: str | None = None) -> InvScannerStatusResponse:
+        await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
 
         scanners: list[InvScannerItem] = []

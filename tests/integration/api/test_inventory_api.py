@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,16 +7,47 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.application.services.inventory_service as inventory_service_module
-from app.application.di import get_cluster_service, get_inventory_service
+from app.application.di import get_auth_service, get_cluster_service, get_inventory_service, get_inventory_view_service
+from app.application.services.auth_service import AuthService
 from app.application.services.cluster_service import ClusterService
 from app.application.services.inventory_service import InventoryService
+from app.application.services.inventory_view_service import InventoryViewService
 from app.gateway.db.base import Base
 from app.gateway.models import InventorySnapshot
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
+from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
 from app.main import app
+from app.security.passwords import hash_password
 
-USER_HEADERS = {"X-User-Id": "user-1"}
+
+@dataclass
+class FakeUser:
+    id: str
+    email: str
+    password_hash: str
+    is_active: bool = True
+
+
+class FakeUserRepository:
+    def __init__(self, users: list[FakeUser]):
+        self._by_email = {user.email: user for user in users}
+        self._by_id = {user.id: user for user in users}
+
+    async def get_by_email(self, email: str):
+        return self._by_email.get(email)
+
+    async def get_by_id(self, user_id: str):
+        return self._by_id.get(user_id)
+
+
+def _auth_headers(client: TestClient, user_id: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": f"{user_id}@example.com", "password": "secret-password"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 @pytest.fixture
@@ -50,12 +82,32 @@ async def inventory_client(tmp_path: Path, monkeypatch):
                 inventory_snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
             )
 
+    async def override_get_inventory_view_service():
+        async with sessionmaker() as session:
+            yield InventoryViewService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                scan_repository=SQLAlchemyScanRepository(session),
+                snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+                db=session,
+            )
+
     async def override_get_cluster_service():
         async with sessionmaker() as session:
             yield ClusterService(cluster_repository=SQLAlchemyClusterRepository(session))
 
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+
     app.dependency_overrides[get_inventory_service] = override_get_inventory_service
+    app.dependency_overrides[get_inventory_view_service] = override_get_inventory_view_service
     app.dependency_overrides[get_cluster_service] = override_get_cluster_service
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     with TestClient(app) as client:
         create_response = client.post(
             "/api/v1/clusters",
@@ -65,17 +117,23 @@ async def inventory_client(tmp_path: Path, monkeypatch):
                 "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
                 "aws_region": "ap-northeast-2",
             },
-            headers=USER_HEADERS,
+            headers=_auth_headers(client, "user-1"),
         )
         cluster_id = create_response.json()["id"]
-        client.post(f"/api/v1/clusters/{cluster_id}/sync")
+        client.post(
+            f"/api/v1/clusters/{cluster_id}/sync",
+            headers=_auth_headers(client, "user-1"),
+        )
         yield {"client": client, "cluster_id": cluster_id, "sessionmaker": sessionmaker}
     app.dependency_overrides.clear()
     await engine.dispose()
 
 
 def test_get_cluster_assets_reads_latest_snapshot(inventory_client):
-    response = inventory_client["client"].get(f"/api/v1/clusters/{inventory_client['cluster_id']}/assets")
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/assets",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -88,7 +146,10 @@ def test_get_cluster_assets_reads_latest_snapshot(inventory_client):
 
 
 def test_get_asset_detail_reads_one_asset_from_latest_snapshot(inventory_client):
-    response = inventory_client["client"].get("/api/v1/assets/s3:bucket-a")
+    response = inventory_client["client"].get(
+        "/api/v1/assets/s3:bucket-a",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -106,25 +167,34 @@ def test_get_cluster_assets_returns_empty_when_no_snapshot_exists(inventory_clie
             "aws_role_arn": "arn:aws:iam::999999999999:role/discovery",
             "aws_region": "us-west-2",
         },
-        headers=USER_HEADERS,
+        headers=_auth_headers(inventory_client["client"], "user-1"),
     )
     cluster_id = response.json()["id"]
 
-    assets_response = inventory_client["client"].get(f"/api/v1/clusters/{cluster_id}/assets")
+    assets_response = inventory_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/assets",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert assets_response.status_code == 200
     assert assets_response.json() == {"summary": {"total_assets": 0}, "assets": []}
 
 
 def test_get_cluster_assets_for_nonexistent_cluster_returns_404(inventory_client):
-    response = inventory_client["client"].get("/api/v1/clusters/missing/assets")
+    response = inventory_client["client"].get(
+        "/api/v1/clusters/missing/assets",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cluster not found"
 
 
 def test_get_asset_detail_not_found_returns_404(inventory_client):
-    response = inventory_client["client"].get("/api/v1/assets/missing-asset")
+    response = inventory_client["client"].get(
+        "/api/v1/assets/missing-asset",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Asset not found"
@@ -159,7 +229,10 @@ async def test_latest_snapshot_behavior_uses_newest_snapshot(inventory_client):
         session.add(newer_snapshot)
         await session.commit()
 
-    response = inventory_client["client"].get(f"/api/v1/clusters/{inventory_client['cluster_id']}/assets")
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/assets",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -168,7 +241,10 @@ async def test_latest_snapshot_behavior_uses_newest_snapshot(inventory_client):
 
 
 def test_assets_list_response_matches_schema_shape(inventory_client):
-    response = inventory_client["client"].get(f"/api/v1/clusters/{inventory_client['cluster_id']}/assets")
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/assets",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -177,6 +253,48 @@ def test_assets_list_response_matches_schema_shape(inventory_client):
     assert {"asset_id", "asset_type", "name", "cluster_id", "cluster_name", "account_id", "region", "status", "details"} <= set(
         body["assets"][0].keys()
     )
+
+
+def test_inventory_routes_require_jwt_and_ignore_x_user_id_only(inventory_client):
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/assets",
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_inventory_assets_not_visible_to_other_user(inventory_client):
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/assets",
+        headers=_auth_headers(inventory_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"
+
+
+def test_inventory_summary_uses_owned_cluster_only(inventory_client):
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/inventory/summary",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == inventory_client["cluster_id"]
+    assert body["cluster_name"] == "prod"
+    assert body["total_node_count"] == 2
+
+
+def test_inventory_summary_not_visible_to_other_user(inventory_client):
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/inventory/summary",
+        headers=_auth_headers(inventory_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"
 
 
 def test_empty_result_payload_after_sync_maps_to_empty_assets(tmp_path: Path, monkeypatch):
@@ -219,8 +337,25 @@ def test_empty_result_payload_after_sync_maps_to_empty_assets(tmp_path: Path, mo
         async with sessionmaker() as session:
             yield ClusterService(cluster_repository=SQLAlchemyClusterRepository(session))
 
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password"))]
+        )
+    )
+
+    async def override_get_inventory_view_service():
+        async with sessionmaker() as session:
+            yield InventoryViewService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                scan_repository=SQLAlchemyScanRepository(session),
+                snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+                db=session,
+            )
+
     app.dependency_overrides[get_inventory_service] = override_get_inventory_service
+    app.dependency_overrides[get_inventory_view_service] = override_get_inventory_view_service
     app.dependency_overrides[get_cluster_service] = override_get_cluster_service
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     with TestClient(app) as client:
         create_response = client.post(
             "/api/v1/clusters",
@@ -230,11 +365,17 @@ def test_empty_result_payload_after_sync_maps_to_empty_assets(tmp_path: Path, mo
                 "aws_role_arn": "arn:aws:iam::123456789012:role/discovery",
                 "aws_region": "ap-northeast-2",
             },
-            headers=USER_HEADERS,
+            headers=_auth_headers(client, "user-1"),
         )
         cluster_id = create_response.json()["id"]
-        client.post(f"/api/v1/clusters/{cluster_id}/sync")
-        response = client.get(f"/api/v1/clusters/{cluster_id}/assets")
+        client.post(
+            f"/api/v1/clusters/{cluster_id}/sync",
+            headers=_auth_headers(client, "user-1"),
+        )
+        response = client.get(
+            f"/api/v1/clusters/{cluster_id}/assets",
+            headers=_auth_headers(client, "user-1"),
+        )
     app.dependency_overrides.clear()
     asyncio.run(engine.dispose())
 

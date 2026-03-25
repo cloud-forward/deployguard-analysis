@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
-from app.core.constants import SCAN_STATUS_FAILED
+from app.core.constants import SCAN_STATUS_CREATED, SCAN_STATUS_FAILED
 
 CLUSTER_1 = "11111111-1111-1111-1111-111111111111"
 CLUSTER_2 = "22222222-2222-2222-2222-222222222222"
@@ -57,10 +57,33 @@ class TestSQLAlchemyScanRepository:
         assert found.requested_at == requested_at
 
     @pytest.mark.asyncio
+    async def test_create_persists_user_id(self, repo):
+        await repo.create(
+            scan_id="test-001c",
+            cluster_id=CLUSTER_1,
+            scanner_type="k8s",
+            user_id="user-1",
+        )
+
+        found = await repo.get_by_scan_id("test-001c")
+        assert found.user_id == "user-1"
+
+    @pytest.mark.asyncio
     async def test_get_nonexistent_returns_none(self, repo):
         """get_by_scan_id returns None for unknown scan_id"""
         found = await repo.get_by_scan_id("does-not-exist")
         assert found is None
+
+    @pytest.mark.asyncio
+    async def test_get_by_scan_id_filters_by_user_id(self, repo):
+        await repo.create(scan_id="owned-scan", cluster_id=CLUSTER_1, scanner_type="k8s", user_id="user-1")
+
+        found = await repo.get_by_scan_id("owned-scan", user_id="user-1")
+        missing = await repo.get_by_scan_id("owned-scan", user_id="user-2")
+
+        assert found is not None
+        assert found.scan_id == "owned-scan"
+        assert missing is None
 
     @pytest.mark.asyncio
     async def test_update_status(self, repo):
@@ -90,6 +113,15 @@ class TestSQLAlchemyScanRepository:
         results = await repo.list_by_cluster(CLUSTER_1)
         assert len(results) == 2
         assert all(r.cluster_id == CLUSTER_1 for r in results)
+
+    @pytest.mark.asyncio
+    async def test_list_by_cluster_filters_by_user_id(self, repo):
+        await repo.create(scan_id="s1-user1", cluster_id=CLUSTER_1, scanner_type="k8s", user_id="user-1")
+        await repo.create(scan_id="s2-user2", cluster_id=CLUSTER_1, scanner_type="aws", user_id="user-2")
+
+        results = await repo.list_by_cluster(CLUSTER_1, user_id="user-1")
+
+        assert [record.scan_id for record in results] == ["s1-user1"]
 
     @pytest.mark.asyncio
     async def test_find_active_scan_returns_record(self, repo):
@@ -173,6 +205,17 @@ class TestSQLAlchemyScanRepository:
         found = await repo.get_by_scan_id("fail-002")
         assert found.status == SCAN_STATUS_FAILED
         assert found.completed_at == completed_at
+
+    @pytest.mark.asyncio
+    async def test_mark_failed_respects_user_id_filter(self, repo):
+        completed_at = datetime(2026, 3, 9, 12, 6, 0)
+        await repo.create(scan_id="fail-003", cluster_id=CLUSTER_1, scanner_type="k8s", user_id="user-1")
+
+        missing = await repo.mark_failed("fail-003", completed_at=completed_at, user_id="user-2")
+        found = await repo.get_by_scan_id("fail-003", user_id="user-1")
+
+        assert missing is None
+        assert found.status == SCAN_STATUS_CREATED
 
     @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):

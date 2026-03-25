@@ -32,6 +32,7 @@ class FactType(str, Enum):
     
     # Phase 5: AWS connections
     SERVICE_ACCOUNT_ASSUMES_IAM_ROLE = "service_account_assumes_iam_role"
+    IAM_PRINCIPAL_ASSUMES_IAM_ROLE = "iam_principal_assumes_iam_role"
     IAM_ROLE_ACCESS_RESOURCE = "iam_role_access_resource"
     IAM_USER_ACCESS_RESOURCE = "iam_user_access_resource"
     SECRET_CONTAINS_CREDENTIALS = "secret_contains_credentials"

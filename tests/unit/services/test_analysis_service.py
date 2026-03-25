@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from datetime import datetime, UTC
 
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.analysis_service import MAX_HOPS
 from app.core.constants import SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE, SCANNER_TYPE_K8S
 from app.main import app
 from src.facts.canonical_fact import Fact
@@ -106,6 +107,166 @@ def test_analysis_service_uses_direct_fact_extractors_instead_of_orchestrator(se
     assert not hasattr(service, "_fact_orchestrator")
 
 
+def _enriched_path(
+    path_id: str,
+    path: list[str],
+    raw_final_risk: float,
+    edge_types: list[str] | None = None,
+) -> dict:
+    edge_types = edge_types or []
+    edges = []
+    for index, edge_type in enumerate(edge_types):
+        edges.append(
+            {
+                "source": path[index],
+                "target": path[index + 1],
+                "type": edge_type,
+            }
+        )
+    return {
+        "path_id": path_id,
+        "path": path,
+        "risk_score": raw_final_risk,
+        "raw_final_risk": raw_final_risk,
+        "length": len(path),
+        "edges": edges,
+    }
+
+
+def test_refine_attack_paths_prunes_same_endpoint_superset_when_shorter_path_has_no_lower_risk(service):
+    shorter = _enriched_path(
+        "path-short",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    longer = _enriched_path(
+        "path-long",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths([longer, shorter])
+
+    assert [item["path_id"] for item in refined] == ["path-short"]
+
+
+def test_refine_attack_paths_keeps_higher_risk_longer_path_when_shorter_same_endpoint_path_is_lower_risk(service):
+    shorter_lower_risk = _enriched_path(
+        "path-short-low",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.6,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    longer_higher_risk = _enriched_path(
+        "path-long-high",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.9,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths([shorter_lower_risk, longer_higher_risk])
+
+    assert [item["path_id"] for item in refined] == ["path-long-high", "path-short-low"]
+
+
+def test_refine_attack_paths_orders_by_risk_then_hops_then_generic_allows_then_path_id(service):
+    highest_risk = _enriched_path(
+        "path-a-highest-risk",
+        ["entry", "mid", "target-a"],
+        0.95,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    fewer_hops = _enriched_path(
+        "path-b-fewer-hops",
+        ["entry", "target-b"],
+        0.8,
+        ["iam_role_access_resource"],
+    )
+    fewer_allows = _enriched_path(
+        "path-c-fewer-allows",
+        ["entry", "mid", "target-c"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+    more_allows = _enriched_path(
+        "path-d-more-allows",
+        ["entry", "mid", "target-d"],
+        0.8,
+        ["allows", "allows"],
+    )
+    same_sort_fields_later_id = _enriched_path(
+        "path-f-later-id",
+        ["entry", "mid", "target-f"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+    same_sort_fields_earlier_id = _enriched_path(
+        "path-e-earlier-id",
+        ["entry", "mid", "target-e"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths(
+        [
+            more_allows,
+            same_sort_fields_later_id,
+            highest_risk,
+            fewer_hops,
+            same_sort_fields_earlier_id,
+            fewer_allows,
+        ]
+    )
+
+    assert [item["path_id"] for item in refined] == [
+        "path-a-highest-risk",
+        "path-b-fewer-hops",
+        "path-c-fewer-allows",
+        "path-e-earlier-id",
+        "path-f-later-id",
+        "path-d-more-allows",
+    ]
+
+
+def test_refine_attack_paths_prunes_within_same_entry_target_group_only(service):
+    prune_group_short = _enriched_path(
+        "path-prune-short",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    prune_group_long = _enriched_path(
+        "path-prune-long",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+    different_target = _enriched_path(
+        "path-other-target",
+        ["ingress:prod:web", "service:prod:web", "rds:123:db"],
+        0.7,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    different_entry = _enriched_path(
+        "path-other-entry",
+        ["s3:123:public", "iam_user:123:deployer", "s3:123:data"],
+        0.85,
+        ["secret_contains_aws_credentials", "iam_user_access_resource"],
+    )
+
+    refined = service._refine_attack_paths(
+        [prune_group_long, different_target, prune_group_short, different_entry]
+    )
+
+    assert [item["path_id"] for item in refined] == [
+        "path-other-entry",
+        "path-prune-short",
+        "path-other-target",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_repo, scan_repo):
     k8s_cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -128,11 +289,36 @@ async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_rep
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_args_list[0].args == ("k8s-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[1].args == ("aws-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[2].args == ("img-1", "job-123")
     assert result.job_id == "job-123"
+
+
+@pytest.mark.asyncio
+async def test_manual_analysis_job_creation_passes_user_id_through(service, jobs_repo, scan_repo):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id=cluster_id),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id=cluster_id),
+    ]
+
+    await service.create_analysis_job(
+        k8s_scan_id="k8s-1",
+        image_scan_id="img-1",
+        user_id="user-1",
+    )
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id=cluster_id,
+        k8s_scan_id="k8s-1",
+        aws_scan_id=None,
+        image_scan_id="img-1",
+        expected_scans=["k8s", "image"],
+        user_id="user-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -154,6 +340,7 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
         aws_scan_id=None,
         image_scan_id="img-1",
         expected_scans=["k8s", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_count == 2
 
@@ -178,6 +365,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_image_whe
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["aws", "image"],
+        user_id=None,
     )
 
 
@@ -194,6 +382,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_aws_when_
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["aws"],
+        user_id=None,
     )
 
 
@@ -217,6 +406,7 @@ async def test_create_analysis_job_prefers_k8s_cluster_over_aws_when_both_presen
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["k8s", "aws"],
+        user_id=None,
     )
 
 
@@ -227,16 +417,144 @@ async def test_list_analysis_jobs_returns_cluster_jobs(service, jobs_repo):
         _make_job("job-1", status="completed", current_step=None, graph_id="graph-1"),
     ]
 
-    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890", user_id="user-1")
 
     jobs_repo.list_analysis_jobs.assert_awaited_once_with(
         cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        user_id="user-1",
         status=None,
     )
     assert result.total == 2
     assert [item.job_id for item in result.items] == ["job-2", "job-1"]
     assert result.items[0].current_step == "graph_building"
     assert result.items[1].graph_id == "graph-1"
+
+
+@pytest.mark.asyncio
+async def test_mixed_k8s_secret_to_aws_user_s3_chain_is_traversable_through_real_build_flow(service):
+    k8s_scan = {
+        "scan_id": "k8s-1",
+        "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "pods": [
+            {
+                "namespace": "production",
+                "name": "api",
+                "containers": [
+                    {
+                        "name": "api",
+                        "image": "api:latest",
+                        "volume_mounts": [
+                            {
+                                "source_type": "secret",
+                                "source_name": "aws-credentials",
+                                "mount_path": "/var/run/secrets/aws",
+                                "read_only": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "service_accounts": [],
+        "roles": [],
+        "cluster_roles": [],
+        "role_bindings": [],
+        "cluster_role_bindings": [],
+        "services": [],
+        "ingresses": [],
+        "network_policies": [],
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "aws-credentials",
+                },
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            }
+        ],
+    }
+    aws_scan = {
+        "scan_id": "aws-1",
+        "aws_account_id": "123456789012",
+        "scanned_at": "2026-03-25T00:00:00Z",
+        "iam_roles": [],
+        "iam_users": [
+            {
+                "username": "web-app-deployer",
+                "arn": "arn:aws:iam::123456789012:user/web-app-deployer",
+                "access_keys": [
+                    {
+                        "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                        "status": "Active",
+                        "create_date": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "attached_policies": [
+                    {
+                        "PolicyName": "DeployerPolicy",
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:GetObject"],
+                                    "Resource": [
+                                        "arn:aws:s3:::sensitive-data-bucket",
+                                        "arn:aws:s3:::sensitive-data-bucket/*",
+                                    ],
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "inline_policies": [],
+                "has_mfa": False,
+                "last_used": None,
+            }
+        ],
+        "s3_buckets": [
+            {
+                "name": "sensitive-data-bucket",
+                "arn": "arn:aws:s3:::sensitive-data-bucket",
+                "public_access_block": None,
+                "encryption": None,
+                "versioning": "Disabled",
+                "logging_enabled": False,
+            }
+        ],
+        "rds_instances": [],
+        "ec2_instances": [],
+        "security_groups": [],
+    }
+
+    k8s_result = service._build_k8s_result(k8s_scan, "k8s-1")
+    aws_scan_result = service._coerce_aws_scan_result(aws_scan, "aws-1")
+    bridge_result = service._bridge_builder.build(k8s_scan, aws_scan_result)
+    aws_result = service._build_aws_result(aws_scan_result, bridge_result)
+    unified_result = service._unified_graph_builder.build(k8s_result, aws_result)
+    graph = await service._graph_builder.build_from_unified_result(unified_result)
+
+    pod_id = "pod:production:api"
+    secret_id = "secret:production:aws-credentials"
+    user_id = "iam_user:123456789012:web-app-deployer"
+    bucket_id = "s3:123456789012:sensitive-data-bucket"
+
+    paths = service._path_finder.find_all_paths(
+        graph,
+        [pod_id],
+        [bucket_id],
+        max_path_length=3,
+        max_paths=10,
+    )
+
+    assert paths == [[pod_id, secret_id, user_id, bucket_id]]
+    assert service._path_finder.get_path_edges(graph, paths[0]) == [
+        (pod_id, secret_id, "pod_mounts_secret"),
+        (secret_id, user_id, "secret_contains_aws_credentials"),
+        (user_id, bucket_id, "iam_user_access_resource"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -248,9 +566,9 @@ async def test_get_analysis_job_returns_detail(service, jobs_repo):
         aws_scan_id="aws-1",
     )
 
-    result = await service.get_analysis_job("job-123")
+    result = await service.get_analysis_job("job-123", user_id="user-1")
 
-    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123")
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
     assert result.job_id == "job-123"
     assert result.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     assert result.status == "failed"
@@ -263,7 +581,7 @@ async def test_get_analysis_job_missing_raises_404(service, jobs_repo):
     jobs_repo.get_analysis_job.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.get_analysis_job("missing-job")
+        await service.get_analysis_job("missing-job", user_id="user-1")
 
     assert exc_info.value.status_code == 404
 
@@ -401,6 +719,7 @@ async def test_allows_aws_scan_from_different_cluster_than_k8s_image(service, jo
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
 
 
@@ -415,7 +734,9 @@ async def test_analysis_execution_uses_explicit_scan_ids_from_analysis_job(servi
     )
     service.execute_analysis = AsyncMock(return_value={"ok": True})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     service.execute_analysis.assert_awaited_once_with(
@@ -441,7 +762,9 @@ async def test_execute_analysis_job_marks_failed_on_execution_error(service, job
     service.execute_analysis = AsyncMock(side_effect=RuntimeError("raw load failed"))
 
     with pytest.raises(RuntimeError, match="raw load failed"):
-        await service.execute_analysis_job("job-123")
+        await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     jobs_repo.rollback.assert_awaited_once_with()
@@ -494,7 +817,9 @@ async def test_execute_analysis_job_uses_snapshotted_scalars_after_repo_state_ch
     jobs_repo.mark_running.side_effect = expire_after_mark_running
     service.execute_analysis = AsyncMock(return_value={"stats": {"graph": {"nodes": 1}}})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     service.execute_analysis.assert_awaited_once_with(
         cluster_id="cluster-1",
@@ -965,6 +1290,53 @@ async def test_execute_analysis_updates_job_steps_when_analysis_job_id_present(s
         ("job-123", "risk_calculation"),
         ("job-123", "optimization"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_uses_hop_limit_10_for_path_discovery(service):
+    service._load_scan_data = AsyncMock(side_effect=[
+        {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
+        {"scan_id": "aws-1", "aws_account_id": "123456789012"},
+        {"scan_id": "img-1"},
+    ])
+    k8s_result = K8sBuildResult(
+        nodes=[K8sGraphNode(id="pod:prod:api", type="pod")],
+        edges=[],
+        metadata={"scan_id": "k8s-1", "cluster_id": "cluster-1", "graph_id": "k8s-1-graph"},
+    )
+    aws_result = AWSBuildResult(
+        nodes=[AWSGraphNode(id="iam:123456789012:AppRole", type="iam_role", namespace="123456789012")],
+        edges=[],
+        metadata={"scan_id": "aws-1", "account_id": "123456789012", "graph_id": "aws-1-graph"},
+    )
+    unified_result = UnifiedGraphResult(nodes=[*k8s_result.nodes, *aws_result.nodes], edges=[], metadata={}, warnings=[])
+    graph = nx.DiGraph()
+    graph.add_node("pod:prod:api", id="pod:prod:api", type="pod", is_entry_point=True, is_crown_jewel=False, base_risk=0.3, metadata={})
+    graph.add_node("iam:123456789012:AppRole", id="iam:123456789012:AppRole", type="iam_role", is_entry_point=False, is_crown_jewel=True, base_risk=0.9, metadata={})
+
+    service._build_k8s_result = MagicMock(return_value=k8s_result)
+    service._extract_k8s_facts = MagicMock(return_value=[])
+    service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
+    service._bridge_builder.build = MagicMock(return_value=MagicMock(irsa_mappings=[], credential_facts=[], warnings=[]))
+    service._extract_aws_facts = MagicMock(return_value=[])
+    service._build_aws_result = MagicMock(return_value=aws_result)
+    service._unified_graph_builder.build = MagicMock(return_value=unified_result)
+    service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
+    service._graph_builder.get_entry_points = MagicMock(return_value=["pod:prod:api"])
+    service._graph_builder.get_crown_jewels = MagicMock(return_value=["iam:123456789012:AppRole"])
+    service._path_finder.find_all_paths = MagicMock(return_value=[])
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 0}, "recommendations": []})
+
+    await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
+
+    assert MAX_HOPS == 10
+    service._path_finder.find_all_paths.assert_called_once_with(
+        graph,
+        ["pod:prod:api"],
+        ["iam:123456789012:AppRole"],
+        max_path_length=10,
+        max_paths=100,
+    )
 
 
 def test_openapi_docs_distinguish_standard_and_debug_analysis_flows():

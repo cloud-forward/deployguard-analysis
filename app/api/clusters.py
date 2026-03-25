@@ -1,11 +1,18 @@
 """
 Cluster management API endpoints.
 """
+import logging
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
-from app.application.di import get_attack_graph_service, get_cluster_service
+from app.api.auth import get_current_user
+from app.application.di import (
+    get_attack_graph_service,
+    get_cluster_service,
+    get_recommendation_explanation_service,
+)
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.cluster_service import ClusterService
+from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.models.schemas import (
     AttackPathDetailEnvelopeResponse,
     AttackPathListResponse,
@@ -14,11 +21,15 @@ from app.models.schemas import (
     ClusterUpdateRequest,
     ClusterResponse,
     ClusterCreateResponse,
+    RecommendationExplanationRequest,
+    RecommendationExplanationResponse,
     RemediationRecommendationDetailEnvelopeResponse,
     RemediationRecommendationListResponse,
+    UserSummaryResponse,
 )
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -41,9 +52,10 @@ router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
 )
 async def create_cluster(
     request: ClusterCreateRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.create_cluster(request)
+    return await service.create_cluster(request, user_id=current_user.id)
 
 
 @router.get(
@@ -56,9 +68,10 @@ async def create_cluster(
     },
 )
 async def list_clusters(
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.list_clusters()
+    return await service.list_clusters(user_id=current_user.id)
 
 
 @router.get(
@@ -73,9 +86,10 @@ async def list_clusters(
 )
 async def get_cluster(
     id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.get_cluster(id)
+    return await service.get_cluster(id, user_id=current_user.id)
 
 
 @router.get(
@@ -93,9 +107,10 @@ async def get_cluster(
 )
 async def get_attack_graph(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_graph(cluster_id)
+    return await service.get_attack_graph(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -110,9 +125,10 @@ async def get_attack_graph(
 )
 async def get_attack_paths(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_paths(cluster_id)
+    return await service.get_attack_paths(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -128,9 +144,10 @@ async def get_attack_paths(
 async def get_attack_path_detail(
     cluster_id: str,
     path_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_path_detail(cluster_id, path_id)
+    return await service.get_attack_path_detail(cluster_id, path_id, user_id=current_user.id)
 
 
 @router.get(
@@ -145,9 +162,40 @@ async def get_attack_path_detail(
 )
 async def get_remediation_recommendations(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_remediation_recommendations(cluster_id)
+    logger.info(
+        "remediation_list_request",
+        extra={
+            "route_name": "get_remediation_recommendations",
+            "cluster_id": cluster_id,
+            "request_status": "started",
+        },
+    )
+    try:
+        response = await service.get_remediation_recommendations(cluster_id, user_id=current_user.id)
+    except Exception as exc:
+        logger.exception(
+            "remediation_list_request_failed",
+            extra={
+                "route_name": "get_remediation_recommendations",
+                "cluster_id": cluster_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_list_request_completed",
+        extra={
+            "route_name": "get_remediation_recommendations",
+            "cluster_id": cluster_id,
+            "request_status": "succeeded",
+            "recommendation_count": len(response.items),
+        },
+    )
+    return response
 
 
 @router.get(
@@ -163,9 +211,111 @@ async def get_remediation_recommendations(
 async def get_remediation_recommendation_detail(
     cluster_id: str,
     recommendation_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+    logger.info(
+        "remediation_detail_request",
+        extra={
+            "route_name": "get_remediation_recommendation_detail",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "started",
+        },
+    )
+    try:
+        response = await service.get_remediation_recommendation_detail(
+            cluster_id,
+            recommendation_id,
+            user_id=current_user.id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "remediation_detail_request_failed",
+            extra={
+                "route_name": "get_remediation_recommendation_detail",
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_detail_request_completed",
+        extra={
+            "route_name": "get_remediation_recommendation_detail",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "succeeded",
+            "recommendation_found": response.recommendation is not None,
+        },
+    )
+    return response
+
+
+@router.post(
+    "/{cluster_id}/remediation-recommendations/{recommendation_id}/explanation",
+    response_model=RecommendationExplanationResponse,
+    summary="[신규] Remediation Recommendation 설명 생성",
+    description="수동 요청으로 특정 remediation recommendation 상세에 대한 설명을 생성합니다.",
+    responses={
+        200: {"description": "설명 생성 결과"},
+        404: {"description": "클러스터를 찾을 수 없습니다"},
+    },
+)
+async def explain_remediation_recommendation(
+    cluster_id: str,
+    recommendation_id: str,
+    request: RecommendationExplanationRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
+    service: RecommendationExplanationService = Depends(get_recommendation_explanation_service),
+):
+    logger.info(
+        "remediation_explanation_request",
+        extra={
+            "route_name": "explain_remediation_recommendation",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "requested_provider": request.provider.value if request.provider is not None else None,
+            "requested_model": request.model,
+            "request_status": "started",
+        },
+    )
+    try:
+        response = await service.explain_recommendation(
+            cluster_id=cluster_id,
+            recommendation_id=recommendation_id,
+            user_id=current_user.id,
+            request=request,
+        )
+    except Exception as exc:
+        logger.exception(
+            "remediation_explanation_request_failed",
+            extra={
+                "route_name": "explain_remediation_recommendation",
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_explanation_request_completed",
+        extra={
+            "route_name": "explain_remediation_recommendation",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "succeeded",
+            "explanation_status": response.explanation_status,
+            "used_llm": response.used_llm,
+            "provider": response.provider,
+            "model": response.model,
+            "fallback_reason": response.fallback_reason,
+        },
+    )
+    return response
 
 
 @router.patch(
@@ -182,9 +332,10 @@ async def get_remediation_recommendation_detail(
 async def update_cluster(
     id: str,
     request: ClusterUpdateRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.update_cluster(id, request)
+    return await service.update_cluster(id, request, user_id=current_user.id)
 
 
 @router.delete(
@@ -199,7 +350,8 @@ async def update_cluster(
 )
 async def delete_cluster(
     id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    await service.delete_cluster(id)
+    await service.delete_cluster(id, user_id=current_user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

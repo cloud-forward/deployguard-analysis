@@ -76,3 +76,43 @@ def test_find_all_paths_respects_zero_top_k():
         ["target"],
         max_paths=0,
     ) == []
+
+
+def test_find_all_paths_traverses_explicit_iam_principal_assume_role_edge():
+    graph = nx.DiGraph()
+    graph.add_edge(
+        "iam_user:123456789012:deployer",
+        "iam:123456789012:TargetRole",
+        type="iam_principal_assumes_iam_role",
+    )
+    graph.add_edge(
+        "iam:123456789012:TargetRole",
+        "s3:123456789012:data",
+        type="iam_role_access_resource",
+    )
+
+    finder = PathFinder()
+    paths = finder.find_all_paths(
+        graph,
+        ["iam_user:123456789012:deployer"],
+        ["s3:123456789012:data"],
+        max_path_length=2,
+    )
+
+    assert paths == [[
+        "iam_user:123456789012:deployer",
+        "iam:123456789012:TargetRole",
+        "s3:123456789012:data",
+    ]]
+    assert finder.get_path_edges(graph, paths[0]) == [
+        (
+            "iam_user:123456789012:deployer",
+            "iam:123456789012:TargetRole",
+            "iam_principal_assumes_iam_role",
+        ),
+        (
+            "iam:123456789012:TargetRole",
+            "s3:123456789012:data",
+            "iam_role_access_resource",
+        ),
+    ]

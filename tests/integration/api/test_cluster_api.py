@@ -1,15 +1,65 @@
 import pytest
+from dataclasses import dataclass
 from uuid import uuid4
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.di import get_attack_graph_service, get_cluster_service
+from app.application.di import get_attack_graph_service, get_auth_service, get_cluster_service, get_recommendation_explanation_service
 from app.application.services.attack_graph_service import AttackGraphService
+from app.application.services.auth_service import AuthService
 from app.application.services.cluster_service import ClusterService
+from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.gateway.db.base import Base
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 from app.main import app
+from app.security.passwords import hash_password
+
+
+@dataclass
+class FakeUser:
+    id: str
+    email: str
+    password_hash: str
+    is_active: bool = True
+
+
+class FakeUserRepository:
+    def __init__(self, users: list[FakeUser]):
+        self._by_email = {user.email: user for user in users}
+        self._by_id = {user.id: user for user in users}
+
+    async def get_by_email(self, email: str):
+        return self._by_email.get(email)
+
+    async def get_by_id(self, user_id: str):
+        return self._by_id.get(user_id)
+
+
+@pytest.fixture(autouse=True)
+def auth_override():
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    yield
+    app.dependency_overrides.pop(get_auth_service, None)
+
+
+def _auth_headers(client: TestClient, user_id: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": f"{user_id}@example.com", "password": "secret-password"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
 
 def test_create_cluster(client):
     response = client.post(
@@ -18,7 +68,8 @@ def test_create_cluster(client):
             "name": "test-cluster",
             "cluster_type": "eks",
             "description": "A test cluster"
-        }
+        },
+        headers=_auth_headers(client, "user-1"),
     )
     assert response.status_code == 201
     data = response.json()
@@ -39,7 +90,8 @@ def test_create_cluster_with_aws_type(client):
         json={
             "name": "aws-test-cluster",
             "cluster_type": "aws",
-        }
+        },
+        headers=_auth_headers(client, "user-1"),
     )
     assert response.status_code == 201
     data = response.json()
@@ -62,7 +114,8 @@ def test_create_cluster_with_self_managed_type(client):
         json={
             "name": "self-managed-test-cluster",
             "cluster_type": "self-managed",
-        }
+        },
+        headers=_auth_headers(client, "user-1"),
     )
     assert response.status_code == 201
     data = response.json()
@@ -79,60 +132,135 @@ def test_create_cluster_invalid_type(client):
         json={
             "name": "invalid-cluster",
             "cluster_type": "invalid"
-        }
+        },
+        headers=_auth_headers(client, "user-1"),
     )
     assert response.status_code == 422
 
+
 def test_list_clusters(client):
-    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"})
-    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"})
+    client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"}, headers=_auth_headers(client, "user-1"))
+    client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"}, headers=_auth_headers(client, "user-1"))
     
-    response = client.get("/api/v1/clusters")
+    response = client.get("/api/v1/clusters", headers=_auth_headers(client, "user-1"))
     assert response.status_code == 200
     data = response.json()
     assert len(data) >= 2
     assert all("api_token" not in c for c in data)
 
+
+def test_list_clusters_returns_only_clusters_for_requesting_user(client):
+    client.post("/api/v1/clusters", json={"name": "user-1-cluster", "cluster_type": "eks"}, headers=_auth_headers(client, "user-1"))
+    client.post("/api/v1/clusters", json={"name": "user-2-cluster", "cluster_type": "eks"}, headers=_auth_headers(client, "user-2"))
+
+    response = client.get("/api/v1/clusters", headers=_auth_headers(client, "user-1"))
+
+    assert response.status_code == 200
+    names = [cluster["name"] for cluster in response.json()]
+    assert "user-1-cluster" in names
+    assert "user-2-cluster" not in names
+
 def test_get_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"}, headers=_auth_headers(client, "user-1"))
     cluster_id = create_resp.json()["id"]
     
-    response = client.get(f"/api/v1/clusters/{cluster_id}")
+    response = client.get(f"/api/v1/clusters/{cluster_id}", headers=_auth_headers(client, "user-1"))
     assert response.status_code == 200
     assert response.json()["name"] == "get-me"
     assert "api_token" not in response.json()
 
+
+def test_get_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-detail", "cluster_type": "eks"},
+        headers=_auth_headers(client, "user-2"),
+    )
+
+    response = client.get(
+        f"/api/v1/clusters/{create_resp.json()['id']}",
+        headers=_auth_headers(client, "user-1"),
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
 def test_update_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "update-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "update-me", "cluster_type": "eks"}, headers=_auth_headers(client, "user-1"))
     cluster_id = create_resp.json()["id"]
     
     response = client.patch(
         f"/api/v1/clusters/{cluster_id}",
-        json={"description": "updated description", "cluster_type": "self-managed"}
+        json={"description": "updated description", "cluster_type": "self-managed"},
+        headers=_auth_headers(client, "user-1"),
     )
     assert response.status_code == 200
     data = response.json()
     assert data["description"] == "updated description"
     assert data["cluster_type"] == "self-managed"
 
+
+def test_update_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-update", "cluster_type": "eks"},
+        headers=_auth_headers(client, "user-2"),
+    )
+    cluster_id = create_resp.json()["id"]
+
+    response = client.patch(
+        f"/api/v1/clusters/{cluster_id}",
+        json={"description": "should-not-update"},
+        headers=_auth_headers(client, "user-1"),
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
 def test_delete_cluster(client):
-    create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"})
+    create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"}, headers=_auth_headers(client, "user-1"))
     cluster_id = create_resp.json()["id"]
     
-    del_resp = client.delete(f"/api/v1/clusters/{cluster_id}")
+    del_resp = client.delete(f"/api/v1/clusters/{cluster_id}", headers=_auth_headers(client, "user-1"))
     assert del_resp.status_code == 204
     
-    get_resp = client.get(f"/api/v1/clusters/{cluster_id}")
+    get_resp = client.get(f"/api/v1/clusters/{cluster_id}", headers=_auth_headers(client, "user-1"))
     assert get_resp.status_code == 404
+
+
+def test_delete_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-delete", "cluster_type": "eks"},
+        headers=_auth_headers(client, "user-2"),
+    )
+    cluster_id = create_resp.json()["id"]
+
+    response = client.delete(
+        f"/api/v1/clusters/{cluster_id}",
+        headers=_auth_headers(client, "user-1"),
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 
 def test_create_cluster_token_is_persisted_for_auth_lookup():
     app.dependency_overrides.clear()
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     name = f"persist-{uuid4().hex[:8]}"
     with TestClient(app) as client:
         create_resp = client.post(
             "/api/v1/clusters",
             json={"name": name, "cluster_type": "eks"},
+            headers=_auth_headers(client, "user-1"),
         )
         assert create_resp.status_code == 201
         token = create_resp.json()["api_token"]
@@ -143,6 +271,7 @@ def test_create_cluster_token_is_persisted_for_auth_lookup():
             headers={"Authorization": f"Bearer {token}"},
         )
         assert pending_resp.status_code == 204
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -238,7 +367,11 @@ async def attack_graph_client(tmp_path):
     app.dependency_overrides[get_attack_graph_service] = override_get_attack_graph_service
 
     with TestClient(app) as client:
-        create_resp = client.post("/api/v1/clusters", json={"name": "graph-cluster", "cluster_type": "eks"})
+        create_resp = client.post(
+            "/api/v1/clusters",
+            json={"name": "graph-cluster", "cluster_type": "eks"},
+            headers=_auth_headers(client, "user-1"),
+        )
         assert create_resp.status_code == 201
         yield {"client": client, "cluster_id": create_resp.json()["id"], "sessionmaker": sessionmaker}
 
@@ -314,7 +447,10 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
 
     body = response.json()
@@ -402,7 +538,10 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-paths",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -485,7 +624,10 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths/path-detail")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-paths/path-detail",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -557,7 +699,10 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -581,6 +726,139 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
         "cumulative_risk_reduction": 1.5,
         "metadata": {"edge_source_type": "ingress"},
     }
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_latest_graph_has_no_rows(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-empty"
+    analysis_run_id = "analysis-recommendations-empty"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:30:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:30:00', '2026-03-22 14:35:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:35:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_table_is_missing(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-table"
+    analysis_run_id = "analysis-recommendations-missing-table"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("DROP TABLE IF EXISTS remediation_recommendations"))
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:40:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:40:00', '2026-03-22 14:45:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:45:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_orders_by_rank_then_cumulative_reduction_then_id(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-ordering"
+    analysis_run_id = "analysis-recommendations-ordering"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 16:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 16:00:00', '2026-03-22 16:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    (:graph_id, 'z-rank-0', 0, 'a', 'b', 'ingress_exposes_service',
+                     'restrict_ingress', 'rank 0 first', '["path-a"]', '[0]', 1.0, 0.5,
+                     0.5, 0.4, '{}'),
+                    (:graph_id, 'z-rank-1-lower-cumulative', 1, 'c', 'd', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 lower cumulative', '["path-b"]', '[1]', 1.0, 0.5,
+                     0.5, 0.5, '{}'),
+                    (:graph_id, 'a-rank-1-higher-cumulative', 1, 'e', 'f', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 higher cumulative', '["path-c"]', '[2]', 1.0, 0.5,
+                     0.5, 0.9, '{}'),
+                    (:graph_id, 'a-rank-1-same-cumulative', 1, 'g', 'h', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 same cumulative lower id', '["path-d"]', '[3]', 1.0, 0.5,
+                     0.5, 0.5, '{}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert [item["recommendation_id"] for item in body["items"]] == [
+        "z-rank-0",
+        "a-rank-1-higher-cumulative",
+        "a-rank-1-same-cumulative",
+        "z-rank-1-lower-cumulative",
+    ]
 
 
 @pytest.mark.asyncio
@@ -623,7 +901,8 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
         await session.commit()
 
     response = attack_graph_client["client"].get(
-        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -649,11 +928,135 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
     }
 
 
+class _MissingConfigRepo:
+    async def get_active(self, user_id: str):
+        return None
+
+    async def get_by_provider(self, user_id: str, provider: str):
+        return None
+
+
+class _RecordingProvider:
+    provider_name = "openai"
+
+    def __init__(self):
+        self.calls = []
+
+    async def generate_explanation(self, prompt):
+        self.calls.append(prompt)
+        raise AssertionError("provider should not be called")
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_remediation_read_routes_require_jwt_and_ignore_x_user_id_only(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_remediation_read_routes_hide_other_users_cluster(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers=_auth_headers(attack_graph_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"
+
+
+@pytest.mark.asyncio
+async def test_post_remediation_recommendation_explanation_returns_no_target_when_row_missing_under_existing_graph(
+    attack_graph_client,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-target"
+    analysis_run_id = "analysis-recommendations-missing-target"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:00:00', '2026-03-22 15:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider()
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_MissingConfigRepo(),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/missing-rec/explanation",
+        json={},
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation_id"] == "missing-rec"
+    assert body["explanation_status"] == "no_target"
+    assert body["used_llm"] is False
+    assert body["provider"] is None
+    assert body["model"] is None
+    assert body["fallback_reason"] == "recommendation_not_found"
+    assert provider.calls == []
+
+
 @pytest.mark.asyncio
 async def test_get_attack_graph_returns_empty_payload_when_no_analysis_exists(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -746,7 +1149,11 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+
     assert response.status_code == 200
 
     body = response.json()
@@ -793,7 +1200,6 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             },
         },
     ]
-
     assert body["edges"] == [
         {
             "id": "edge-keep-1",
@@ -816,7 +1222,6 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             },
         },
     ]
-
     assert body["paths"] == [
         {
             "id": "path-keep",
@@ -828,3 +1233,50 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             "edge_ids": ["edge-keep-1", "edge-keep-2"],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/attack-graph",
+        "/api/v1/clusters/{cluster_id}/attack-paths",
+        "/api/v1/clusters/{cluster_id}/attack-paths/path-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_attack_graph_and_path_routes_require_jwt_and_ignore_x_user_id_only(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/attack-graph",
+        "/api/v1/clusters/{cluster_id}/attack-paths",
+        "/api/v1/clusters/{cluster_id}/attack-paths/path-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_attack_graph_and_path_routes_hide_other_users_cluster(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers=_auth_headers(attack_graph_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"

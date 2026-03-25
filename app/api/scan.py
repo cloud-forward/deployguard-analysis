@@ -19,7 +19,8 @@ from app.models.schemas import (
 )
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
-from app.api.auth import get_authenticated_cluster
+from app.api.auth import get_authenticated_cluster, get_current_user
+from app.models.schemas import UserSummaryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ async def start_scan(
     request: ScanStartRequest,
     http_request: Request,
     service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
 ):
     request_id = getattr(http_request.state, "request_id", None)
     logger.info(
@@ -73,6 +75,7 @@ async def start_scan(
     return await service.start_scan(
         cluster_id=request.cluster_id,
         request_source=request.request_source,
+        user_id=current_user.id,
         request_id=request_id,
         endpoint_path=http_request.url.path,
     )
@@ -259,6 +262,7 @@ async def fail_scan(
     request_context: Request,
     scan_id: str,
     service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
 ):
     request_id = getattr(request_context.state, "request_id", None)
     logger.info(
@@ -272,6 +276,7 @@ async def fail_scan(
     )
     return await service.fail_scan(
         scan_id=scan_id,
+        user_id=current_user.id,
         request_id=request_id,
         endpoint_path=request_context.url.path,
     )
@@ -291,8 +296,12 @@ async def fail_scan(
         200: {"description": "클러스터 스캔 이력"},
     },
 )
-async def list_cluster_scans(cluster_id: str, service: ScanService = Depends(get_scan_service)):
-    return await service.list_cluster_scans(cluster_id=cluster_id)
+async def list_cluster_scans(
+    cluster_id: str,
+    service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
+):
+    return await service.list_cluster_scans(cluster_id=cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -311,8 +320,12 @@ async def list_cluster_scans(cluster_id: str, service: ScanService = Depends(get
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
     },
 )
-async def get_scan_detail(scan_id: str, service: ScanService = Depends(get_scan_service)):
-    return await service.get_scan_detail(scan_id=scan_id)
+async def get_scan_detail(
+    scan_id: str,
+    service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
+):
+    return await service.get_scan_detail(scan_id=scan_id, user_id=current_user.id)
 
 
 @router.get(
@@ -355,5 +368,9 @@ async def get_raw_result_download_url(scan_id: str, service: ScanService = Depen
         404: {"description": "스캔 세션을 찾을 수 없습니다"},
     },
 )
-async def get_scan_status(scan_id: str, service: ScanService = Depends(get_scan_service)):
-    return await service.get_scan_status(scan_id=scan_id)
+async def get_scan_status(
+    scan_id: str,
+    service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
+):
+    return await service.get_scan_status(scan_id=scan_id, user_id=current_user.id)

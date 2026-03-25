@@ -2,7 +2,7 @@
 SQLAlchemy ORM models for PostgreSQL. Gateway layer only.
 Moved from app/models/db_models.py to avoid domain→gateway dependency.
 """
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import (
     String,
     JSON,
@@ -30,6 +30,40 @@ from app.core.constants import (
 
 JSONB_COMPAT = JSON().with_variant(JSONB, "postgresql")
 UUID_COMPAT = UUID(as_uuid=False).with_variant(String(36), "sqlite")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("TRUE"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+    clusters: Mapped[list["Cluster"]] = relationship("Cluster", back_populates="user")
+    analysis_jobs: Mapped[list["AnalysisJob"]] = relationship("AnalysisJob", back_populates="user")
+    scan_records: Mapped[list["ScanRecord"]] = relationship("ScanRecord", back_populates="user")
+    llm_provider_configs: Mapped[list["LLMProviderConfig"]] = relationship(
+        "LLMProviderConfig", back_populates="user"
+    )
 
 
 class MergeState(Base):
@@ -183,6 +217,11 @@ class AnalysisJob(Base):
         default=lambda: str(uuid4()),
         server_default=text("gen_random_uuid()"),
     )
+    user_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
     cluster_id: Mapped[str] = mapped_column(
         UUID_COMPAT,
         ForeignKey("clusters.id"),
@@ -218,6 +257,8 @@ class AnalysisJob(Base):
         default=datetime.utcnow,
         server_default=text("now()"),
     )
+
+    user: Mapped["User"] = relationship("User", back_populates="analysis_jobs")
 
 
 class AttackPath(Base):
@@ -309,6 +350,46 @@ class RemediationRecommendation(Base):
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
 
 
+class LLMProviderConfig(Base):
+    __tablename__ = "llm_provider_configs"
+    __table_args__ = (
+        Index("idx_llm_provider_configs_provider", "provider"),
+        Index("idx_llm_provider_configs_is_active", "is_active"),
+        Index("uq_llm_provider_configs_user_provider", "user_id", "provider", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    default_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("FALSE"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="llm_provider_configs")
+
+
 class Cluster(Base):
     """
     Model representing a cluster in DeployGuard.
@@ -316,6 +397,11 @@ class Cluster(Base):
     __tablename__ = "clusters"
 
     id: Mapped[str] = mapped_column(UUID_COMPAT, primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     api_token: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -325,6 +411,8 @@ class Cluster(Base):
     aws_region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped["User"] = relationship("User", back_populates="clusters")
 
 
 class InventorySnapshot(Base):
@@ -392,6 +480,11 @@ class ScanRecord(Base):
         default=lambda: str(uuid4()),
         server_default=text("gen_random_uuid()"),
     )
+    user_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
     scan_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     cluster_id: Mapped[str] = mapped_column(
         String(255),          # DB에 VARCHAR 로 저장되어 있으므로 String 으로 선언
@@ -437,6 +530,8 @@ class ScanRecord(Base):
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="scan_records")
 
     def __init__(self, **kwargs):
         kwargs.setdefault("status", SCAN_STATUS_CREATED)

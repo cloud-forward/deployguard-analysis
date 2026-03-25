@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
+from app.api.auth import get_current_user
 from app.application.di import get_inventory_service, get_inventory_view_service
 from app.application.services.inventory_service import InventoryService
 from app.application.services.inventory_view_service import InventoryViewService
@@ -12,6 +13,7 @@ from app.models.schemas import (
     InvRiskSpotlightResponse,
     InvScannerStatusResponse,
     InvSummaryResponse,
+    UserSummaryResponse,
 )
 
 router = APIRouter(tags=["Inventory"])
@@ -34,9 +36,10 @@ router = APIRouter(tags=["Inventory"])
 )
 async def get_cluster_assets(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryService = Depends(get_inventory_service),
 ) -> AssetInventoryListResponse:
-    return await service.get_cluster_assets(cluster_id)
+    return await service.get_cluster_assets(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -52,9 +55,10 @@ async def get_cluster_assets(
 )
 async def get_asset_detail(
     asset_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryService = Depends(get_inventory_service),
 ) -> AssetDetailResponse:
-    return await service.get_asset_detail(asset_id)
+    return await service.get_asset_detail(asset_id, user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +77,10 @@ async def get_asset_detail(
 )
 async def get_inventory_summary(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> InvSummaryResponse:
-    return await service.get_summary(cluster_id)
+    return await service.get_summary(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -95,10 +100,12 @@ async def get_inventory_assets(
     is_crown_jewel: Optional[bool] = None,
     page: int = 1,
     page_size: int = 20,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> InvAssetListResponse:
     return await service.get_assets(
         cluster_id=cluster_id,
+        user_id=current_user.id,
         domain=domain,
         node_type=node_type,
         is_entry_point=is_entry_point,
@@ -119,9 +126,10 @@ async def get_inventory_assets(
 )
 async def get_inventory_risk_spotlight(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> InvRiskSpotlightResponse:
-    return await service.get_risk_spotlight(cluster_id)
+    return await service.get_risk_spotlight(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -135,6 +143,7 @@ async def get_inventory_risk_spotlight(
 )
 async def get_inventory_scanner_status(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> InvScannerStatusResponse:
-    return await service.get_scanner_status(cluster_id)
+    return await service.get_scanner_status(cluster_id, user_id=current_user.id)

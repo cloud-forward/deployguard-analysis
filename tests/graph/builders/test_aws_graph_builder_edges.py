@@ -542,3 +542,185 @@ def test_iam_user_to_s3_edge():
     assert edge.target == "s3:account:sensitive-data-bucket"
     assert edge.type == "iam_user_access_resource"
     assert edge.metadata["source_type"] == "iam_policy_parser"
+
+
+def test_explicit_assume_role_edge_created_for_exact_same_account_principal():
+    target_role = make_iam_role("target-role")
+    target_role.trust_policy = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::account:user/deployer"},
+                "Action": "sts:AssumeRole",
+            }
+        ]
+    }
+    user = make_iam_user(username="deployer")
+    resource_access = ResourceAccess(
+        service="sts",
+        actions=["sts:AssumeRole"],
+        resource_arns=["arn:aws:iam::account:role/target-role"],
+        effect="Allow",
+        is_wildcard_action=False,
+        is_wildcard_resource=False,
+        policy_name="AssumeRolePolicy",
+        policy_arn=None,
+        conditions=None,
+    )
+    user_policy_result = make_iam_user_policy_result("deployer", [resource_access])
+    scan = make_scan(iam_roles=[target_role], iam_users=[user])
+
+    _, edges = build(scan, user_policy_results=[user_policy_result])
+
+    assume_edges = [e for e in edges if e.type == "iam_principal_assumes_iam_role"]
+    assert len(assume_edges) == 1
+    edge = assume_edges[0]
+    assert edge.source == "iam_user:account:deployer"
+    assert edge.target == "iam:account:target-role"
+    assert edge.metadata["source_principal_arn"] == "arn:aws:iam::account:user/deployer"
+    assert edge.metadata["target_role_arn"] == "arn:aws:iam::account:role/target-role"
+    assert edge.metadata["via"] == "explicit_sts_assumerole"
+
+
+def test_explicit_assume_role_edge_created_for_role_to_role_case():
+    source_role = make_iam_role("source-role")
+    source_role.attached_policies = [
+        {
+            "name": "AssumeRolePolicy",
+            "arn": "arn:aws:iam::account:policy/AssumeRolePolicy",
+            "document": {
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": "sts:AssumeRole",
+                        "Resource": "arn:aws:iam::account:role/target-role",
+                    }
+                ]
+            },
+        }
+    ]
+    target_role = make_iam_role("target-role")
+    target_role.trust_policy = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::account:role/source-role"},
+                "Action": "sts:AssumeRole",
+            }
+        ]
+    }
+    resource_access = ResourceAccess(
+        service="sts",
+        actions=["sts:AssumeRole"],
+        resource_arns=["arn:aws:iam::account:role/target-role"],
+        effect="Allow",
+        is_wildcard_action=False,
+        is_wildcard_resource=False,
+        policy_name="AssumeRolePolicy",
+        policy_arn=None,
+        conditions=None,
+    )
+    policy_result = make_policy_result("source-role", [resource_access])
+    scan = make_scan(iam_roles=[source_role, target_role])
+
+    _, edges = build(scan, policy_results=[policy_result])
+
+    assume_edges = [e for e in edges if e.type == "iam_principal_assumes_iam_role"]
+    assert len(assume_edges) == 1
+    edge = assume_edges[0]
+    assert edge.source == "iam:account:source-role"
+    assert edge.target == "iam:account:target-role"
+
+
+def test_explicit_assume_role_edge_excludes_condition_dependent_trust():
+    target_role = make_iam_role("target-role")
+    target_role.trust_policy = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::account:user/deployer"},
+                "Action": "sts:AssumeRole",
+                "Condition": {"StringEquals": {"sts:ExternalId": "required"}},
+            }
+        ]
+    }
+    user = make_iam_user(username="deployer")
+    resource_access = ResourceAccess(
+        service="sts",
+        actions=["sts:AssumeRole"],
+        resource_arns=["arn:aws:iam::account:role/target-role"],
+        effect="Allow",
+        is_wildcard_action=False,
+        is_wildcard_resource=False,
+        policy_name="AssumeRolePolicy",
+        policy_arn=None,
+        conditions=None,
+    )
+    user_policy_result = make_iam_user_policy_result("deployer", [resource_access])
+    scan = make_scan(iam_roles=[target_role], iam_users=[user])
+
+    _, edges = build(scan, user_policy_results=[user_policy_result])
+
+    assert [e for e in edges if e.type == "iam_principal_assumes_iam_role"] == []
+
+
+def test_explicit_assume_role_edge_excludes_account_root_trust():
+    target_role = make_iam_role("target-role")
+    target_role.trust_policy = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::account:root"},
+                "Action": "sts:AssumeRole",
+            }
+        ]
+    }
+    user = make_iam_user(username="deployer")
+    resource_access = ResourceAccess(
+        service="sts",
+        actions=["sts:AssumeRole"],
+        resource_arns=["arn:aws:iam::account:role/target-role"],
+        effect="Allow",
+        is_wildcard_action=False,
+        is_wildcard_resource=False,
+        policy_name="AssumeRolePolicy",
+        policy_arn=None,
+        conditions=None,
+    )
+    user_policy_result = make_iam_user_policy_result("deployer", [resource_access])
+    scan = make_scan(iam_roles=[target_role], iam_users=[user])
+
+    _, edges = build(scan, user_policy_results=[user_policy_result])
+
+    assert [e for e in edges if e.type == "iam_principal_assumes_iam_role"] == []
+
+
+def test_explicit_assume_role_edge_excludes_wildcard_trust_principal():
+    target_role = make_iam_role("target-role")
+    target_role.trust_policy = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "sts:AssumeRole",
+            }
+        ]
+    }
+    user = make_iam_user(username="deployer")
+    resource_access = ResourceAccess(
+        service="sts",
+        actions=["sts:AssumeRole"],
+        resource_arns=["arn:aws:iam::account:role/target-role"],
+        effect="Allow",
+        is_wildcard_action=False,
+        is_wildcard_resource=False,
+        policy_name="AssumeRolePolicy",
+        policy_arn=None,
+        conditions=None,
+    )
+    user_policy_result = make_iam_user_policy_result("deployer", [resource_access])
+    scan = make_scan(iam_roles=[target_role], iam_users=[user])
+
+    _, edges = build(scan, user_policy_results=[user_policy_result])
+
+    assert [e for e in edges if e.type == "iam_principal_assumes_iam_role"] == []

@@ -15,6 +15,7 @@ class ScanRepository(Protocol):
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
+        user_id: str | None = None,
         status: str = "created",
         request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
@@ -22,11 +23,11 @@ class ScanRepository(Protocol):
         """Persist a new ScanRecord. Returns the created ScanRecord."""
         ...
 
-    async def get_by_scan_id(self, scan_id: str) -> object | None:
+    async def get_by_scan_id(self, scan_id: str, user_id: str | None = None) -> object | None:
         """Fetch a ScanRecord by scan_id. Returns None if not found."""
         ...
 
-    async def update_status(self, scan_id: str, status: str, **kwargs) -> object:
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs) -> object:
         """Update the status (and optional fields) of a ScanRecord. Returns updated ScanRecord."""
         ...
 
@@ -38,7 +39,7 @@ class ScanRepository(Protocol):
         """Update the s3_keys list of a ScanRecord. Returns updated ScanRecord."""
         ...
 
-    async def list_by_cluster(self, cluster_id: str) -> list:
+    async def list_by_cluster(self, cluster_id: str, user_id: str | None = None) -> list:
         """Return all ScanRecords for a given cluster_id."""
         ...
     async def find_active_scan(self, cluster_id: str, scanner_type: str) -> object | None:
@@ -66,6 +67,6 @@ class ScanRepository(Protocol):
         """Attach an analysis run id to a scan record. Returns updated ScanRecord."""
         ...
 
-    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> object:
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None, user_id: str | None = None) -> object:
         """Mark a ScanRecord as failed. Returns updated ScanRecord."""
         ...

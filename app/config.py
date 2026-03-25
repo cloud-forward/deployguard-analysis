@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/deployguard"
     SCAN_CREATED_STALE_SECONDS: int = 1800
+    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     S3_BUCKET_NAME: str = "dg-raw-scans"
     AWS_REGION: str = "ap-northeast-2"

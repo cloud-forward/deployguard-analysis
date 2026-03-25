@@ -135,6 +135,26 @@ class AnalysisJobDetailResponse(AnalysisJobSummaryResponse):
     ]})
 
 
+class AnalysisResultSummaryResponse(BaseModel):
+    graph_id: str | None = None
+    generated_at: datetime | None = None
+    graph_status: str | None = None
+    node_count: int = 0
+    edge_count: int = 0
+    entry_point_count: int = 0
+    crown_jewel_count: int = 0
+    attack_path_count: int = 0
+    remediation_recommendation_count: int = 0
+
+
+class AnalysisResultLinksResponse(BaseModel):
+    analysis_job: str
+    attack_graph: str | None = None
+    attack_paths: str | None = None
+    remediation_recommendations: str | None = None
+    link_scope: str = "cluster_latest_view"
+
+
 class ClusterAnalysisJobListResponse(BaseModel):
     items: list[AnalysisJobSummaryResponse] = Field(default_factory=list)
     total: int
@@ -168,6 +188,62 @@ class HealthResponse(BaseModel):
     """
     status: str
     version: str
+
+
+class UserSummaryResponse(BaseModel):
+    id: str
+    email: str
+    is_active: bool
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("email must not be empty")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("password must not be empty")
+        return value
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserSummaryResponse
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("email must not be empty")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("password must not be empty")
+        return value
+
+
+class SignupResponse(BaseModel):
+    user: UserSummaryResponse
 
 
 
@@ -727,6 +803,69 @@ class RemediationRecommendationDetailEnvelopeResponse(BaseModel):
     recommendation: Optional[RemediationRecommendationDetailResponse] = Field(
         None, description="Requested remediation recommendation detail"
     )
+
+
+class ExplanationProviderName(str, Enum):
+    openai = "openai"
+    xai = "xai"
+
+
+class RecommendationExplanationRequest(BaseModel):
+    provider: ExplanationProviderName | None = Field(
+        None,
+        description="Optional provider override",
+    )
+    model: str | None = Field(
+        None,
+        description="Optional model override for the selected provider",
+    )
+
+
+class RecommendationExplanationResponse(BaseModel):
+    cluster_id: str
+    recommendation_id: str
+    explanation_status: str
+    used_llm: bool
+    base_explanation: str
+    final_explanation: str
+    provider: str | None = None
+    model: str | None = None
+    fallback_reason: str | None = None
+
+
+class LLMProviderConfigUpsertRequest(BaseModel):
+    api_key: str = Field(..., description="Provider API key")
+    is_active: bool = Field(..., description="Whether this provider config should be active")
+    default_model: str | None = Field(None, description="Optional default model override")
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("api_key must not be empty")
+        return normalized
+
+
+class LLMProviderConfigResponse(BaseModel):
+    provider: str
+    is_active: bool
+    default_model: str | None = None
+    has_api_key: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LLMProviderConfigListResponse(BaseModel):
+    items: list[LLMProviderConfigResponse] = Field(default_factory=list)
+
+
+class AnalysisResultResponse(BaseModel):
+    job: AnalysisJobDetailResponse
+    summary: AnalysisResultSummaryResponse
+    attack_paths_preview: list[AttackPathListItemResponse] = Field(default_factory=list)
+    remediation_preview: list[RemediationRecommendationListItemResponse] = Field(default_factory=list)
+    links: AnalysisResultLinksResponse
 
 
 class SyncResponse(BaseModel):

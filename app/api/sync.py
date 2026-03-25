@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends
 
+from app.api.auth import get_current_user
 from app.application.di import get_inventory_service
 from app.application.services.inventory_service import InventoryService
-from app.models.schemas import SyncResponse
+from app.models.schemas import SyncResponse, UserSummaryResponse
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Inventory"])
 
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api/v1/clusters", tags=["Inventory"])
 )
 async def sync_cluster(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: InventoryService = Depends(get_inventory_service),
 ) -> SyncResponse:
-    return await service.sync_cluster(cluster_id)
+    return await service.sync_cluster(cluster_id, user_id=current_user.id)

@@ -438,7 +438,20 @@ def test_delete_cluster_returns_not_found_for_other_users_cluster(client):
 
 
 class FakeAttackGraphService:
-    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str):
+    async def get_remediation_recommendations(self, cluster_id: str, user_id: str | None = None):
+        return {
+            "cluster_id": cluster_id,
+            "analysis_run_id": None,
+            "generated_at": None,
+            "items": [],
+        }
+
+    async def get_remediation_recommendation_detail(
+        self,
+        cluster_id: str,
+        recommendation_id: str,
+        user_id: str | None = None,
+    ):
         return RemediationRecommendationDetailEnvelopeResponse(
             cluster_id=cluster_id,
             analysis_run_id="analysis-1",
@@ -580,7 +593,8 @@ def test_existing_remediation_detail_get_behavior_remains_unchanged():
         )
         cluster_id = create_resp.json()["id"]
         response = client.get(
-            f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"
+            f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+            headers=_auth_headers(client, "user-1"),
         )
     app.dependency_overrides.clear()
 
@@ -625,6 +639,30 @@ def test_cluster_create_requires_jwt_and_ignores_x_user_id_only(client):
     ],
 )
 def test_attack_graph_and_path_routes_require_jwt_and_ignore_x_user_id_only(path, method):
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_attack_graph_service] = lambda: FakeAttackGraphService()
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as client:
+        response = getattr(client, method)(path, headers={"X-User-Id": "user-1"})
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/v1/clusters/cluster-1/remediation-recommendations", "get"),
+        ("/api/v1/clusters/cluster-1/remediation-recommendations/rec-1", "get"),
+    ],
+)
+def test_remediation_read_routes_require_jwt_and_ignore_x_user_id_only(path, method):
     auth_service = AuthService(
         user_repository=FakeUserRepository(
             [

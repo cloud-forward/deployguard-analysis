@@ -162,6 +162,7 @@ async def get_attack_path_detail(
 )
 async def get_remediation_recommendations(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     logger.info(
@@ -173,7 +174,7 @@ async def get_remediation_recommendations(
         },
     )
     try:
-        response = await service.get_remediation_recommendations(cluster_id)
+        response = await service.get_remediation_recommendations(cluster_id, user_id=current_user.id)
     except Exception as exc:
         logger.exception(
             "remediation_list_request_failed",
@@ -210,6 +211,7 @@ async def get_remediation_recommendations(
 async def get_remediation_recommendation_detail(
     cluster_id: str,
     recommendation_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     logger.info(
@@ -222,7 +224,11 @@ async def get_remediation_recommendation_detail(
         },
     )
     try:
-        response = await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+        response = await service.get_remediation_recommendation_detail(
+            cluster_id,
+            recommendation_id,
+            user_id=current_user.id,
+        )
     except Exception as exc:
         logger.exception(
             "remediation_detail_request_failed",

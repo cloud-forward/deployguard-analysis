@@ -699,7 +699,10 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -747,7 +750,10 @@ async def test_get_remediation_recommendations_returns_empty_list_when_latest_gr
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -780,7 +786,10 @@ async def test_get_remediation_recommendations_returns_empty_list_when_table_is_
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -837,7 +846,10 @@ async def test_get_remediation_recommendations_orders_by_rank_then_cumulative_re
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -889,7 +901,8 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
         await session.commit()
 
     response = attack_graph_client["client"].get(
-        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1"
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -932,6 +945,51 @@ class _RecordingProvider:
     async def generate_explanation(self, prompt):
         self.calls.append(prompt)
         raise AssertionError("provider should not be called")
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_remediation_read_routes_require_jwt_and_ignore_x_user_id_only(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        "/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_remediation_read_routes_hide_other_users_cluster(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers=_auth_headers(attack_graph_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"
 
 
 @pytest.mark.asyncio

@@ -184,13 +184,17 @@ class AttackGraphService:
             path=path,
         )
 
-    async def get_remediation_recommendations(self, cluster_id: str) -> RemediationRecommendationListResponse:
+    async def get_remediation_recommendations(
+        self,
+        cluster_id: str,
+        user_id: str | None = None,
+    ) -> RemediationRecommendationListResponse:
         logger.info(
             "remediation_list_request",
             extra={"cluster_id": cluster_id, "service_method": "get_remediation_recommendations"},
         )
         try:
-            cluster = await self._clusters.get_by_id(cluster_id)
+            cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
             if cluster is None:
                 logger.warning(
                     "remediation_context_resolved",
@@ -265,6 +269,7 @@ class AttackGraphService:
         self,
         cluster_id: str,
         recommendation_id: str,
+        user_id: str | None = None,
     ) -> RemediationRecommendationDetailEnvelopeResponse:
         logger.info(
             "remediation_detail_request",
@@ -275,7 +280,7 @@ class AttackGraphService:
             },
         )
         try:
-            cluster = await self._clusters.get_by_id(cluster_id)
+            cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
             if cluster is None:
                 logger.warning(
                     "remediation_context_resolved",

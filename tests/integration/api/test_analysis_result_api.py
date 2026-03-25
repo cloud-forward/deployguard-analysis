@@ -224,3 +224,105 @@ async def test_get_analysis_result_returns_empty_sections_when_job_has_no_graph(
     assert body["attack_paths_preview"] == []
     assert body["remediation_preview"] == []
     assert body["links"]["analysis_job"] == f"/api/v1/analysis/jobs/{job_id}"
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_result_returns_persisted_state_for_non_completed_job_with_graph(analysis_result_client):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    graph_id = "55555555-5555-5555-5555-555555555555"
+    job_id = "66666666-6666-6666-6666-666666666666"
+
+    async with analysis_result_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (id, name, cluster_type, created_at, updated_at)
+                VALUES (:id, :name, 'eks', '2026-03-22 10:00:00', '2026-03-22 10:00:00')
+                """
+            ),
+            {"id": cluster_id, "name": "running-result-cluster"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_snapshots (
+                    id, cluster_id, k8s_scan_id, aws_scan_id, image_scan_id, status,
+                    node_count, edge_count, entry_point_count, crown_jewel_count, completed_at, created_at
+                )
+                VALUES (
+                    :id, :cluster_id, 'k8s-2', NULL, 'img-2', 'pending',
+                    3, 2, 1, 1, NULL, '2026-03-22 11:00:00'
+                )
+                """
+            ),
+            {"id": graph_id, "cluster_id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (
+                    id, cluster_id, graph_id, status, current_step,
+                    k8s_scan_id, aws_scan_id, image_scan_id, expected_scans, created_at, started_at
+                )
+                VALUES (
+                    :id, :cluster_id, :graph_id, 'running', 'optimization',
+                    'k8s-2', NULL, 'img-2', '["k8s","image"]', '2026-03-22 11:00:00', '2026-03-22 11:01:00'
+                )
+                """
+            ),
+            {"id": job_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (
+                    id, graph_id, path_id, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids
+                )
+                VALUES (
+                    'running-path-row', :graph_id, 'running-path', 'medium', 0.5, 0.5, 1,
+                    'pod:prod:api', 'rds:prod-db', '["pod:prod:api","rds:prod-db"]'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    id, graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES (
+                    'running-rec-row', :graph_id, 'running-rec', 0, 'pod:prod:api', 'rds:prod-db', 'secret_contains_credentials',
+                    'rotate_credentials', 'Rotate exposed credentials.', '["running-path"]', '[0]', 1.7, 0.5,
+                    0.5, 0.5, '{}'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = analysis_result_client["client"].get(f"/api/v1/analysis/{job_id}/result")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["job"]["job_id"] == job_id
+    assert body["job"]["status"] == "running"
+    assert body["job"]["current_step"] == "optimization"
+    assert body["summary"] == {
+        "graph_id": graph_id,
+        "generated_at": None,
+        "graph_status": "pending",
+        "node_count": 3,
+        "edge_count": 2,
+        "entry_point_count": 1,
+        "crown_jewel_count": 1,
+        "attack_path_count": 1,
+        "remediation_recommendation_count": 1,
+    }
+    assert [item["path_id"] for item in body["attack_paths_preview"]] == ["running-path"]
+    assert [item["recommendation_id"] for item in body["remediation_preview"]] == ["running-rec"]

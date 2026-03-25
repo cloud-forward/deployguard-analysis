@@ -133,3 +133,11 @@ class TestAnalysisReadApi:
         assert body["remediation_preview"] == []
         assert body["links"]["link_scope"] == "cluster_latest_view"
         analysis_service.get_analysis_result.assert_awaited_once_with("job-123")
+
+    def test_get_analysis_result_does_not_call_execution_methods(self, client, analysis_service):
+        response = client.get("/api/v1/analysis/job-123/result")
+
+        assert response.status_code == 200
+        analysis_service.get_analysis_result.assert_awaited_once_with("job-123")
+        analysis_service.execute_analysis_job.assert_not_called()
+        analysis_service.execute_analysis.assert_not_called()

@@ -83,13 +83,13 @@ async def _seed_overview_data(sessionmaker) -> None:
         await session.execute(
             text(
                 """
-                INSERT INTO clusters (id, user_id, name, cluster_type, created_at, updated_at)
+                INSERT INTO clusters (id, user_id, name, cluster_type, aws_account_id, aws_region, created_at, updated_at)
                 VALUES
-                    ('c-eks-u1', 'user-1', 'user1-eks', 'eks', '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
-                    ('c-self-u1', 'user-1', 'user1-self', 'self-managed', '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
-                    ('c-aws-u1', 'user-1', 'user1-aws', 'aws', '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
-                    ('c-eks-u2', 'user-2', 'user2-eks', 'eks', '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
-                    ('c-aws-u2', 'user-2', 'user2-aws', 'aws', '2026-03-24 10:00:00', '2026-03-24 10:00:00')
+                    ('c-eks-u1', 'user-1', 'user1-eks', 'eks', NULL, NULL, '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
+                    ('c-self-u1', 'user-1', 'user1-self', 'self-managed', NULL, NULL, '2026-03-24 11:00:00', '2026-03-24 11:00:00'),
+                    ('c-aws-u1', 'user-1', 'user1-aws', 'aws', '111111111111', 'us-west-2', '2026-03-24 12:00:00', '2026-03-24 12:00:00'),
+                    ('c-eks-u2', 'user-2', 'user2-eks', 'eks', NULL, NULL, '2026-03-24 10:00:00', '2026-03-24 10:00:00'),
+                    ('c-aws-u2', 'user-2', 'user2-aws', 'aws', '222222222222', 'ap-northeast-2', '2026-03-24 10:00:00', '2026-03-24 10:00:00')
                 """
             )
         )
@@ -115,7 +115,8 @@ async def _seed_overview_data(sessionmaker) -> None:
                 )
                 VALUES
                     ('job-u1-a', 'user-1', 'c-eks-u1', 'g-u1-a', 'completed', '[]', '2026-03-24 10:00:00'),
-                    ('job-u1-b', 'user-1', 'c-self-u1', 'g-u1-b', 'completed', '[]', '2026-03-24 10:00:00'),
+                    ('job-u1-b', 'user-1', 'c-self-u1', 'g-u1-b', 'running', '[]', '2026-03-24 10:00:00'),
+                    ('job-u1-c', 'user-1', 'c-self-u1', NULL, 'failed', '[]', '2026-03-24 13:00:00'),
                     ('job-u2-a', 'user-2', 'c-eks-u2', 'g-u2-a', 'completed', '[]', '2026-03-24 10:00:00')
                 """
             )
@@ -130,6 +131,7 @@ async def _seed_overview_data(sessionmaker) -> None:
                     ('scan-row-1', 'user-1', 'scan-u1-1', 'c-eks-u1', 'k8s', 'completed', '[]', '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:01:00'),
                     ('scan-row-2', 'user-1', 'scan-u1-2', 'c-self-u1', 'image', 'completed', '[]', '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:01:00'),
                     ('scan-row-3', 'user-1', 'scan-u1-3', 'c-aws-u1', 'aws', 'completed', '[]', '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:01:00'),
+                    ('scan-row-6', 'user-1', 'scan-u1-4', 'c-aws-u1', 'aws', 'failed', '[]', '2026-03-24 14:00:00', 'manual', '2026-03-24 14:00:00', '2026-03-24 14:01:00'),
                     ('scan-row-4', 'user-2', 'scan-u2-1', 'c-eks-u2', 'k8s', 'completed', '[]', '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:01:00'),
                     ('scan-row-5', 'user-2', 'scan-u2-2', 'c-aws-u2', 'aws', 'completed', '[]', '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:01:00')
                 """
@@ -189,8 +191,8 @@ async def test_me_overview_returns_counts_only_for_authenticated_user(overview_c
         "eks_clusters": 1,
         "self_managed_clusters": 1,
         "aws_clusters": 1,
-        "total_analysis_jobs": 2,
-        "total_scan_records": 3,
+        "total_analysis_jobs": 3,
+        "total_scan_records": 4,
         "total_attack_paths": 3,
         "total_remediation_recommendations": 3,
     }
@@ -236,3 +238,109 @@ async def test_me_overview_returns_zeros_for_user_with_no_data(overview_client):
         "total_attack_paths": 0,
         "total_remediation_recommendations": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_me_assets_requires_jwt(overview_client):
+    response = overview_client["client"].get("/api/v1/me/assets")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_me_assets_returns_only_authenticated_users_assets_with_counts(overview_client):
+    await _seed_overview_data(overview_client["sessionmaker"])
+
+    response = overview_client["client"].get(
+        "/api/v1/me/assets",
+        headers=_auth_headers(overview_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "cluster_id": "c-aws-u1",
+                "name": "user1-aws",
+                "cluster_type": "aws",
+                "aws_account_id": "111111111111",
+                "aws_region": "us-west-2",
+                "analysis_job_count": 0,
+                "scan_record_count": 2,
+                "latest_analysis_status": None,
+                "latest_scan_status": "failed",
+            },
+            {
+                "cluster_id": "c-self-u1",
+                "name": "user1-self",
+                "cluster_type": "self-managed",
+                "aws_account_id": None,
+                "aws_region": None,
+                "analysis_job_count": 2,
+                "scan_record_count": 1,
+                "latest_analysis_status": "failed",
+                "latest_scan_status": "completed",
+            },
+            {
+                "cluster_id": "c-eks-u1",
+                "name": "user1-eks",
+                "cluster_type": "eks",
+                "aws_account_id": None,
+                "aws_region": None,
+                "analysis_job_count": 1,
+                "scan_record_count": 1,
+                "latest_analysis_status": "completed",
+                "latest_scan_status": "completed",
+            },
+        ],
+        "total": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_me_assets_excludes_another_users_clusters_and_counts(overview_client):
+    await _seed_overview_data(overview_client["sessionmaker"])
+
+    response = overview_client["client"].get(
+        "/api/v1/me/assets",
+        headers=_auth_headers(overview_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "cluster_id": "c-eks-u2",
+                "name": "user2-eks",
+                "cluster_type": "eks",
+                "aws_account_id": None,
+                "aws_region": None,
+                "analysis_job_count": 1,
+                "scan_record_count": 1,
+                "latest_analysis_status": "completed",
+                "latest_scan_status": "completed",
+            },
+            {
+                "cluster_id": "c-aws-u2",
+                "name": "user2-aws",
+                "cluster_type": "aws",
+                "aws_account_id": "222222222222",
+                "aws_region": "ap-northeast-2",
+                "analysis_job_count": 0,
+                "scan_record_count": 1,
+                "latest_analysis_status": None,
+                "latest_scan_status": "completed",
+            },
+        ],
+        "total": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_me_assets_returns_empty_list_for_user_with_no_data(overview_client):
+    response = overview_client["client"].get(
+        "/api/v1/me/assets",
+        headers=_auth_headers(overview_client["client"], "user-3"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0}

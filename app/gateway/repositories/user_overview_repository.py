@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.repositories.user_overview_repository import UserOverviewRepository
 from app.gateway.models import AnalysisJob, AttackPath, Cluster, RemediationRecommendation, ScanRecord
-from app.models.schemas import UserOverviewResponse
+from app.models.schemas import UserAssetListItemResponse, UserAssetListResponse, UserOverviewResponse
 
 
 class SQLAlchemyUserOverviewRepository(UserOverviewRepository):
@@ -56,6 +56,76 @@ class SQLAlchemyUserOverviewRepository(UserOverviewRepository):
             total_attack_paths=total_attack_paths,
             total_remediation_recommendations=total_remediation_recommendations,
         )
+
+    async def list_assets(self, user_id: str) -> UserAssetListResponse:
+        analysis_count_subquery = (
+            select(func.count(AnalysisJob.id))
+            .where(
+                AnalysisJob.user_id == user_id,
+                AnalysisJob.cluster_id == Cluster.id,
+            )
+            .scalar_subquery()
+        )
+        scan_count_subquery = (
+            select(func.count(ScanRecord.id))
+            .where(
+                ScanRecord.user_id == user_id,
+                ScanRecord.cluster_id == Cluster.id,
+            )
+            .scalar_subquery()
+        )
+        latest_analysis_status_subquery = (
+            select(AnalysisJob.status)
+            .where(
+                AnalysisJob.user_id == user_id,
+                AnalysisJob.cluster_id == Cluster.id,
+            )
+            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        latest_scan_status_subquery = (
+            select(ScanRecord.status)
+            .where(
+                ScanRecord.user_id == user_id,
+                ScanRecord.cluster_id == Cluster.id,
+            )
+            .order_by(ScanRecord.created_at.desc(), ScanRecord.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+
+        result = await self._session.execute(
+            select(
+                Cluster.id.label("cluster_id"),
+                Cluster.name,
+                Cluster.cluster_type,
+                Cluster.aws_account_id,
+                Cluster.aws_region,
+                analysis_count_subquery.label("analysis_job_count"),
+                scan_count_subquery.label("scan_record_count"),
+                latest_analysis_status_subquery.label("latest_analysis_status"),
+                latest_scan_status_subquery.label("latest_scan_status"),
+            )
+            .where(Cluster.user_id == user_id)
+            .order_by(Cluster.created_at.desc(), Cluster.id.desc())
+        )
+
+        items = [
+            UserAssetListItemResponse(
+                cluster_id=row.cluster_id,
+                name=row.name,
+                cluster_type=row.cluster_type,
+                aws_account_id=row.aws_account_id,
+                aws_region=row.aws_region,
+                analysis_job_count=int(row.analysis_job_count or 0),
+                scan_record_count=int(row.scan_record_count or 0),
+                latest_analysis_status=row.latest_analysis_status,
+                latest_scan_status=row.latest_scan_status,
+            )
+            for row in result.all()
+        ]
+        return UserAssetListResponse(items=items, total=len(items))
 
     async def _scalar_count(self, stmt) -> int:
         value = await self._session.scalar(stmt)

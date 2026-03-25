@@ -207,6 +207,23 @@ class UserOverviewResponse(BaseModel):
     total_remediation_recommendations: int = 0
 
 
+class UserAssetListItemResponse(BaseModel):
+    cluster_id: str
+    name: str
+    cluster_type: str
+    aws_account_id: str | None = None
+    aws_region: str | None = None
+    analysis_job_count: int = 0
+    scan_record_count: int = 0
+    latest_analysis_status: str | None = None
+    latest_scan_status: str | None = None
+
+
+class UserAssetListResponse(BaseModel):
+    items: list[UserAssetListItemResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str

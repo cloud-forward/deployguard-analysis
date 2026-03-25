@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.domain.repositories.user_overview_repository import UserOverviewRepository
-from app.models.schemas import UserOverviewResponse
+from app.models.schemas import UserAssetListResponse, UserOverviewResponse
 
 
 class UserOverviewService:
@@ -10,3 +10,6 @@ class UserOverviewService:
 
     async def get_overview(self, user_id: str) -> UserOverviewResponse:
         return await self._overview_repository.get_overview(user_id)
+
+    async def list_assets(self, user_id: str) -> UserAssetListResponse:
+        return await self._overview_repository.list_assets(user_id)

@@ -3,6 +3,7 @@ Lightweight dependency providers for application services.
 FastAPI can inject these into endpoints. API layer must not import gateways directly.
 """
 from __future__ import annotations
+import logging
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,8 @@ from app.application.services.scan_service import ScanService
 from app.application.services.s3_service import S3Service
 from app.application.services.cluster_service import ClusterService
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
+
+logger = logging.getLogger(__name__)
 
 
 def get_analysis_service(
@@ -72,6 +75,13 @@ def get_recommendation_explanation_service(
         "openai": OpenAIExplanationClient(),
         "xai": XAIExplanationClient(),
     }
+    logger.debug(
+        "remediation_explanation_service_constructed",
+        extra={
+            "provider_count": len(providers),
+            "provider_names": sorted(providers.keys()),
+        },
+    )
     return RecommendationExplanationService(
         attack_graph_service=attack_graph_service,
         provider_config_repository=config_repo,

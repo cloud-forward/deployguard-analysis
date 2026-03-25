@@ -1,6 +1,7 @@
 """
 Cluster management API endpoints.
 """
+import logging
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
 from app.application.di import (
@@ -26,6 +27,7 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -154,7 +156,37 @@ async def get_remediation_recommendations(
     cluster_id: str,
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_remediation_recommendations(cluster_id)
+    logger.info(
+        "remediation_list_request",
+        extra={
+            "route_name": "get_remediation_recommendations",
+            "cluster_id": cluster_id,
+            "request_status": "started",
+        },
+    )
+    try:
+        response = await service.get_remediation_recommendations(cluster_id)
+    except Exception as exc:
+        logger.exception(
+            "remediation_list_request_failed",
+            extra={
+                "route_name": "get_remediation_recommendations",
+                "cluster_id": cluster_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_list_request_completed",
+        extra={
+            "route_name": "get_remediation_recommendations",
+            "cluster_id": cluster_id,
+            "request_status": "succeeded",
+            "recommendation_count": len(response.items),
+        },
+    )
+    return response
 
 
 @router.get(
@@ -172,7 +204,40 @@ async def get_remediation_recommendation_detail(
     recommendation_id: str,
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+    logger.info(
+        "remediation_detail_request",
+        extra={
+            "route_name": "get_remediation_recommendation_detail",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "started",
+        },
+    )
+    try:
+        response = await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+    except Exception as exc:
+        logger.exception(
+            "remediation_detail_request_failed",
+            extra={
+                "route_name": "get_remediation_recommendation_detail",
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_detail_request_completed",
+        extra={
+            "route_name": "get_remediation_recommendation_detail",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "succeeded",
+            "recommendation_found": response.recommendation is not None,
+        },
+    )
+    return response
 
 
 @router.post(
@@ -191,11 +256,50 @@ async def explain_remediation_recommendation(
     request: RecommendationExplanationRequest,
     service: RecommendationExplanationService = Depends(get_recommendation_explanation_service),
 ):
-    return await service.explain_recommendation(
-        cluster_id=cluster_id,
-        recommendation_id=recommendation_id,
-        request=request,
+    logger.info(
+        "remediation_explanation_request",
+        extra={
+            "route_name": "explain_remediation_recommendation",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "requested_provider": request.provider.value if request.provider is not None else None,
+            "requested_model": request.model,
+            "request_status": "started",
+        },
     )
+    try:
+        response = await service.explain_recommendation(
+            cluster_id=cluster_id,
+            recommendation_id=recommendation_id,
+            request=request,
+        )
+    except Exception as exc:
+        logger.exception(
+            "remediation_explanation_request_failed",
+            extra={
+                "route_name": "explain_remediation_recommendation",
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "request_status": "failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+    logger.info(
+        "remediation_explanation_request_completed",
+        extra={
+            "route_name": "explain_remediation_recommendation",
+            "cluster_id": cluster_id,
+            "recommendation_id": recommendation_id,
+            "request_status": "succeeded",
+            "explanation_status": response.explanation_status,
+            "used_llm": response.used_llm,
+            "provider": response.provider,
+            "model": response.model,
+            "fallback_reason": response.fallback_reason,
+        },
+    )
+    return response
 
 
 @router.patch(

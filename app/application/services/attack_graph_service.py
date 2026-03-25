@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -42,6 +43,7 @@ NODE_TYPE_ALIASES = {
     "sg": AttackGraphNodeType.security_group,
     "ec2": AttackGraphNodeType.ec2_instance,
 }
+logger = logging.getLogger(__name__)
 EDGE_TYPE_ALIASES = {
     "pod_uses_service_account": AttackGraphEdgeType.uses,
     "uses_image": AttackGraphEdgeType.uses,
@@ -178,54 +180,173 @@ class AttackGraphService:
         )
 
     async def get_remediation_recommendations(self, cluster_id: str) -> RemediationRecommendationListResponse:
-        cluster = await self._clusters.get_by_id(cluster_id)
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
+        logger.info(
+            "remediation_list_request",
+            extra={"cluster_id": cluster_id, "service_method": "get_remediation_recommendations"},
+        )
+        try:
+            cluster = await self._clusters.get_by_id(cluster_id)
+            if cluster is None:
+                logger.warning(
+                    "remediation_context_resolved",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "service_method": "get_remediation_recommendations",
+                        "cluster_found": False,
+                    },
+                )
+                raise HTTPException(status_code=404, detail="Cluster not found")
 
-        analysis = await self._get_latest_analysis_context(cluster_id)
-        if analysis is None or not analysis.get("graph_id"):
+            analysis = await self._get_latest_analysis_context(cluster_id)
+            logger.info(
+                "remediation_context_resolved",
+                extra={
+                    "cluster_id": cluster_id,
+                    "service_method": "get_remediation_recommendations",
+                    "analysis_run_id": analysis.get("analysis_run_id") if analysis else None,
+                    "graph_id": str(analysis.get("graph_id")) if analysis and analysis.get("graph_id") else None,
+                    "generated_at": analysis.get("generated_at") if analysis else None,
+                },
+            )
+            if analysis is None or not analysis.get("graph_id"):
+                logger.warning(
+                    "remediation_rows_loaded",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "service_method": "get_remediation_recommendations",
+                        "graph_id": str(analysis.get("graph_id")) if analysis and analysis.get("graph_id") else None,
+                        "recommendation_count": 0,
+                        "empty_result": True,
+                    },
+                )
+                return RemediationRecommendationListResponse(
+                    cluster_id=cluster_id,
+                    analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                    generated_at=analysis.get("generated_at") if analysis else None,
+                )
+
+            graph_id = str(analysis["graph_id"])
+            items = await self._get_remediation_recommendation_items(graph_id)
+            logger.info(
+                "remediation_rows_loaded",
+                extra={
+                    "cluster_id": cluster_id,
+                    "service_method": "get_remediation_recommendations",
+                    "graph_id": graph_id,
+                    "recommendation_count": len(items),
+                    "ordering_path": "recommendation_rank,cumulative_risk_reduction,recommendation_id",
+                    "empty_result": len(items) == 0,
+                },
+            )
             return RemediationRecommendationListResponse(
                 cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
-                generated_at=analysis.get("generated_at") if analysis else None,
+                analysis_run_id=analysis.get("analysis_run_id"),
+                generated_at=analysis.get("generated_at"),
+                items=items,
             )
-
-        items = await self._get_remediation_recommendation_items(str(analysis["graph_id"]))
-        return RemediationRecommendationListResponse(
-            cluster_id=cluster_id,
-            analysis_run_id=analysis.get("analysis_run_id"),
-            generated_at=analysis.get("generated_at"),
-            items=items,
-        )
+        except Exception as exc:
+            logger.exception(
+                "remediation_list_request_failed",
+                extra={
+                    "cluster_id": cluster_id,
+                    "service_method": "get_remediation_recommendations",
+                    "exception_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+            raise
 
     async def get_remediation_recommendation_detail(
         self,
         cluster_id: str,
         recommendation_id: str,
     ) -> RemediationRecommendationDetailEnvelopeResponse:
-        cluster = await self._clusters.get_by_id(cluster_id)
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
+        logger.info(
+            "remediation_detail_request",
+            extra={
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "service_method": "get_remediation_recommendation_detail",
+            },
+        )
+        try:
+            cluster = await self._clusters.get_by_id(cluster_id)
+            if cluster is None:
+                logger.warning(
+                    "remediation_context_resolved",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "recommendation_id": recommendation_id,
+                        "service_method": "get_remediation_recommendation_detail",
+                        "cluster_found": False,
+                    },
+                )
+                raise HTTPException(status_code=404, detail="Cluster not found")
 
-        analysis = await self._get_latest_analysis_context(cluster_id)
-        if analysis is None or not analysis.get("graph_id"):
+            analysis = await self._get_latest_analysis_context(cluster_id)
+            logger.info(
+                "remediation_context_resolved",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation_id,
+                    "service_method": "get_remediation_recommendation_detail",
+                    "analysis_run_id": analysis.get("analysis_run_id") if analysis else None,
+                    "graph_id": str(analysis.get("graph_id")) if analysis and analysis.get("graph_id") else None,
+                    "generated_at": analysis.get("generated_at") if analysis else None,
+                },
+            )
+            if analysis is None or not analysis.get("graph_id"):
+                logger.warning(
+                    "remediation_rows_loaded",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "recommendation_id": recommendation_id,
+                        "service_method": "get_remediation_recommendation_detail",
+                        "graph_id": str(analysis.get("graph_id")) if analysis and analysis.get("graph_id") else None,
+                        "recommendation_found": False,
+                        "empty_result": True,
+                    },
+                )
+                return RemediationRecommendationDetailEnvelopeResponse(
+                    cluster_id=cluster_id,
+                    analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                    generated_at=analysis.get("generated_at") if analysis else None,
+                    recommendation=None,
+                )
+
+            graph_id = str(analysis["graph_id"])
+            recommendation = await self._get_remediation_recommendation_detail(graph_id, recommendation_id)
+            logger.info(
+                "remediation_rows_loaded",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation_id,
+                    "service_method": "get_remediation_recommendation_detail",
+                    "graph_id": graph_id,
+                    "recommendation_found": recommendation is not None,
+                },
+            )
+            if recommendation is None:
+                raise HTTPException(status_code=404, detail="Remediation recommendation not found")
+
             return RemediationRecommendationDetailEnvelopeResponse(
                 cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
-                generated_at=analysis.get("generated_at") if analysis else None,
-                recommendation=None,
+                analysis_run_id=analysis.get("analysis_run_id"),
+                generated_at=analysis.get("generated_at"),
+                recommendation=recommendation,
             )
-
-        recommendation = await self._get_remediation_recommendation_detail(str(analysis["graph_id"]), recommendation_id)
-        if recommendation is None:
-            raise HTTPException(status_code=404, detail="Remediation recommendation not found")
-
-        return RemediationRecommendationDetailEnvelopeResponse(
-            cluster_id=cluster_id,
-            analysis_run_id=analysis.get("analysis_run_id"),
-            generated_at=analysis.get("generated_at"),
-            recommendation=recommendation,
-        )
+        except Exception as exc:
+            logger.exception(
+                "remediation_detail_request_failed",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation_id,
+                    "service_method": "get_remediation_recommendation_detail",
+                    "exception_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+            raise
 
     async def _get_latest_analysis_context(self, cluster_id: str) -> Optional[dict[str, Any]]:
         query_with_graph = text(
@@ -254,10 +375,28 @@ class AttackGraphService:
         result = await self._db.execute(query_with_graph, {"cluster_id": cluster_id})
         row = result.mappings().first()
         if row:
+            logger.debug(
+                "remediation_context_resolved",
+                extra={
+                    "cluster_id": cluster_id,
+                    "context_query": "analysis_with_graph",
+                    "analysis_run_id": row.get("analysis_run_id"),
+                    "graph_id": str(row.get("graph_id")) if row.get("graph_id") else None,
+                },
+            )
             return dict(row)
 
         result = await self._db.execute(query_any, {"cluster_id": cluster_id})
         row = result.mappings().first()
+        logger.debug(
+            "remediation_context_resolved",
+            extra={
+                "cluster_id": cluster_id,
+                "context_query": "analysis_any",
+                "analysis_run_id": row.get("analysis_run_id") if row else None,
+                "graph_id": str(row.get("graph_id")) if row and row.get("graph_id") else None,
+            },
+        )
         return dict(row) if row else None
 
     async def _get_table_columns(self, table_name: str) -> set[str]:
@@ -471,11 +610,34 @@ class AttackGraphService:
     async def _get_remediation_recommendation_items(self, graph_id: str) -> list[RemediationRecommendationListItemResponse]:
         columns = await self._get_table_columns("remediation_recommendations")
         if not columns:
+            logger.warning(
+                "remediation_rows_loaded",
+                extra={
+                    "graph_id": graph_id,
+                    "stage": "_get_remediation_recommendation_items",
+                    "table_name": "remediation_recommendations",
+                    "recommendation_count": 0,
+                    "empty_result": True,
+                    "missing_table_or_columns": True,
+                },
+            )
             return []
 
         id_col = self._pick_column(columns, "recommendation_id", "id")
         rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
         if not id_col or not rank_col:
+            logger.warning(
+                "remediation_rows_loaded",
+                extra={
+                    "graph_id": graph_id,
+                    "stage": "_get_remediation_recommendation_items",
+                    "table_name": "remediation_recommendations",
+                    "recommendation_count": 0,
+                    "empty_result": True,
+                    "ordering_path": "unresolved",
+                    "missing_required_columns": True,
+                },
+            )
             return []
 
         source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
@@ -518,26 +680,47 @@ class AttackGraphService:
             ),
             {"graph_id": graph_id},
         )
-
-        items = [
-            RemediationRecommendationListItemResponse(
-                recommendation_id=str(row["recommendation_id"]),
-                recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
-                edge_source=self._normalize_optional_str(row.get("edge_source")),
-                edge_target=self._normalize_optional_str(row.get("edge_target")),
-                edge_type=self._normalize_optional_str(row.get("edge_type")),
-                fix_type=self._normalize_optional_str(row.get("fix_type")),
-                fix_description=self._normalize_optional_str(row.get("fix_description")),
-                blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
-                blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
-                fix_cost=self._normalize_float(row.get("fix_cost")),
-                edge_score=self._normalize_float(row.get("edge_score")),
-                covered_risk=self._normalize_float(row.get("covered_risk")),
-                cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
-                metadata=self._normalize_object(row.get("metadata")),
+        rows = result.mappings().all()
+        logger.info(
+            "remediation_rows_loaded",
+            extra={
+                "graph_id": graph_id,
+                "stage": "_get_remediation_recommendation_items",
+                "raw_row_count": len(rows),
+                "ordering_path": "recommendation_rank,cumulative_risk_reduction,recommendation_id",
+            },
+        )
+        try:
+            items = [
+                RemediationRecommendationListItemResponse(
+                    recommendation_id=str(row["recommendation_id"]),
+                    recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+                    edge_source=self._normalize_optional_str(row.get("edge_source")),
+                    edge_target=self._normalize_optional_str(row.get("edge_target")),
+                    edge_type=self._normalize_optional_str(row.get("edge_type")),
+                    fix_type=self._normalize_optional_str(row.get("fix_type")),
+                    fix_description=self._normalize_optional_str(row.get("fix_description")),
+                    blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+                    blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+                    fix_cost=self._normalize_float(row.get("fix_cost")),
+                    edge_score=self._normalize_float(row.get("edge_score")),
+                    covered_risk=self._normalize_float(row.get("covered_risk")),
+                    cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+                    metadata=self._normalize_object(row.get("metadata")),
+                )
+                for row in rows
+            ]
+        except Exception as exc:
+            logger.exception(
+                "remediation_serialization_failed",
+                extra={
+                    "graph_id": graph_id,
+                    "stage": "_get_remediation_recommendation_items",
+                    "exception_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
             )
-            for row in result.mappings().all()
-        ]
+            raise
 
         return sorted(
             items,
@@ -555,11 +738,33 @@ class AttackGraphService:
     ) -> RemediationRecommendationDetailResponse | None:
         columns = await self._get_table_columns("remediation_recommendations")
         if not columns:
+            logger.warning(
+                "remediation_rows_loaded",
+                extra={
+                    "graph_id": graph_id,
+                    "recommendation_id": recommendation_id,
+                    "stage": "_get_remediation_recommendation_detail",
+                    "table_name": "remediation_recommendations",
+                    "recommendation_found": False,
+                    "missing_table_or_columns": True,
+                },
+            )
             return None
 
         id_col = self._pick_column(columns, "recommendation_id", "id")
         rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
         if not id_col or not rank_col:
+            logger.warning(
+                "remediation_rows_loaded",
+                extra={
+                    "graph_id": graph_id,
+                    "recommendation_id": recommendation_id,
+                    "stage": "_get_remediation_recommendation_detail",
+                    "table_name": "remediation_recommendations",
+                    "recommendation_found": False,
+                    "missing_required_columns": True,
+                },
+            )
             return None
 
         source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
@@ -606,24 +811,54 @@ class AttackGraphService:
             )
         ).mappings().first()
         if row is None:
+            logger.warning(
+                "remediation_rows_loaded",
+                extra={
+                    "graph_id": graph_id,
+                    "recommendation_id": recommendation_id,
+                    "stage": "_get_remediation_recommendation_detail",
+                    "recommendation_found": False,
+                },
+            )
             return None
-
-        return RemediationRecommendationDetailResponse(
-            recommendation_id=str(row["recommendation_id"]),
-            recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
-            edge_source=self._normalize_optional_str(row.get("edge_source")),
-            edge_target=self._normalize_optional_str(row.get("edge_target")),
-            edge_type=self._normalize_optional_str(row.get("edge_type")),
-            fix_type=self._normalize_optional_str(row.get("fix_type")),
-            fix_description=self._normalize_optional_str(row.get("fix_description")),
-            blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
-            blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
-            fix_cost=self._normalize_float(row.get("fix_cost")),
-            edge_score=self._normalize_float(row.get("edge_score")),
-            covered_risk=self._normalize_float(row.get("covered_risk")),
-            cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
-            metadata=self._normalize_object(row.get("metadata")),
+        logger.info(
+            "remediation_rows_loaded",
+            extra={
+                "graph_id": graph_id,
+                "recommendation_id": recommendation_id,
+                "stage": "_get_remediation_recommendation_detail",
+                "recommendation_found": True,
+            },
         )
+        try:
+            return RemediationRecommendationDetailResponse(
+                recommendation_id=str(row["recommendation_id"]),
+                recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+                edge_source=self._normalize_optional_str(row.get("edge_source")),
+                edge_target=self._normalize_optional_str(row.get("edge_target")),
+                edge_type=self._normalize_optional_str(row.get("edge_type")),
+                fix_type=self._normalize_optional_str(row.get("fix_type")),
+                fix_description=self._normalize_optional_str(row.get("fix_description")),
+                blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+                blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+                fix_cost=self._normalize_float(row.get("fix_cost")),
+                edge_score=self._normalize_float(row.get("edge_score")),
+                covered_risk=self._normalize_float(row.get("covered_risk")),
+                cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+                metadata=self._normalize_object(row.get("metadata")),
+            )
+        except Exception as exc:
+            logger.exception(
+                "remediation_serialization_failed",
+                extra={
+                    "graph_id": graph_id,
+                    "recommendation_id": recommendation_id,
+                    "stage": "_get_remediation_recommendation_detail",
+                    "exception_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+            raise
 
     async def _get_nodes(self, graph_id: str) -> list[AttackGraphNodeResponse]:
         columns = await self._get_table_columns("graph_nodes")

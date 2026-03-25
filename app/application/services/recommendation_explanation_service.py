@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from fastapi import HTTPException
@@ -16,6 +17,7 @@ from app.models.schemas import (
     RemediationRecommendationDetailResponse,
 )
 
+logger = logging.getLogger(__name__)
 
 OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 XAI_DEFAULT_MODEL = "grok-3-mini"
@@ -50,6 +52,15 @@ class RecommendationExplanationService:
         request: RecommendationExplanationRequest,
     ) -> RecommendationExplanationResponse:
         requested_provider = request.provider.value if request.provider is not None else None
+        logger.info(
+            "remediation_explanation_request",
+            extra={
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation_id,
+                "requested_provider": requested_provider,
+                "requested_model": request.model,
+            },
+        )
         try:
             envelope: RemediationRecommendationDetailEnvelopeResponse = (
                 await self._attack_graph_service.get_remediation_recommendation_detail(
@@ -58,6 +69,17 @@ class RecommendationExplanationService:
                 )
             )
         except HTTPException as exc:
+            logger.warning(
+                "remediation_explanation_request",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation_id,
+                    "stage": "detail_lookup",
+                    "exception_type": type(exc).__name__,
+                    "error_detail": str(exc.detail),
+                    "status_code": exc.status_code,
+                },
+            )
             if exc.status_code == 404 and exc.detail == "Remediation recommendation not found":
                 envelope = RemediationRecommendationDetailEnvelopeResponse(
                     cluster_id=cluster_id,
@@ -69,6 +91,16 @@ class RecommendationExplanationService:
                 raise
         recommendation = envelope.recommendation
         if recommendation is None:
+            logger.info(
+                "remediation_explanation_eligibility",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation_id,
+                    "eligibility_passed": False,
+                    "fallback_reason": "recommendation_not_found",
+                    "provider_call_skipped": True,
+                },
+            )
             fallback_text = "No explanation available because the remediation recommendation was not found."
             return RecommendationExplanationResponse(
                 cluster_id=cluster_id,
@@ -83,6 +115,26 @@ class RecommendationExplanationService:
             )
 
         eligibility = self._check_eligibility(recommendation)
+        logger.info(
+            "remediation_explanation_eligibility",
+            extra={
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation.recommendation_id,
+                "eligibility_passed": eligibility.explainable,
+                "fallback_reason": eligibility.fallback_reason,
+                "edge_type": recommendation.edge_type,
+                "has_fix_description": bool(recommendation.fix_description),
+                "has_fix_type": bool(recommendation.fix_type),
+                "blocked_path_id_count": len(recommendation.blocked_path_ids or []),
+                "blocked_path_index_count": len(recommendation.blocked_path_indices or []),
+                "has_covered_risk": recommendation.covered_risk is not None,
+                "has_impact_reason": bool(
+                    isinstance(recommendation.metadata, dict)
+                    and isinstance(recommendation.metadata.get("impact_reason"), str)
+                    and recommendation.metadata.get("impact_reason").strip()
+                ),
+            },
+        )
         if not eligibility.explainable:
             fallback_text = "Nothing to explain for this remediation recommendation."
             return RecommendationExplanationResponse(
@@ -103,6 +155,18 @@ class RecommendationExplanationService:
             request.model,
         )
         if selected_provider_name is None or selected_model is None:
+            logger.info(
+                "remediation_provider_call_skipped",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation.recommendation_id,
+                    "requested_provider": requested_provider,
+                    "requested_model": request.model,
+                    "resolved_provider": selected_provider_name,
+                    "resolved_model": selected_model,
+                    "fallback_reason": provider_fallback_reason or "provider_not_configured",
+                },
+            )
             return RecommendationExplanationResponse(
                 cluster_id=cluster_id,
                 recommendation_id=recommendation.recommendation_id,
@@ -117,6 +181,20 @@ class RecommendationExplanationService:
 
         provider = self._providers.get(selected_provider_name)
         if provider is None or api_key is None:
+            logger.info(
+                "remediation_provider_call_skipped",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation.recommendation_id,
+                    "requested_provider": requested_provider,
+                    "requested_model": request.model,
+                    "resolved_provider": selected_provider_name,
+                    "resolved_model": selected_model,
+                    "provider_adapter_found": provider is not None,
+                    "api_key_present": api_key is not None and bool(str(api_key).strip()),
+                    "fallback_reason": "provider_not_configured" if provider is None else "api_key_missing",
+                },
+            )
             return RecommendationExplanationResponse(
                 cluster_id=cluster_id,
                 recommendation_id=recommendation.recommendation_id,
@@ -140,8 +218,28 @@ class RecommendationExplanationService:
         )
 
         try:
+            logger.info(
+                "remediation_provider_call_started",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation.recommendation_id,
+                    "provider": selected_provider_name,
+                    "model": selected_model,
+                },
+            )
             result = await provider.generate_explanation(prompt)
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "remediation_provider_call_failed",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation.recommendation_id,
+                    "provider": selected_provider_name,
+                    "model": selected_model,
+                    "exception_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
             return RecommendationExplanationResponse(
                 cluster_id=cluster_id,
                 recommendation_id=recommendation.recommendation_id,
@@ -154,6 +252,16 @@ class RecommendationExplanationService:
                 fallback_reason="provider_call_failed",
             )
 
+        logger.info(
+            "remediation_provider_call_completed",
+            extra={
+                "cluster_id": cluster_id,
+                "recommendation_id": recommendation.recommendation_id,
+                "provider": result.provider,
+                "model": result.model,
+                "used_llm": True,
+            },
+        )
         return RecommendationExplanationResponse(
             cluster_id=cluster_id,
             recommendation_id=recommendation.recommendation_id,
@@ -175,6 +283,18 @@ class RecommendationExplanationService:
             await self._provider_configs.get_by_provider(requested_provider)
             if requested_provider
             else await self._provider_configs.get_active()
+        )
+        logger.info(
+            "remediation_provider_config_lookup",
+            extra={
+                "requested_provider": requested_provider,
+                "requested_model": requested_model,
+                "config_found": config is not None,
+                "resolved_provider": str(config.provider) if config is not None else None,
+                "resolved_default_model": getattr(config, "default_model", None) if config is not None else None,
+                "api_key_present": bool(getattr(config, "api_key", None)) if config is not None else False,
+                "lookup_mode": "by_provider" if requested_provider else "active",
+            },
         )
         if config is None:
             return None, None, None, "provider_not_configured"

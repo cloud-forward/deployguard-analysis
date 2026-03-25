@@ -25,7 +25,9 @@ from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInv
 from app.application.services.scan_service import ScanService
 from app.application.services.s3_service import S3Service
 from app.application.services.cluster_service import ClusterService
+from app.application.services.user_overview_service import UserOverviewService
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
+from app.gateway.repositories.user_overview_repository import SQLAlchemyUserOverviewRepository
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,13 @@ def get_inventory_service(
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     snapshot_repo = SQLAlchemyInventorySnapshotRepository(session=db)
     return InventoryService(cluster_repository=cluster_repo, inventory_snapshot_repository=snapshot_repo)
+
+
+def get_user_overview_service(
+    db: AsyncSession = Depends(get_db),
+) -> UserOverviewService:
+    overview_repo = SQLAlchemyUserOverviewRepository(session=db)
+    return UserOverviewService(overview_repository=overview_repo)
 
 
 # ---------------------------------------------------------------------------

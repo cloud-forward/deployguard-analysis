@@ -196,6 +196,17 @@ class UserSummaryResponse(BaseModel):
     is_active: bool
 
 
+class UserOverviewResponse(BaseModel):
+    total_clusters: int = 0
+    eks_clusters: int = 0
+    self_managed_clusters: int = 0
+    aws_clusters: int = 0
+    total_analysis_jobs: int = 0
+    total_scan_records: int = 0
+    total_attack_paths: int = 0
+    total_remediation_recommendations: int = 0
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str

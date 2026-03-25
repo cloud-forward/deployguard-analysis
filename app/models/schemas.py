@@ -190,6 +190,38 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class UserSummaryResponse(BaseModel):
+    id: str
+    email: str
+    is_active: bool
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("email must not be empty")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("password must not be empty")
+        return value
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserSummaryResponse
+
+
 
 class ScanStartRequest(BaseModel):
     cluster_id: UUID = Field(

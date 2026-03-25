@@ -584,6 +584,65 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
 
 
 @pytest.mark.asyncio
+async def test_get_remediation_recommendations_orders_by_rank_then_cumulative_reduction_then_id(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-ordering"
+    analysis_run_id = "analysis-recommendations-ordering"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 16:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 16:00:00', '2026-03-22 16:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    (:graph_id, 'z-rank-0', 0, 'a', 'b', 'ingress_exposes_service',
+                     'restrict_ingress', 'rank 0 first', '["path-a"]', '[0]', 1.0, 0.5,
+                     0.5, 0.4, '{}'),
+                    (:graph_id, 'z-rank-1-lower-cumulative', 1, 'c', 'd', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 lower cumulative', '["path-b"]', '[1]', 1.0, 0.5,
+                     0.5, 0.5, '{}'),
+                    (:graph_id, 'a-rank-1-higher-cumulative', 1, 'e', 'f', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 higher cumulative', '["path-c"]', '[2]', 1.0, 0.5,
+                     0.5, 0.9, '{}'),
+                    (:graph_id, 'a-rank-1-same-cumulative', 1, 'g', 'h', 'pod_mounts_secret',
+                     'remove_secret_mount', 'rank 1 same cumulative lower id', '["path-d"]', '[3]', 1.0, 0.5,
+                     0.5, 0.5, '{}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert [item["recommendation_id"] for item in body["items"]] == [
+        "z-rank-0",
+        "a-rank-1-higher-cumulative",
+        "a-rank-1-same-cumulative",
+        "z-rank-1-lower-cumulative",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_remediation_recommendation_detail_returns_persisted_row(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
     graph_id = "graph-recommendations-2"

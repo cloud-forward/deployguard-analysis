@@ -1,6 +1,6 @@
 import networkx as nx
 
-from app.core.remediation_optimizer import RemediationOptimizer
+from app.core.remediation_optimizer import RemediationCandidate, RemediationOptimizer
 
 
 def test_optimizer_prefers_shared_low_cost_edge_fix_that_blocks_multiple_paths():
@@ -141,3 +141,191 @@ def test_optimizer_uses_higher_effective_cost_for_cluster_role_bindings_than_rol
     costs_by_edge_type = {item["edge_type"]: item["fix_cost"] for item in result["recommendations"]}
     assert costs_by_edge_type["service_account_bound_role"] == 1.8
     assert costs_by_edge_type["service_account_bound_cluster_role"] == 2.8
+
+
+def test_normalize_paths_skips_invalid_path_shape_missing_edges_and_invalid_risk_values():
+    optimizer = RemediationOptimizer()
+
+    normalized = optimizer._normalize_paths(
+        [
+            {
+                "path_id": "too-short",
+                "path": ["pod:prod:api"],
+                "raw_final_risk": 0.9,
+                "edges": [{"source": "a", "target": "b", "type": "ingress_exposes_service"}],
+            },
+            {
+                "path_id": "missing-edges",
+                "path": ["a", "b"],
+                "raw_final_risk": 0.9,
+                "edges": [],
+            },
+            {
+                "path_id": "non-numeric-risk",
+                "path": ["a", "b"],
+                "raw_final_risk": "high",
+                "edges": [{"source": "a", "target": "b", "type": "ingress_exposes_service"}],
+            },
+            {
+                "path_id": "zero-risk",
+                "path": ["a", "b"],
+                "raw_final_risk": 0.0,
+                "edges": [{"source": "a", "target": "b", "type": "ingress_exposes_service"}],
+            },
+            {
+                "path_id": "negative-risk",
+                "path": ["a", "b"],
+                "raw_final_risk": -0.1,
+                "edges": [{"source": "a", "target": "b", "type": "ingress_exposes_service"}],
+            },
+            {
+                "path_id": "valid",
+                "path": ["ingress:prod:web", "service:prod:web"],
+                "raw_final_risk": 0.7,
+                "edges": [{"source": "ingress:prod:web", "target": "service:prod:web", "type": "ingress_exposes_service"}],
+            },
+        ]
+    )
+
+    assert normalized == [
+        {
+            "path_index": 5,
+            "path_id": "valid",
+            "path": ["ingress:prod:web", "service:prod:web"],
+            "raw_final_risk": 0.7,
+            "edges": [{"source": "ingress:prod:web", "target": "service:prod:web", "type": "ingress_exposes_service"}],
+        }
+    ]
+
+
+def test_build_candidates_skips_unsupported_edge_types():
+    optimizer = RemediationOptimizer()
+    graph = nx.DiGraph()
+    graph.add_node("ingress:prod:web", type="ingress")
+    graph.add_node("service:prod:web", type="service")
+    graph.add_node("pod:prod:api", type="pod")
+
+    risky_paths = optimizer._normalize_paths(
+        [
+            {
+                "path_id": "path-a",
+                "path": ["ingress:prod:web", "service:prod:web", "pod:prod:api"],
+                "raw_final_risk": 0.9,
+                "edges": [
+                    {"source": "ingress:prod:web", "target": "service:prod:web", "type": "ingress_exposes_service"},
+                    {"source": "service:prod:web", "target": "pod:prod:api", "type": "unsupported_edge_type"},
+                ],
+            }
+        ]
+    )
+
+    candidates = optimizer._build_candidates(risky_paths, graph)
+
+    assert list(candidates) == ["restrict_ingress:ingress:prod:web:service:prod:web:ingress_exposes_service"]
+    assert candidates["restrict_ingress:ingress:prod:web:service:prod:web:ingress_exposes_service"].blocked_path_ids == {"path-a"}
+
+
+def test_select_candidates_breaks_equal_scores_by_lower_fix_cost_then_candidate_id():
+    optimizer = RemediationOptimizer()
+    risky_paths = [
+        {"path_id": "path-a", "raw_final_risk": 1.0, "path_index": 0, "path": ["a", "b"], "edges": []},
+        {"path_id": "path-b", "raw_final_risk": 2.0 ** 1.2, "path_index": 1, "path": ["c", "d"], "edges": []},
+        {"path_id": "path-c", "raw_final_risk": 1.0, "path_index": 2, "path": ["e", "f"], "edges": []},
+    ]
+
+    candidates = {
+        "z-low-cost": RemediationCandidate(
+            id="z-low-cost",
+            edge_source="src:z",
+            edge_target="dst:z",
+            edge_type="pod_mounts_secret",
+            fix_type="remove_secret_mount",
+            fix_description="",
+            fix_cost=1.0,
+            blocked_path_ids={"path-a"},
+            blocked_path_indices={0},
+        ),
+        "a-high-cost": RemediationCandidate(
+            id="a-high-cost",
+            edge_source="src:a",
+            edge_target="dst:a",
+            edge_type="restrict_ingress",
+            fix_type="restrict_ingress",
+            fix_description="",
+            fix_cost=2.0,
+            blocked_path_ids={"path-b"},
+            blocked_path_indices={1},
+        ),
+        "b-same-cost": RemediationCandidate(
+            id="b-same-cost",
+            edge_source="src:b",
+            edge_target="dst:b",
+            edge_type="pod_mounts_secret",
+            fix_type="remove_secret_mount",
+            fix_description="",
+            fix_cost=1.0,
+            blocked_path_ids={"path-c"},
+            blocked_path_indices={2},
+        ),
+        "a-same-cost": RemediationCandidate(
+            id="a-same-cost",
+            edge_source="src:c",
+            edge_target="dst:c",
+            edge_type="pod_mounts_secret",
+            fix_type="remove_secret_mount",
+            fix_description="",
+            fix_cost=1.0,
+            blocked_path_ids={"path-c"},
+            blocked_path_indices={2},
+        ),
+    }
+
+    selected = optimizer._select_candidates(candidates, risky_paths)
+
+    assert [item["id"] for item in selected] == [
+        "a-same-cost",
+        "z-low-cost",
+        "a-high-cost",
+    ]
+
+
+def test_select_candidates_covered_risk_uses_only_currently_uncovered_paths():
+    optimizer = RemediationOptimizer()
+    risky_paths = [
+        {"path_id": "path-a", "raw_final_risk": 0.8, "path_index": 0, "path": ["a", "b"], "edges": []},
+        {"path_id": "path-b", "raw_final_risk": 0.7, "path_index": 1, "path": ["c", "d"], "edges": []},
+        {"path_id": "path-c", "raw_final_risk": 0.4, "path_index": 2, "path": ["e", "f"], "edges": []},
+    ]
+    candidates = {
+        "candidate-shared": RemediationCandidate(
+            id="candidate-shared",
+            edge_source="src:shared",
+            edge_target="dst:shared",
+            edge_type="pod_mounts_secret",
+            fix_type="remove_secret_mount",
+            fix_description="",
+            fix_cost=1.4,
+            blocked_path_ids={"path-a", "path-b"},
+            blocked_path_indices={0, 1},
+        ),
+        "candidate-overlap": RemediationCandidate(
+            id="candidate-overlap",
+            edge_source="src:overlap",
+            edge_target="dst:overlap",
+            edge_type="pod_mounts_secret",
+            fix_type="remove_secret_mount",
+            fix_description="",
+            fix_cost=1.4,
+            blocked_path_ids={"path-b", "path-c"},
+            blocked_path_indices={1, 2},
+        ),
+    }
+
+    selected = optimizer._select_candidates(candidates, risky_paths)
+
+    assert [item["id"] for item in selected] == [
+        "candidate-shared",
+        "candidate-overlap",
+    ]
+    assert selected[0]["covered_risk"] == 1.5
+    assert selected[1]["covered_risk"] == 0.4

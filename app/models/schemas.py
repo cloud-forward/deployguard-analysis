@@ -222,6 +222,30 @@ class LoginResponse(BaseModel):
     user: UserSummaryResponse
 
 
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("email must not be empty")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("password must not be empty")
+        return value
+
+
+class SignupResponse(BaseModel):
+    user: UserSummaryResponse
+
+
 
 class ScanStartRequest(BaseModel):
     cluster_id: UUID = Field(

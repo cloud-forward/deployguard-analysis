@@ -12,3 +12,7 @@ class UserRepository(Protocol):
     async def get_by_id(self, user_id: str) -> object | None:
         """Return the user for the given id, if any."""
         ...
+
+    async def create_user(self, email: str, password_hash: str) -> object:
+        """Create and return a new user with the given email and password_hash."""
+        ...

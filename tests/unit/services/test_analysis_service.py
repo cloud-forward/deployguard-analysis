@@ -106,6 +106,166 @@ def test_analysis_service_uses_direct_fact_extractors_instead_of_orchestrator(se
     assert not hasattr(service, "_fact_orchestrator")
 
 
+def _enriched_path(
+    path_id: str,
+    path: list[str],
+    raw_final_risk: float,
+    edge_types: list[str] | None = None,
+) -> dict:
+    edge_types = edge_types or []
+    edges = []
+    for index, edge_type in enumerate(edge_types):
+        edges.append(
+            {
+                "source": path[index],
+                "target": path[index + 1],
+                "type": edge_type,
+            }
+        )
+    return {
+        "path_id": path_id,
+        "path": path,
+        "risk_score": raw_final_risk,
+        "raw_final_risk": raw_final_risk,
+        "length": len(path),
+        "edges": edges,
+    }
+
+
+def test_refine_attack_paths_prunes_same_endpoint_superset_when_shorter_path_has_no_lower_risk(service):
+    shorter = _enriched_path(
+        "path-short",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    longer = _enriched_path(
+        "path-long",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths([longer, shorter])
+
+    assert [item["path_id"] for item in refined] == ["path-short"]
+
+
+def test_refine_attack_paths_keeps_higher_risk_longer_path_when_shorter_same_endpoint_path_is_lower_risk(service):
+    shorter_lower_risk = _enriched_path(
+        "path-short-low",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.6,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    longer_higher_risk = _enriched_path(
+        "path-long-high",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.9,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths([shorter_lower_risk, longer_higher_risk])
+
+    assert [item["path_id"] for item in refined] == ["path-long-high", "path-short-low"]
+
+
+def test_refine_attack_paths_orders_by_risk_then_hops_then_generic_allows_then_path_id(service):
+    highest_risk = _enriched_path(
+        "path-a-highest-risk",
+        ["entry", "mid", "target-a"],
+        0.95,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    fewer_hops = _enriched_path(
+        "path-b-fewer-hops",
+        ["entry", "target-b"],
+        0.8,
+        ["iam_role_access_resource"],
+    )
+    fewer_allows = _enriched_path(
+        "path-c-fewer-allows",
+        ["entry", "mid", "target-c"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+    more_allows = _enriched_path(
+        "path-d-more-allows",
+        ["entry", "mid", "target-d"],
+        0.8,
+        ["allows", "allows"],
+    )
+    same_sort_fields_later_id = _enriched_path(
+        "path-f-later-id",
+        ["entry", "mid", "target-f"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+    same_sort_fields_earlier_id = _enriched_path(
+        "path-e-earlier-id",
+        ["entry", "mid", "target-e"],
+        0.8,
+        ["allows", "iam_role_access_resource"],
+    )
+
+    refined = service._refine_attack_paths(
+        [
+            more_allows,
+            same_sort_fields_later_id,
+            highest_risk,
+            fewer_hops,
+            same_sort_fields_earlier_id,
+            fewer_allows,
+        ]
+    )
+
+    assert [item["path_id"] for item in refined] == [
+        "path-a-highest-risk",
+        "path-b-fewer-hops",
+        "path-c-fewer-allows",
+        "path-e-earlier-id",
+        "path-f-later-id",
+        "path-d-more-allows",
+    ]
+
+
+def test_refine_attack_paths_prunes_within_same_entry_target_group_only(service):
+    prune_group_short = _enriched_path(
+        "path-prune-short",
+        ["ingress:prod:web", "service:prod:web", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    prune_group_long = _enriched_path(
+        "path-prune-long",
+        ["ingress:prod:web", "service:prod:web", "pod:prod:api", "s3:123:data"],
+        0.8,
+        ["ingress_exposes_service", "service_targets_pod", "iam_role_access_resource"],
+    )
+    different_target = _enriched_path(
+        "path-other-target",
+        ["ingress:prod:web", "service:prod:web", "rds:123:db"],
+        0.7,
+        ["ingress_exposes_service", "iam_role_access_resource"],
+    )
+    different_entry = _enriched_path(
+        "path-other-entry",
+        ["s3:123:public", "iam_user:123:deployer", "s3:123:data"],
+        0.85,
+        ["secret_contains_aws_credentials", "iam_user_access_resource"],
+    )
+
+    refined = service._refine_attack_paths(
+        [prune_group_long, different_target, prune_group_short, different_entry]
+    )
+
+    assert [item["path_id"] for item in refined] == [
+        "path-other-entry",
+        "path-prune-short",
+        "path-other-target",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_repo, scan_repo):
     k8s_cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -237,6 +397,133 @@ async def test_list_analysis_jobs_returns_cluster_jobs(service, jobs_repo):
     assert [item.job_id for item in result.items] == ["job-2", "job-1"]
     assert result.items[0].current_step == "graph_building"
     assert result.items[1].graph_id == "graph-1"
+
+
+@pytest.mark.asyncio
+async def test_mixed_k8s_secret_to_aws_user_s3_chain_is_traversable_through_real_build_flow(service):
+    k8s_scan = {
+        "scan_id": "k8s-1",
+        "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "pods": [
+            {
+                "namespace": "production",
+                "name": "api",
+                "containers": [
+                    {
+                        "name": "api",
+                        "image": "api:latest",
+                        "volume_mounts": [
+                            {
+                                "source_type": "secret",
+                                "source_name": "aws-credentials",
+                                "mount_path": "/var/run/secrets/aws",
+                                "read_only": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "service_accounts": [],
+        "roles": [],
+        "cluster_roles": [],
+        "role_bindings": [],
+        "cluster_role_bindings": [],
+        "services": [],
+        "ingresses": [],
+        "network_policies": [],
+        "secrets": [
+            {
+                "metadata": {
+                    "namespace": "production",
+                    "name": "aws-credentials",
+                },
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            }
+        ],
+    }
+    aws_scan = {
+        "scan_id": "aws-1",
+        "aws_account_id": "123456789012",
+        "scanned_at": "2026-03-25T00:00:00Z",
+        "iam_roles": [],
+        "iam_users": [
+            {
+                "username": "web-app-deployer",
+                "arn": "arn:aws:iam::123456789012:user/web-app-deployer",
+                "access_keys": [
+                    {
+                        "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                        "status": "Active",
+                        "create_date": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "attached_policies": [
+                    {
+                        "PolicyName": "DeployerPolicy",
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:GetObject"],
+                                    "Resource": [
+                                        "arn:aws:s3:::sensitive-data-bucket",
+                                        "arn:aws:s3:::sensitive-data-bucket/*",
+                                    ],
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "inline_policies": [],
+                "has_mfa": False,
+                "last_used": None,
+            }
+        ],
+        "s3_buckets": [
+            {
+                "name": "sensitive-data-bucket",
+                "arn": "arn:aws:s3:::sensitive-data-bucket",
+                "public_access_block": None,
+                "encryption": None,
+                "versioning": "Disabled",
+                "logging_enabled": False,
+            }
+        ],
+        "rds_instances": [],
+        "ec2_instances": [],
+        "security_groups": [],
+    }
+
+    k8s_result = service._build_k8s_result(k8s_scan, "k8s-1")
+    aws_scan_result = service._coerce_aws_scan_result(aws_scan, "aws-1")
+    bridge_result = service._bridge_builder.build(k8s_scan, aws_scan_result)
+    aws_result = service._build_aws_result(aws_scan_result, bridge_result)
+    unified_result = service._unified_graph_builder.build(k8s_result, aws_result)
+    graph = await service._graph_builder.build_from_unified_result(unified_result)
+
+    pod_id = "pod:production:api"
+    secret_id = "secret:production:aws-credentials"
+    user_id = "iam_user:123456789012:web-app-deployer"
+    bucket_id = "s3:123456789012:sensitive-data-bucket"
+
+    paths = service._path_finder.find_all_paths(
+        graph,
+        [pod_id],
+        [bucket_id],
+        max_path_length=3,
+        max_paths=10,
+    )
+
+    assert paths == [[pod_id, secret_id, user_id, bucket_id]]
+    assert service._path_finder.get_path_edges(graph, paths[0]) == [
+        (pod_id, secret_id, "pod_mounts_secret"),
+        (secret_id, user_id, "secret_contains_aws_credentials"),
+        (user_id, bucket_id, "iam_user_access_resource"),
+    ]
 
 
 @pytest.mark.asyncio

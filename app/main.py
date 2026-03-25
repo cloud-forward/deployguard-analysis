@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, analyze, scan, clusters, sync, inventory
+from app.api import health, analyze, scan, clusters, sync, inventory, llm
 from app.config import settings
 
 logger = logging.getLogger("deployguard.request")
@@ -45,6 +45,10 @@ DeployGuard는 Kubernetes 및 AWS 인프라의 공격 경로를 분석하고 최
             "name": "Inventory",
             "description": "자산 인벤토리 — Discovery sync, 레거시 자산 조회, 신규 summary/assets/risk-spotlight/scanner-status"
         },
+        {
+            "name": "LLM",
+            "description": "LLM provider config management and explanation support"
+        },
     ]
 )
 
@@ -63,6 +67,7 @@ app.include_router(scan.cluster_router)
 app.include_router(clusters.router)
 app.include_router(sync.router)
 app.include_router(inventory.router)
+app.include_router(llm.router)
 
 
 @app.middleware("http")

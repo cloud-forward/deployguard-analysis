@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.services.analysis_service import AnalysisService
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.inventory_service import InventoryService
+from app.application.services.llm_provider_config_service import LLMProviderConfigService
 from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.application.llm.providers.openai_explanation_client import OpenAIExplanationClient
 from app.application.llm.providers.xai_explanation_client import XAIExplanationClient
@@ -87,6 +88,13 @@ def get_recommendation_explanation_service(
         provider_config_repository=config_repo,
         providers=providers,
     )
+
+
+def get_llm_provider_config_service(
+    db: AsyncSession = Depends(get_db),
+) -> LLMProviderConfigService:
+    config_repo = SQLAlchemyLLMProviderConfigRepository(session=db)
+    return LLMProviderConfigService(provider_config_repository=config_repo)
 
 
 def get_inventory_service(

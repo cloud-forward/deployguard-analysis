@@ -777,6 +777,33 @@ class RecommendationExplanationResponse(BaseModel):
     fallback_reason: str | None = None
 
 
+class LLMProviderConfigUpsertRequest(BaseModel):
+    api_key: str = Field(..., description="Provider API key")
+    is_active: bool = Field(..., description="Whether this provider config should be active")
+    default_model: str | None = Field(None, description="Optional default model override")
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("api_key must not be empty")
+        return normalized
+
+
+class LLMProviderConfigResponse(BaseModel):
+    provider: str
+    is_active: bool
+    default_model: str | None = None
+    has_api_key: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LLMProviderConfigListResponse(BaseModel):
+    items: list[LLMProviderConfigResponse] = Field(default_factory=list)
+
+
 class AnalysisResultResponse(BaseModel):
     job: AnalysisJobDetailResponse
     summary: AnalysisResultSummaryResponse

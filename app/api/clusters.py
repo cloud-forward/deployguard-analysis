@@ -4,7 +4,7 @@ Cluster management API endpoints.
 import logging
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
-from app.api.auth import get_request_user_id
+from app.api.auth import get_current_user, get_request_user_id
 from app.application.di import (
     get_attack_graph_service,
     get_cluster_service,
@@ -25,6 +25,7 @@ from app.models.schemas import (
     RecommendationExplanationResponse,
     RemediationRecommendationDetailEnvelopeResponse,
     RemediationRecommendationListResponse,
+    UserSummaryResponse,
 )
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
@@ -51,10 +52,10 @@ logger = logging.getLogger(__name__)
 )
 async def create_cluster(
     request: ClusterCreateRequest,
-    user_id: str = Depends(get_request_user_id),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.create_cluster(request, user_id=user_id)
+    return await service.create_cluster(request, user_id=current_user.id)
 
 
 @router.get(
@@ -67,10 +68,10 @@ async def create_cluster(
     },
 )
 async def list_clusters(
-    user_id: str = Depends(get_request_user_id),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.list_clusters(user_id=user_id)
+    return await service.list_clusters(user_id=current_user.id)
 
 
 @router.get(
@@ -85,10 +86,10 @@ async def list_clusters(
 )
 async def get_cluster(
     id: str,
-    user_id: str = Depends(get_request_user_id),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.get_cluster(id, user_id=user_id)
+    return await service.get_cluster(id, user_id=current_user.id)
 
 
 @router.get(
@@ -322,10 +323,10 @@ async def explain_remediation_recommendation(
 async def update_cluster(
     id: str,
     request: ClusterUpdateRequest,
-    user_id: str = Depends(get_request_user_id),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.update_cluster(id, request, user_id=user_id)
+    return await service.update_cluster(id, request, user_id=current_user.id)
 
 
 @router.delete(
@@ -340,8 +341,8 @@ async def update_cluster(
 )
 async def delete_cluster(
     id: str,
-    user_id: str = Depends(get_request_user_id),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    await service.delete_cluster(id, user_id=user_id)
+    await service.delete_cluster(id, user_id=current_user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

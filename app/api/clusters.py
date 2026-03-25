@@ -85,9 +85,10 @@ async def list_clusters(
 )
 async def get_cluster(
     id: str,
+    user_id: str = Depends(get_request_user_id),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.get_cluster(id)
+    return await service.get_cluster(id, user_id=user_id)
 
 
 @router.get(
@@ -321,9 +322,10 @@ async def explain_remediation_recommendation(
 async def update_cluster(
     id: str,
     request: ClusterUpdateRequest,
+    user_id: str = Depends(get_request_user_id),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.update_cluster(id, request)
+    return await service.update_cluster(id, request, user_id=user_id)
 
 
 @router.delete(

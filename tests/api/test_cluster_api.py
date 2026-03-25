@@ -13,6 +13,7 @@ from app.application.di import (
     get_recommendation_explanation_service,
 )
 from app.models.schemas import (
+    ClusterUpdateRequest,
     RecommendationExplanationResponse,
     RemediationRecommendationDetailEnvelopeResponse,
     RemediationRecommendationDetailResponse,
@@ -87,8 +88,13 @@ class FakeClusterRepository:
         self._store[record.id] = record
         return record
 
-    async def get_by_id(self, cluster_id: str):
-        return self._store.get(cluster_id)
+    async def get_by_id(self, cluster_id: str, user_id: Optional[str] = None):
+        record = self._store.get(cluster_id)
+        if record is None:
+            return None
+        if user_id is not None and record.user_id != user_id:
+            return None
+        return record
 
     async def get_by_name(self, name: str):
         for r in self._store.values():
@@ -99,9 +105,11 @@ class FakeClusterRepository:
     async def list_all(self, user_id: str):
         return [record for record in self._store.values() if record.user_id == user_id]
 
-    async def update(self, cluster_id: str, **kwargs):
+    async def update(self, cluster_id: str, user_id: Optional[str] = None, **kwargs):
         record = self._store.get(cluster_id)
         if not record:
+            return None
+        if user_id is not None and record.user_id != user_id:
             return None
         for k, v in kwargs.items():
             if hasattr(record, k):
@@ -243,7 +251,7 @@ def test_create_cluster_uses_x_user_id_and_stores_user_id(client):
 
 
 def test_get_cluster_by_id(client, created_cluster):
-    resp = client.get(f"/api/v1/clusters/{created_cluster['id']}")
+    resp = client.get(f"/api/v1/clusters/{created_cluster['id']}", headers=USER_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["id"] == created_cluster["id"]
     assert resp.json()["name"] == created_cluster["name"]
@@ -251,7 +259,23 @@ def test_get_cluster_by_id(client, created_cluster):
 
 
 def test_get_cluster_not_found(client):
-    resp = client.get("/api/v1/clusters/nonexistent-id")
+    resp = client.get("/api/v1/clusters/nonexistent-id", headers=USER_HEADERS)
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
+
+
+def test_get_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+
+    resp = client.get(
+        f"/api/v1/clusters/{create_resp.json()['id']}",
+        headers={"X-User-Id": "user-1"},
+    )
+
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"].lower()
 
@@ -295,6 +319,7 @@ def test_update_cluster_description(client, created_cluster):
     resp = client.patch(
         f"/api/v1/clusters/{created_cluster['id']}",
         json={"description": "new desc"},
+        headers=USER_HEADERS,
     )
     assert resp.status_code == 200
     assert resp.json()["description"] == "new desc"
@@ -304,6 +329,7 @@ def test_update_cluster_type(client, created_cluster):
     resp = client.patch(
         f"/api/v1/clusters/{created_cluster['id']}",
         json={"cluster_type": "self-managed"},
+        headers=USER_HEADERS,
     )
     assert resp.status_code == 200
     assert resp.json()["cluster_type"] == "self-managed"
@@ -313,6 +339,7 @@ def test_update_cluster_type_to_aws(client, created_cluster):
     resp = client.patch(
         f"/api/v1/clusters/{created_cluster['id']}",
         json={"cluster_type": "aws"},
+        headers=USER_HEADERS,
     )
     assert resp.status_code == 200
     assert resp.json()["cluster_type"] == "aws"
@@ -322,13 +349,31 @@ def test_update_cluster_invalid_type(client, created_cluster):
     resp = client.patch(
         f"/api/v1/clusters/{created_cluster['id']}",
         json={"cluster_type": "invalid"},
+        headers=USER_HEADERS,
     )
     assert resp.status_code == 422
 
 
 def test_update_cluster_not_found(client):
-    resp = client.patch("/api/v1/clusters/ghost-id", json={"description": "x"})
+    resp = client.patch("/api/v1/clusters/ghost-id", json={"description": "x"}, headers=USER_HEADERS)
     assert resp.status_code == 404
+
+
+def test_update_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-update-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+
+    resp = client.patch(
+        f"/api/v1/clusters/{create_resp.json()['id']}",
+        json={"description": "should-not-update"},
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
 
 
 class FakeAttackGraphService:
@@ -431,7 +476,7 @@ def test_existing_remediation_detail_get_behavior_remains_unchanged():
 def test_delete_cluster(client, created_cluster):
     resp = client.delete(f"/api/v1/clusters/{created_cluster['id']}")
     assert resp.status_code == 204
-    assert client.get(f"/api/v1/clusters/{created_cluster['id']}").status_code == 404
+    assert client.get(f"/api/v1/clusters/{created_cluster['id']}", headers=USER_HEADERS).status_code == 404
 
 
 def test_delete_cluster_not_found(client):

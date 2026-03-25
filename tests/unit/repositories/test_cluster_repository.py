@@ -51,6 +51,33 @@ class TestSQLAlchemyClusterRepository:
         assert found.user_id == "user-1"
 
     @pytest.mark.asyncio
+    async def test_get_by_id_returns_cluster_for_owning_user(self, repo):
+        created = await repo.create(
+            name="owned-detail-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_owned_detail",
+        )
+
+        found = await repo.get_by_id(created.id, user_id="user-1")
+
+        assert found is not None
+        assert found.id == created.id
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_returns_none_for_other_user(self, repo):
+        created = await repo.create(
+            name="other-user-detail-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_other_user_detail",
+        )
+
+        found = await repo.get_by_id(created.id, user_id="user-2")
+
+        assert found is None
+
+    @pytest.mark.asyncio
     async def test_list_all_returns_only_clusters_for_requested_user(self, repo):
         await repo.create(
             name="user-1-cluster",
@@ -68,3 +95,33 @@ class TestSQLAlchemyClusterRepository:
         found = await repo.list_all("user-1")
 
         assert [cluster.name for cluster in found] == ["user-1-cluster"]
+
+    @pytest.mark.asyncio
+    async def test_update_succeeds_for_owning_user(self, repo):
+        created = await repo.create(
+            name="owned-update-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_owned_update",
+        )
+
+        updated = await repo.update(created.id, user_id="user-1", description="updated")
+
+        assert updated is not None
+        assert updated.description == "updated"
+
+    @pytest.mark.asyncio
+    async def test_update_does_not_affect_other_users_cluster(self, repo):
+        created = await repo.create(
+            name="other-user-update-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_other_user_update",
+        )
+
+        updated = await repo.update(created.id, user_id="user-2", description="updated")
+        found = await repo.get_by_id(created.id, user_id="user-1")
+
+        assert updated is None
+        assert found is not None
+        assert found.description is None

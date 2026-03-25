@@ -119,10 +119,26 @@ def test_get_cluster(client):
     create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"}, headers=USER_HEADERS)
     cluster_id = create_resp.json()["id"]
     
-    response = client.get(f"/api/v1/clusters/{cluster_id}")
+    response = client.get(f"/api/v1/clusters/{cluster_id}", headers=USER_HEADERS)
     assert response.status_code == 200
     assert response.json()["name"] == "get-me"
     assert "api_token" not in response.json()
+
+
+def test_get_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-detail", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+
+    response = client.get(
+        f"/api/v1/clusters/{create_resp.json()['id']}",
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 def test_update_cluster(client):
     create_resp = client.post("/api/v1/clusters", json={"name": "update-me", "cluster_type": "eks"}, headers=USER_HEADERS)
@@ -130,12 +146,31 @@ def test_update_cluster(client):
     
     response = client.patch(
         f"/api/v1/clusters/{cluster_id}",
-        json={"description": "updated description", "cluster_type": "self-managed"}
+        json={"description": "updated description", "cluster_type": "self-managed"},
+        headers=USER_HEADERS,
     )
     assert response.status_code == 200
     data = response.json()
     assert data["description"] == "updated description"
     assert data["cluster_type"] == "self-managed"
+
+
+def test_update_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-update", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+    cluster_id = create_resp.json()["id"]
+
+    response = client.patch(
+        f"/api/v1/clusters/{cluster_id}",
+        json={"description": "should-not-update"},
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 def test_delete_cluster(client):
     create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"}, headers=USER_HEADERS)
@@ -144,7 +179,7 @@ def test_delete_cluster(client):
     del_resp = client.delete(f"/api/v1/clusters/{cluster_id}")
     assert del_resp.status_code == 204
     
-    get_resp = client.get(f"/api/v1/clusters/{cluster_id}")
+    get_resp = client.get(f"/api/v1/clusters/{cluster_id}", headers=USER_HEADERS)
     assert get_resp.status_code == 404
 
 

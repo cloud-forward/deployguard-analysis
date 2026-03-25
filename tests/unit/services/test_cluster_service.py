@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.application.services.cluster_service import ClusterService
-from app.models.schemas import ClusterCreateRequest
+from app.models.schemas import ClusterCreateRequest, ClusterUpdateRequest
 
 
 @pytest.mark.asyncio
@@ -59,3 +59,52 @@ async def test_list_clusters_passes_user_id_through_to_repository():
 
     repo.list_all.assert_awaited_once_with("user-42")
     assert [cluster.name for cluster in result] == ["owned-cluster"]
+
+
+@pytest.mark.asyncio
+async def test_get_cluster_passes_user_id_through_to_repository():
+    repo = AsyncMock()
+    repo.get_by_id.return_value = SimpleNamespace(
+        id="cluster-1",
+        name="owned-cluster",
+        cluster_type="eks",
+        description=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        aws_account_id=None,
+        aws_role_arn=None,
+        aws_region=None,
+    )
+    service = ClusterService(cluster_repository=repo)
+
+    result = await service.get_cluster("cluster-1", user_id="user-42")
+
+    repo.get_by_id.assert_awaited_once_with("cluster-1", user_id="user-42")
+    assert result.id == "cluster-1"
+
+
+@pytest.mark.asyncio
+async def test_update_cluster_passes_user_id_through_to_repository():
+    repo = AsyncMock()
+    repo.get_by_name.return_value = None
+    repo.update.return_value = SimpleNamespace(
+        id="cluster-1",
+        name="owned-cluster",
+        cluster_type="eks",
+        description="updated",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        aws_account_id=None,
+        aws_role_arn=None,
+        aws_region=None,
+    )
+    service = ClusterService(cluster_repository=repo)
+
+    result = await service.update_cluster(
+        "cluster-1",
+        ClusterUpdateRequest(name="owned-cluster", cluster_type="eks", description="updated"),
+        user_id="user-42",
+    )
+
+    repo.update.assert_awaited_once_with("cluster-1", user_id="user-42", name="owned-cluster", cluster_type="eks", description="updated")
+    assert result.description == "updated"

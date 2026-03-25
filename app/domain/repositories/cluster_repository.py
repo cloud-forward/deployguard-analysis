@@ -21,7 +21,7 @@ class ClusterRepository(Protocol):
         """Create a new cluster."""
         ...
 
-    async def get_by_id(self, cluster_id: str) -> Optional[object]:
+    async def get_by_id(self, cluster_id: str, user_id: Optional[str] = None) -> Optional[object]:
         """Get a cluster by its ID."""
         ...
 
@@ -37,7 +37,7 @@ class ClusterRepository(Protocol):
         """List all clusters for a user."""
         ...
 
-    async def update(self, cluster_id: str, **kwargs) -> Optional[object]:
+    async def update(self, cluster_id: str, user_id: Optional[str] = None, **kwargs) -> Optional[object]:
         """Update a cluster's details."""
         ...
 

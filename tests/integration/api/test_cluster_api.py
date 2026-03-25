@@ -586,6 +586,71 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
 
 
 @pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_latest_graph_has_no_rows(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-empty"
+    analysis_run_id = "analysis-recommendations-empty"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:30:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:30:00', '2026-03-22 14:35:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:35:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_remediation_recommendations_returns_empty_list_when_table_is_missing(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-missing-table"
+    analysis_run_id = "analysis-recommendations-missing-table"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(text("DROP TABLE IF EXISTS remediation_recommendations"))
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 14:40:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 14:40:00', '2026-03-22 14:45:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/remediation-recommendations")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["cluster_id"] == cluster_id
+    assert body["analysis_run_id"] == analysis_run_id
+    assert body["generated_at"] == "2026-03-22T14:45:00"
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
 async def test_get_remediation_recommendations_orders_by_rank_then_cumulative_reduction_then_id(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
     graph_id = "graph-recommendations-ordering"

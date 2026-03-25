@@ -221,7 +221,7 @@ class AttackGraphService:
                 )
                 return RemediationRecommendationListResponse(
                     cluster_id=cluster_id,
-                    analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                    analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
                     generated_at=analysis.get("generated_at") if analysis else None,
                 )
 
@@ -240,7 +240,7 @@ class AttackGraphService:
             )
             return RemediationRecommendationListResponse(
                 cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id"),
+                analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")),
                 generated_at=analysis.get("generated_at"),
                 items=items,
             )
@@ -309,7 +309,7 @@ class AttackGraphService:
                 )
                 return RemediationRecommendationDetailEnvelopeResponse(
                     cluster_id=cluster_id,
-                    analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                    analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
                     generated_at=analysis.get("generated_at") if analysis else None,
                     recommendation=None,
                 )
@@ -331,7 +331,7 @@ class AttackGraphService:
 
             return RemediationRecommendationDetailEnvelopeResponse(
                 cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id"),
+                analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")),
                 generated_at=analysis.get("generated_at"),
                 recommendation=recommendation,
             )
@@ -608,7 +608,23 @@ class AttackGraphService:
         ]
 
     async def _get_remediation_recommendation_items(self, graph_id: str) -> list[RemediationRecommendationListItemResponse]:
-        columns = await self._get_table_columns("remediation_recommendations")
+        try:
+            columns = await self._get_table_columns("remediation_recommendations")
+        except Exception as exc:
+            if self._is_missing_table_error(exc, "remediation_recommendations"):
+                logger.warning(
+                    "remediation_rows_loaded",
+                    extra={
+                        "graph_id": graph_id,
+                        "stage": "_get_remediation_recommendation_items",
+                        "table_name": "remediation_recommendations",
+                        "recommendation_count": 0,
+                        "empty_result": True,
+                        "missing_table_or_columns": True,
+                    },
+                )
+                return []
+            raise
         if not columns:
             logger.warning(
                 "remediation_rows_loaded",
@@ -670,16 +686,32 @@ class AttackGraphService:
             f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
         ]
 
-        result = await self._db.execute(
-            text(
-                f"""
-                SELECT {", ".join(select_parts)}
-                FROM remediation_recommendations
-                WHERE graph_id = :graph_id
-                """
-            ),
-            {"graph_id": graph_id},
-        )
+        try:
+            result = await self._db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM remediation_recommendations
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        except Exception as exc:
+            if self._is_missing_table_error(exc, "remediation_recommendations"):
+                logger.warning(
+                    "remediation_rows_loaded",
+                    extra={
+                        "graph_id": graph_id,
+                        "stage": "_get_remediation_recommendation_items",
+                        "table_name": "remediation_recommendations",
+                        "recommendation_count": 0,
+                        "empty_result": True,
+                        "missing_table_or_columns": True,
+                    },
+                )
+                return []
+            raise
         rows = result.mappings().all()
         logger.info(
             "remediation_rows_loaded",
@@ -729,6 +761,15 @@ class AttackGraphService:
                 -(item.cumulative_risk_reduction or -1.0),
                 item.recommendation_id,
             ),
+        )
+
+    @staticmethod
+    def _is_missing_table_error(exc: Exception, table_name: str) -> bool:
+        message = str(exc).lower()
+        normalized_table = table_name.lower()
+        return normalized_table in message and any(
+            marker in message
+            for marker in ("no such table", "does not exist", "undefined table")
         )
 
     async def _get_remediation_recommendation_detail(

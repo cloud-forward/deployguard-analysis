@@ -32,13 +32,14 @@ class AnalysisJobRepository(Protocol):
     async def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         ...
 
-    async def get_analysis_job(self, job_id: str) -> object | None:
+    async def get_analysis_job(self, job_id: str, user_id: str | None = None) -> object | None:
         """Fetch a persisted analysis job record by id."""
         ...
 
     async def list_analysis_jobs(
         self,
         cluster_id: str | UUID,
+        user_id: str,
         status: str | None = None,
     ) -> list[object]:
         """List persisted analysis jobs for a cluster, optionally filtered by status."""
@@ -51,6 +52,7 @@ class AnalysisJobRepository(Protocol):
         aws_scan_id: str | None,
         image_scan_id: str | None,
         expected_scans: list[str],
+        user_id: str | None = None,
     ) -> str:
         """Create an analysis job for a cluster with all required scan IDs. Returns job_id."""
         ...

@@ -98,6 +98,23 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert job.expected_scans == ["k8s", "aws", "image"]
 
     @pytest.mark.asyncio
+    async def test_create_analysis_job_persists_user_id_when_provided(self, repo_and_session):
+        repo, session = repo_and_session
+
+        job_id = await repo.create_analysis_job(
+            cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            k8s_scan_id="20260309T113020-k8s",
+            aws_scan_id=None,
+            image_scan_id=None,
+            expected_scans=["k8s"],
+            user_id="user-1",
+        )
+
+        job = await session.scalar(select(AnalysisJob).where(AnalysisJob.id == job_id))
+        assert job is not None
+        assert job.user_id == "user-1"
+
+    @pytest.mark.asyncio
     async def test_create_analysis_job_rejects_non_uuid_cluster_id(self, repo_and_session):
         repo, session = repo_and_session
 
@@ -122,13 +139,30 @@ class TestSqlAlchemyAnalysisJobRepository:
             aws_scan_id=None,
             image_scan_id="img-1",
             expected_scans=["k8s", "image"],
+            user_id="user-1",
         )
 
-        job = await repo.get_analysis_job(job_id)
+        job = await repo.get_analysis_job(job_id, user_id="user-1")
 
         assert job is not None
         assert job.id == job_id
         assert job.k8s_scan_id == "k8s-1"
+
+    @pytest.mark.asyncio
+    async def test_get_analysis_job_returns_none_for_other_user(self, repo_and_session):
+        repo, _ = repo_and_session
+        job_id = await repo.create_analysis_job(
+            cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            k8s_scan_id="k8s-1",
+            aws_scan_id=None,
+            image_scan_id="img-1",
+            expected_scans=["k8s", "image"],
+            user_id="user-1",
+        )
+
+        job = await repo.get_analysis_job(job_id, user_id="user-2")
+
+        assert job is None
 
     @pytest.mark.asyncio
     async def test_list_analysis_jobs_filters_by_cluster_and_status(self, repo_and_session):
@@ -142,6 +176,7 @@ class TestSqlAlchemyAnalysisJobRepository:
             aws_scan_id=None,
             image_scan_id="img-1",
             expected_scans=["k8s", "image"],
+            user_id="user-1",
         )
         running_job_id = await repo.create_analysis_job(
             cluster_id=cluster_id,
@@ -149,6 +184,7 @@ class TestSqlAlchemyAnalysisJobRepository:
             aws_scan_id=None,
             image_scan_id="img-2",
             expected_scans=["k8s", "image"],
+            user_id="user-1",
         )
         await repo.create_analysis_job(
             cluster_id=other_cluster_id,
@@ -156,13 +192,22 @@ class TestSqlAlchemyAnalysisJobRepository:
             aws_scan_id=None,
             image_scan_id="img-3",
             expected_scans=["k8s", "image"],
+            user_id="user-1",
+        )
+        await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-4",
+            aws_scan_id=None,
+            image_scan_id="img-4",
+            expected_scans=["k8s", "image"],
+            user_id="user-2",
         )
         running_job = await session.get(AnalysisJob, running_job_id)
         running_job.status = "running"
         await session.commit()
 
-        cluster_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id)
-        running_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id, status="running")
+        cluster_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id, user_id="user-1")
+        running_jobs = await repo.list_analysis_jobs(cluster_id=cluster_id, user_id="user-1", status="running")
 
         assert {job.id for job in cluster_jobs} == {pending_job_id, running_job_id}
         assert [job.id for job in running_jobs] == [running_job_id]

@@ -1,14 +1,37 @@
 import pytest
+from dataclasses import dataclass
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.di import get_analysis_service
+from app.application.di import get_analysis_service, get_auth_service
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.auth_service import AuthService
 from app.gateway.db.base import Base
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
 from app.main import app
+from app.security.passwords import hash_password
+
+
+@dataclass
+class FakeUser:
+    id: str
+    email: str
+    password_hash: str
+    is_active: bool = True
+
+
+class FakeUserRepository:
+    def __init__(self, users: list[FakeUser]):
+        self._by_email = {user.email: user for user in users}
+        self._by_id = {user.id: user for user in users}
+
+    async def get_by_email(self, email: str):
+        return self._by_email.get(email)
+
+    async def get_by_id(self, user_id: str):
+        return self._by_id.get(user_id)
 
 
 @pytest.fixture
@@ -29,12 +52,30 @@ async def analysis_result_client(tmp_path):
             )
 
     app.dependency_overrides[get_analysis_service] = override_get_analysis_service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
 
     with TestClient(app) as client:
         yield {"client": client, "sessionmaker": sessionmaker}
 
     app.dependency_overrides.clear()
     await engine.dispose()
+
+
+def _auth_headers(client: TestClient, user_id: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": f"{user_id}@example.com", "password": "secret-password"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 @pytest.mark.asyncio
@@ -72,18 +113,18 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
             text(
                 """
                 INSERT INTO analysis_jobs (
-                    id, cluster_id, graph_id, status, current_step,
+                    id, user_id, cluster_id, graph_id, status, current_step,
                     k8s_scan_id, aws_scan_id, image_scan_id, expected_scans,
                     created_at, started_at, completed_at
                 )
                 VALUES (
-                    :id, :cluster_id, :graph_id, 'completed', NULL,
+                    :id, :user_id, :cluster_id, :graph_id, 'completed', NULL,
                     'k8s-1', 'aws-1', 'img-1', '["k8s","aws","image"]',
                     '2026-03-22 10:00:00', '2026-03-22 10:01:00', '2026-03-22 10:06:00'
                 )
                 """
             ),
-            {"id": job_id, "cluster_id": cluster_id, "graph_id": graph_id},
+            {"id": job_id, "user_id": "user-1", "cluster_id": cluster_id, "graph_id": graph_id},
         )
         await session.execute(
             text(
@@ -124,7 +165,10 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
         )
         await session.commit()
 
-    response = analysis_result_client["client"].get(f"/api/v1/analysis/{job_id}/result")
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -167,7 +211,8 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
 @pytest.mark.asyncio
 async def test_get_analysis_result_returns_404_for_unknown_job(analysis_result_client):
     response = analysis_result_client["client"].get(
-        "/api/v1/analysis/33333333-3333-3333-3333-333333333333/result"
+        "/api/v1/analysis/33333333-3333-3333-3333-333333333333/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "Analysis job not found: 33333333-3333-3333-3333-333333333333"
@@ -192,20 +237,23 @@ async def test_get_analysis_result_returns_empty_sections_when_job_has_no_graph(
             text(
                 """
                 INSERT INTO analysis_jobs (
-                    id, cluster_id, graph_id, status, current_step,
+                    id, user_id, cluster_id, graph_id, status, current_step,
                     k8s_scan_id, aws_scan_id, image_scan_id, expected_scans, created_at
                 )
                 VALUES (
-                    :id, :cluster_id, NULL, 'running', 'graph_building',
+                    :id, :user_id, :cluster_id, NULL, 'running', 'graph_building',
                     'k8s-1', NULL, 'img-1', '["k8s","image"]', '2026-03-22 10:00:00'
                 )
                 """
             ),
-            {"id": job_id, "cluster_id": cluster_id},
+            {"id": job_id, "user_id": "user-1", "cluster_id": cluster_id},
         )
         await session.commit()
 
-    response = analysis_result_client["client"].get(f"/api/v1/analysis/{job_id}/result")
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -261,16 +309,16 @@ async def test_get_analysis_result_returns_persisted_state_for_non_completed_job
             text(
                 """
                 INSERT INTO analysis_jobs (
-                    id, cluster_id, graph_id, status, current_step,
+                    id, user_id, cluster_id, graph_id, status, current_step,
                     k8s_scan_id, aws_scan_id, image_scan_id, expected_scans, created_at, started_at
                 )
                 VALUES (
-                    :id, :cluster_id, :graph_id, 'running', 'optimization',
+                    :id, :user_id, :cluster_id, :graph_id, 'running', 'optimization',
                     'k8s-2', NULL, 'img-2', '["k8s","image"]', '2026-03-22 11:00:00', '2026-03-22 11:01:00'
                 )
                 """
             ),
-            {"id": job_id, "cluster_id": cluster_id, "graph_id": graph_id},
+            {"id": job_id, "user_id": "user-1", "cluster_id": cluster_id, "graph_id": graph_id},
         )
         await session.execute(
             text(
@@ -306,7 +354,10 @@ async def test_get_analysis_result_returns_persisted_state_for_non_completed_job
         )
         await session.commit()
 
-    response = analysis_result_client["client"].get(f"/api/v1/analysis/{job_id}/result")
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 

@@ -8,8 +8,10 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.auth_service import AuthService
 from app.application.services.attack_graph_service import AttackGraphService
 from app.application.services.inventory_service import InventoryService
+from app.application.services.llm_provider_config_service import LLMProviderConfigService
 from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.application.llm.providers.openai_explanation_client import OpenAIExplanationClient
 from app.application.llm.providers.xai_explanation_client import XAIExplanationClient
@@ -17,6 +19,7 @@ from app.config import settings
 from app.gateway.db.session import get_db
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 from app.gateway.repositories.llm_provider_config_repository import SQLAlchemyLLMProviderConfigRepository
+from app.gateway.repositories.user_repository import SQLAlchemyUserRepository
 from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
 from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
 from app.application.services.scan_service import ScanService
@@ -25,6 +28,13 @@ from app.application.services.cluster_service import ClusterService
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
 
 logger = logging.getLogger(__name__)
+
+
+def get_auth_service(
+    db: AsyncSession = Depends(get_db),
+) -> AuthService:
+    user_repo = SQLAlchemyUserRepository(session=db)
+    return AuthService(user_repository=user_repo)
 
 
 def get_analysis_service(
@@ -87,6 +97,13 @@ def get_recommendation_explanation_service(
         provider_config_repository=config_repo,
         providers=providers,
     )
+
+
+def get_llm_provider_config_service(
+    db: AsyncSession = Depends(get_db),
+) -> LLMProviderConfigService:
+    config_repo = SQLAlchemyLLMProviderConfigRepository(session=db)
+    return LLMProviderConfigService(provider_config_repository=config_repo)
 
 
 def get_inventory_service(

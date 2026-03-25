@@ -93,6 +93,7 @@ class ScanService:
         self,
         cluster_id: UUID,
         request_source: RequestSource,
+        user_id: str | None = None,
         request_id: str | None = None,
         endpoint_path: str | None = None,
     ) -> ScanStartResponse:
@@ -134,6 +135,7 @@ class ScanService:
                 scan_id=scan_id,
                 cluster_id=cluster_id_str,
                 scanner_type=scanner_type_str,
+                user_id=user_id,
                 status=SCAN_STATUS_CREATED,
                 request_source=request_source,
                 requested_at=requested_at,
@@ -397,10 +399,11 @@ class ScanService:
     async def fail_scan(
         self,
         scan_id: str,
+        user_id: str | None = None,
         request_id: str | None = None,
         endpoint_path: str | None = None,
     ) -> ScanFailResponse:
-        record = await self._repo.get_by_scan_id(scan_id)
+        record = await self._repo.get_by_scan_id(scan_id, user_id=user_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
         status_before = record.status
@@ -420,7 +423,7 @@ class ScanService:
             )
             return ScanFailResponse(scan_id=scan_id, status=record.status)
 
-        await self._repo.mark_failed(scan_id, completed_at=datetime.utcnow())
+        await self._repo.mark_failed(scan_id, completed_at=datetime.utcnow(), user_id=user_id)
         logger.info(
             "scan.fail.accepted",
             extra=_context(
@@ -436,8 +439,8 @@ class ScanService:
         )
         return ScanFailResponse(scan_id=scan_id, status=SCAN_STATUS_FAILED)
 
-    async def get_scan_status(self, scan_id: str) -> ScanStatusResponse:
-        record = await self._repo.get_by_scan_id(scan_id)
+    async def get_scan_status(self, scan_id: str, user_id: str | None = None) -> ScanStatusResponse:
+        record = await self._repo.get_by_scan_id(scan_id, user_id=user_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
         return ScanStatusResponse(
@@ -450,8 +453,8 @@ class ScanService:
             files=_get_record_s3_keys(record),
         )
 
-    async def get_scan_detail(self, scan_id: str) -> ScanDetailResponse:
-        record = await self._repo.get_by_scan_id(scan_id)
+    async def get_scan_detail(self, scan_id: str, user_id: str | None = None) -> ScanDetailResponse:
+        record = await self._repo.get_by_scan_id(scan_id, user_id=user_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Scan session not found: {scan_id}")
         return ScanDetailResponse(
@@ -464,8 +467,8 @@ class ScanService:
             s3_keys=_get_record_s3_keys(record),
         )
 
-    async def list_cluster_scans(self, cluster_id: str) -> ClusterScanListResponse:
-        records = await self._repo.list_by_cluster(cluster_id)
+    async def list_cluster_scans(self, cluster_id: str, user_id: str | None = None) -> ClusterScanListResponse:
+        records = await self._repo.list_by_cluster(cluster_id, user_id=user_id)
         ordered_records = sorted(records, key=_get_record_created_at, reverse=True)
         items = [
             ScanSummaryItemResponse(

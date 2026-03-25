@@ -41,6 +41,7 @@ class SQLAlchemyScanRepository(ScanRepository):
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
+        user_id: str | None = None,
         status: str = SCAN_STATUS_CREATED,
         request_source: RequestSource = "manual",
         requested_at: datetime | None = None,
@@ -49,6 +50,7 @@ class SQLAlchemyScanRepository(ScanRepository):
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
+            user_id=user_id,
             status=status,
             request_source=request_source,
         )
@@ -83,17 +85,21 @@ class SQLAlchemyScanRepository(ScanRepository):
             )
             raise
 
-    async def get_by_scan_id(self, scan_id: str) -> Optional[ScanRecord]:
-        result = await self._session.execute(
-            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
-        )
+    async def get_by_scan_id(self, scan_id: str, user_id: str | None = None) -> Optional[ScanRecord]:
+        stmt = select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        if user_id is not None:
+            stmt = stmt.where(ScanRecord.user_id == user_id)
+        result = await self._session.execute(stmt)
         return result.scalars().first()
 
-    async def update_status(self, scan_id: str, status: str, **kwargs) -> ScanRecord:
-        result = await self._session.execute(
-            select(ScanRecord).where(ScanRecord.scan_id == scan_id)
-        )
+    async def update_status(self, scan_id: str, status: str, user_id: str | None = None, **kwargs) -> ScanRecord:
+        stmt = select(ScanRecord).where(ScanRecord.scan_id == scan_id)
+        if user_id is not None:
+            stmt = stmt.where(ScanRecord.user_id == user_id)
+        result = await self._session.execute(stmt)
         record = result.scalars().first()
+        if record is None:
+            return None
         record.status = status
         if "completed_at" in kwargs:
             record.completed_at = kwargs["completed_at"]
@@ -179,10 +185,11 @@ class SQLAlchemyScanRepository(ScanRepository):
             )
             raise
 
-    async def list_by_cluster(self, cluster_id: str) -> list[ScanRecord]:
-        result = await self._session.execute(
-            select(ScanRecord).where(ScanRecord.cluster_id == str(cluster_id))
-        )
+    async def list_by_cluster(self, cluster_id: str, user_id: str | None = None) -> list[ScanRecord]:
+        stmt = select(ScanRecord).where(ScanRecord.cluster_id == str(cluster_id))
+        if user_id is not None:
+            stmt = stmt.where(ScanRecord.user_id == user_id)
+        result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
@@ -226,8 +233,8 @@ class SQLAlchemyScanRepository(ScanRepository):
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None) -> ScanRecord:
-        return await self.update_status(scan_id, SCAN_STATUS_FAILED, completed_at=completed_at)
+    async def mark_failed(self, scan_id: str, completed_at: datetime | None = None, user_id: str | None = None) -> ScanRecord:
+        return await self.update_status(scan_id, SCAN_STATUS_FAILED, user_id=user_id, completed_at=completed_at)
 
     async def claim_next_queued_scan(
         self,

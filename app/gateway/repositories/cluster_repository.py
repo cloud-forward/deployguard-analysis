@@ -18,6 +18,7 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         self,
         name: str,
         cluster_type: str,
+        user_id: Optional[str] = None,
         description: Optional[str] = None,
         api_token: Optional[str] = None,
         aws_account_id: Optional[str] = None,
@@ -27,6 +28,7 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         cluster = Cluster(
             name=name,
             cluster_type=cluster_type,
+            user_id=user_id,
             description=description,
             api_token=api_token,
             aws_account_id=aws_account_id,
@@ -38,10 +40,11 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         await self._session.refresh(cluster)
         return cluster
 
-    async def get_by_id(self, cluster_id: str) -> Optional[Cluster]:
-        result = await self._session.execute(
-            select(Cluster).where(Cluster.id == cluster_id)
-        )
+    async def get_by_id(self, cluster_id: str, user_id: Optional[str] = None) -> Optional[Cluster]:
+        query = select(Cluster).where(Cluster.id == cluster_id)
+        if user_id is not None:
+            query = query.where(Cluster.user_id == user_id)
+        result = await self._session.execute(query)
         return result.scalars().first()
 
     async def get_by_name(self, name: str) -> Optional[Cluster]:
@@ -56,14 +59,17 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         )
         return result.scalars().first()
 
-    async def list_all(self) -> List[Cluster]:
-        result = await self._session.execute(select(Cluster))
+    async def list_all(self, user_id: str) -> List[Cluster]:
+        result = await self._session.execute(
+            select(Cluster).where(Cluster.user_id == user_id)
+        )
         return list(result.scalars().all())
 
-    async def update(self, cluster_id: str, **kwargs) -> Optional[Cluster]:
-        result = await self._session.execute(
-            select(Cluster).where(Cluster.id == cluster_id)
-        )
+    async def update(self, cluster_id: str, user_id: Optional[str] = None, **kwargs) -> Optional[Cluster]:
+        query = select(Cluster).where(Cluster.id == cluster_id)
+        if user_id is not None:
+            query = query.where(Cluster.user_id == user_id)
+        result = await self._session.execute(query)
         cluster = result.scalars().first()
         if not cluster:
             return None
@@ -77,9 +83,10 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         await self._session.refresh(cluster)
         return cluster
 
-    async def delete(self, cluster_id: str) -> bool:
-        result = await self._session.execute(
-            delete(Cluster).where(Cluster.id == cluster_id)
-        )
+    async def delete(self, cluster_id: str, user_id: Optional[str] = None) -> bool:
+        query = delete(Cluster).where(Cluster.id == cluster_id)
+        if user_id is not None:
+            query = query.where(Cluster.user_id == user_id)
+        result = await self._session.execute(query)
         await self._session.commit()
         return result.rowcount > 0

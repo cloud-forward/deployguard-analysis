@@ -54,7 +54,7 @@ class ClusterService:
             ],
         )
 
-    async def create_cluster(self, request: ClusterCreateRequest) -> ClusterCreateResponse:
+    async def create_cluster(self, request: ClusterCreateRequest, user_id: Optional[str] = None) -> ClusterCreateResponse:
         existing = await self._repo.get_by_name(request.name)
         if existing:
             raise HTTPException(status_code=400, detail=f"Cluster with name '{request.name}' already exists")
@@ -63,6 +63,7 @@ class ClusterService:
         cluster = await self._repo.create(
             name=request.name,
             cluster_type=request.cluster_type,
+            user_id=user_id,
             description=request.description,
             api_token=api_token,
             aws_account_id=request.aws_account_id,
@@ -74,8 +75,8 @@ class ClusterService:
             "onboarding": self._build_onboarding(cluster.id, cluster.cluster_type, api_token),
         })
 
-    async def get_cluster(self, cluster_id: str) -> ClusterResponse:
-        cluster = await self._repo.get_by_id(cluster_id)
+    async def get_cluster(self, cluster_id: str, user_id: Optional[str] = None) -> ClusterResponse:
+        cluster = await self._repo.get_by_id(cluster_id, user_id=user_id)
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
         return ClusterResponse.model_validate(cluster)
@@ -86,14 +87,19 @@ class ClusterService:
             return None
         return ClusterResponse.model_validate(cluster)
 
-    async def list_clusters(self) -> List[ClusterResponse]:
-        clusters = await self._repo.list_all()
+    async def list_clusters(self, user_id: str) -> List[ClusterResponse]:
+        clusters = await self._repo.list_all(user_id)
         return [ClusterResponse.model_validate(c) for c in clusters]
 
-    async def update_cluster(self, cluster_id: str, request: ClusterUpdateRequest) -> ClusterResponse:
+    async def update_cluster(
+        self,
+        cluster_id: str,
+        request: ClusterUpdateRequest,
+        user_id: Optional[str] = None,
+    ) -> ClusterResponse:
         update_data = request.model_dump(exclude_unset=True)
         if not update_data:
-             cluster = await self._repo.get_by_id(cluster_id)
+             cluster = await self._repo.get_by_id(cluster_id, user_id=user_id)
              if not cluster:
                  raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
              return ClusterResponse.model_validate(cluster)
@@ -103,12 +109,12 @@ class ClusterService:
             if existing and getattr(existing, "id") != cluster_id:
                 raise HTTPException(status_code=400, detail=f"Cluster with name '{update_data['name']}' already exists")
 
-        cluster = await self._repo.update(cluster_id, **update_data)
+        cluster = await self._repo.update(cluster_id, user_id=user_id, **update_data)
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
         return ClusterResponse.model_validate(cluster)
 
-    async def delete_cluster(self, cluster_id: str) -> None:
-        success = await self._repo.delete(cluster_id)
+    async def delete_cluster(self, cluster_id: str, user_id: Optional[str] = None) -> None:
+        success = await self._repo.delete(cluster_id, user_id=user_id)
         if not success:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")

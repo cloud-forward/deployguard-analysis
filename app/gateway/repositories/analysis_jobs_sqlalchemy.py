@@ -74,18 +74,25 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
     async def rollback(self) -> None:
         await self._session.rollback()
 
-    async def get_analysis_job(self, job_id: str) -> AnalysisJob | None:
-        return await self._session.get(AnalysisJob, job_id)
+    async def get_analysis_job(self, job_id: str, user_id: str | None = None) -> AnalysisJob | None:
+        query = select(AnalysisJob).where(AnalysisJob.id == job_id)
+        if user_id is not None:
+            query = query.where(AnalysisJob.user_id == user_id)
+        return await self._session.scalar(query.limit(1))
 
     async def list_analysis_jobs(
         self,
         cluster_id: str | UUID,
+        user_id: str,
         status: str | None = None,
     ) -> list[AnalysisJob]:
         normalized_cluster_id = str(UUID(str(cluster_id)))
         query = (
             select(AnalysisJob)
-            .where(AnalysisJob.cluster_id == normalized_cluster_id)
+            .where(
+                AnalysisJob.cluster_id == normalized_cluster_id,
+                AnalysisJob.user_id == user_id,
+            )
             .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
         )
         if status is not None:
@@ -100,10 +107,12 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         aws_scan_id: str | None,
         image_scan_id: str | None,
         expected_scans: list[str],
+        user_id: str | None = None,
     ) -> str:
         normalized_cluster_id = str(UUID(str(cluster_id)))
         job = AnalysisJob(
             cluster_id=normalized_cluster_id,
+            user_id=user_id,
             k8s_scan_id=k8s_scan_id,
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,

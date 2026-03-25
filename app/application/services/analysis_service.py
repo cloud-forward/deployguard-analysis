@@ -101,6 +101,7 @@ class AnalysisService:
         k8s_scan_id: str | None = None,
         aws_scan_id: str | None = None,
         image_scan_id: str | None = None,
+        user_id: str | None = None,
     ) -> AnalysisJobResponse:
         resolved = await self._resolve_analysis_job_inputs(
             k8s_scan_id=k8s_scan_id,
@@ -116,6 +117,7 @@ class AnalysisService:
             aws_scan_id=aws_scan_id,
             image_scan_id=image_scan_id,
             expected_scans=expected_scans,
+            user_id=user_id,
         )
         for scan_id in selected_scan_ids:
             await self._scans.set_analysis_run_id(scan_id, job_id)
@@ -129,20 +131,21 @@ class AnalysisService:
     async def list_analysis_jobs(
         self,
         cluster_id: str,
+        user_id: str,
         status: str | None = None,
     ) -> ClusterAnalysisJobListResponse:
-        jobs = await self._jobs.list_analysis_jobs(cluster_id=cluster_id, status=status)
+        jobs = await self._jobs.list_analysis_jobs(cluster_id=cluster_id, user_id=user_id, status=status)
         items = [self._to_analysis_job_summary(job) for job in jobs]
         return ClusterAnalysisJobListResponse(items=items, total=len(items))
 
-    async def get_analysis_job(self, job_id: str) -> AnalysisJobDetailResponse:
-        job = await self._jobs.get_analysis_job(job_id)
+    async def get_analysis_job(self, job_id: str, user_id: str) -> AnalysisJobDetailResponse:
+        job = await self._jobs.get_analysis_job(job_id, user_id=user_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
         return self._to_analysis_job_detail(job)
 
-    async def get_analysis_result(self, job_id: str) -> AnalysisResultResponse:
-        job = await self._jobs.get_analysis_job(job_id)
+    async def get_analysis_result(self, job_id: str, user_id: str) -> AnalysisResultResponse:
+        job = await self._jobs.get_analysis_job(job_id, user_id=user_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
 
@@ -169,8 +172,8 @@ class AnalysisService:
             links=self._build_analysis_result_links(job_detail),
         )
 
-    async def execute_analysis_job(self, job_id: str) -> Dict[str, Any]:
-        job = await self._jobs.get_analysis_job(job_id)
+    async def execute_analysis_job(self, job_id: str, user_id: str | None = None) -> Dict[str, Any]:
+        job = await self._jobs.get_analysis_job(job_id, user_id=user_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
         persisted_job_id = str(job.id)

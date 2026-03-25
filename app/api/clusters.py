@@ -4,6 +4,7 @@ Cluster management API endpoints.
 import logging
 from typing import List
 from fastapi import APIRouter, Depends, Response, status
+from app.api.auth import get_current_user
 from app.application.di import (
     get_attack_graph_service,
     get_cluster_service,
@@ -24,6 +25,7 @@ from app.models.schemas import (
     RecommendationExplanationResponse,
     RemediationRecommendationDetailEnvelopeResponse,
     RemediationRecommendationListResponse,
+    UserSummaryResponse,
 )
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["Clusters"])
@@ -50,9 +52,10 @@ logger = logging.getLogger(__name__)
 )
 async def create_cluster(
     request: ClusterCreateRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.create_cluster(request)
+    return await service.create_cluster(request, user_id=current_user.id)
 
 
 @router.get(
@@ -65,9 +68,10 @@ async def create_cluster(
     },
 )
 async def list_clusters(
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.list_clusters()
+    return await service.list_clusters(user_id=current_user.id)
 
 
 @router.get(
@@ -82,9 +86,10 @@ async def list_clusters(
 )
 async def get_cluster(
     id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.get_cluster(id)
+    return await service.get_cluster(id, user_id=current_user.id)
 
 
 @router.get(
@@ -102,9 +107,10 @@ async def get_cluster(
 )
 async def get_attack_graph(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_graph(cluster_id)
+    return await service.get_attack_graph(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -119,9 +125,10 @@ async def get_attack_graph(
 )
 async def get_attack_paths(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_paths(cluster_id)
+    return await service.get_attack_paths(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -137,9 +144,10 @@ async def get_attack_paths(
 async def get_attack_path_detail(
     cluster_id: str,
     path_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_path_detail(cluster_id, path_id)
+    return await service.get_attack_path_detail(cluster_id, path_id, user_id=current_user.id)
 
 
 @router.get(
@@ -154,6 +162,7 @@ async def get_attack_path_detail(
 )
 async def get_remediation_recommendations(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     logger.info(
@@ -165,7 +174,7 @@ async def get_remediation_recommendations(
         },
     )
     try:
-        response = await service.get_remediation_recommendations(cluster_id)
+        response = await service.get_remediation_recommendations(cluster_id, user_id=current_user.id)
     except Exception as exc:
         logger.exception(
             "remediation_list_request_failed",
@@ -202,6 +211,7 @@ async def get_remediation_recommendations(
 async def get_remediation_recommendation_detail(
     cluster_id: str,
     recommendation_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
     logger.info(
@@ -214,7 +224,11 @@ async def get_remediation_recommendation_detail(
         },
     )
     try:
-        response = await service.get_remediation_recommendation_detail(cluster_id, recommendation_id)
+        response = await service.get_remediation_recommendation_detail(
+            cluster_id,
+            recommendation_id,
+            user_id=current_user.id,
+        )
     except Exception as exc:
         logger.exception(
             "remediation_detail_request_failed",
@@ -254,6 +268,7 @@ async def explain_remediation_recommendation(
     cluster_id: str,
     recommendation_id: str,
     request: RecommendationExplanationRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: RecommendationExplanationService = Depends(get_recommendation_explanation_service),
 ):
     logger.info(
@@ -271,6 +286,7 @@ async def explain_remediation_recommendation(
         response = await service.explain_recommendation(
             cluster_id=cluster_id,
             recommendation_id=recommendation_id,
+            user_id=current_user.id,
             request=request,
         )
     except Exception as exc:
@@ -316,9 +332,10 @@ async def explain_remediation_recommendation(
 async def update_cluster(
     id: str,
     request: ClusterUpdateRequest,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.update_cluster(id, request)
+    return await service.update_cluster(id, request, user_id=current_user.id)
 
 
 @router.delete(
@@ -333,7 +350,8 @@ async def update_cluster(
 )
 async def delete_cluster(
     id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    await service.delete_cluster(id)
+    await service.delete_cluster(id, user_id=current_user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

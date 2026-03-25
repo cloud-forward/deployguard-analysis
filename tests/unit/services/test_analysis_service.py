@@ -289,11 +289,36 @@ async def test_manual_analysis_job_creation_with_k8s_image_aws(service, jobs_rep
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_args_list[0].args == ("k8s-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[1].args == ("aws-1", "job-123")
     assert scan_repo.set_analysis_run_id.await_args_list[2].args == ("img-1", "job-123")
     assert result.job_id == "job-123"
+
+
+@pytest.mark.asyncio
+async def test_manual_analysis_job_creation_passes_user_id_through(service, jobs_repo, scan_repo):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    scan_repo.get_by_scan_id.side_effect = [
+        _make_scan("k8s-1", SCANNER_TYPE_K8S, cluster_id=cluster_id),
+        _make_scan("img-1", SCANNER_TYPE_IMAGE, cluster_id=cluster_id),
+    ]
+
+    await service.create_analysis_job(
+        k8s_scan_id="k8s-1",
+        image_scan_id="img-1",
+        user_id="user-1",
+    )
+
+    jobs_repo.create_analysis_job.assert_awaited_once_with(
+        cluster_id=cluster_id,
+        k8s_scan_id="k8s-1",
+        aws_scan_id=None,
+        image_scan_id="img-1",
+        expected_scans=["k8s", "image"],
+        user_id="user-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -315,6 +340,7 @@ async def test_manual_analysis_job_creation_with_k8s_image_only(service, jobs_re
         aws_scan_id=None,
         image_scan_id="img-1",
         expected_scans=["k8s", "image"],
+        user_id=None,
     )
     assert scan_repo.set_analysis_run_id.await_count == 2
 
@@ -339,6 +365,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_image_whe
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["aws", "image"],
+        user_id=None,
     )
 
 
@@ -355,6 +382,7 @@ async def test_create_analysis_job_derives_representative_cluster_from_aws_when_
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["aws"],
+        user_id=None,
     )
 
 
@@ -378,6 +406,7 @@ async def test_create_analysis_job_prefers_k8s_cluster_over_aws_when_both_presen
         aws_scan_id="aws-1",
         image_scan_id=None,
         expected_scans=["k8s", "aws"],
+        user_id=None,
     )
 
 
@@ -388,10 +417,11 @@ async def test_list_analysis_jobs_returns_cluster_jobs(service, jobs_repo):
         _make_job("job-1", status="completed", current_step=None, graph_id="graph-1"),
     ]
 
-    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890", user_id="user-1")
 
     jobs_repo.list_analysis_jobs.assert_awaited_once_with(
         cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        user_id="user-1",
         status=None,
     )
     assert result.total == 2
@@ -536,9 +566,9 @@ async def test_get_analysis_job_returns_detail(service, jobs_repo):
         aws_scan_id="aws-1",
     )
 
-    result = await service.get_analysis_job("job-123")
+    result = await service.get_analysis_job("job-123", user_id="user-1")
 
-    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123")
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
     assert result.job_id == "job-123"
     assert result.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     assert result.status == "failed"
@@ -551,7 +581,7 @@ async def test_get_analysis_job_missing_raises_404(service, jobs_repo):
     jobs_repo.get_analysis_job.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.get_analysis_job("missing-job")
+        await service.get_analysis_job("missing-job", user_id="user-1")
 
     assert exc_info.value.status_code == 404
 
@@ -689,6 +719,7 @@ async def test_allows_aws_scan_from_different_cluster_than_k8s_image(service, jo
         aws_scan_id="aws-1",
         image_scan_id="img-1",
         expected_scans=["k8s", "aws", "image"],
+        user_id=None,
     )
 
 
@@ -703,7 +734,9 @@ async def test_analysis_execution_uses_explicit_scan_ids_from_analysis_job(servi
     )
     service.execute_analysis = AsyncMock(return_value={"ok": True})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     service.execute_analysis.assert_awaited_once_with(
@@ -729,7 +762,9 @@ async def test_execute_analysis_job_marks_failed_on_execution_error(service, job
     service.execute_analysis = AsyncMock(side_effect=RuntimeError("raw load failed"))
 
     with pytest.raises(RuntimeError, match="raw load failed"):
-        await service.execute_analysis_job("job-123")
+        await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     jobs_repo.mark_running.assert_awaited_once_with("job-123", current_step="fact_extraction")
     jobs_repo.rollback.assert_awaited_once_with()
@@ -782,7 +817,9 @@ async def test_execute_analysis_job_uses_snapshotted_scalars_after_repo_state_ch
     jobs_repo.mark_running.side_effect = expire_after_mark_running
     service.execute_analysis = AsyncMock(return_value={"stats": {"graph": {"nodes": 1}}})
 
-    result = await service.execute_analysis_job("job-123")
+    result = await service.execute_analysis_job("job-123", user_id="user-1")
+
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
 
     service.execute_analysis.assert_awaited_once_with(
         cluster_id="cluster-1",

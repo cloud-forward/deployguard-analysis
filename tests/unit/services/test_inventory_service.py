@@ -120,7 +120,7 @@ class TestInventoryService:
             },
         )
 
-        result = await service.sync_cluster("c1")
+        result = await service.sync_cluster("c1", user_id="user-1")
 
         assert result.scan_id == "scan-123"
         assert result.cluster_id == "c1"
@@ -131,6 +131,7 @@ class TestInventoryService:
         assert kwargs["scan_id"] == "scan-123"
         assert kwargs["raw_result_json"]["iam_roles"][0]["name"] == "role-a"
         assert kwargs["scanned_at"].isoformat() == "2026-03-19T12:00:00+00:00"
+        cluster_repo.get_by_id.assert_awaited_once_with("c1", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_sync_cluster_raises_404_when_cluster_missing(self):
@@ -140,7 +141,7 @@ class TestInventoryService:
         cluster_repo.get_by_id.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
-            await service.sync_cluster("missing")
+            await service.sync_cluster("missing", user_id="user-1")
 
         assert exc_info.value.status_code == 404
         snapshot_repo.create.assert_not_awaited()
@@ -160,7 +161,7 @@ class TestInventoryService:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            await service.sync_cluster("c1")
+            await service.sync_cluster("c1", user_id="user-1")
 
         assert exc_info.value.status_code == 400
         assert "missing AWS discovery configuration" in exc_info.value.detail
@@ -184,7 +185,7 @@ class TestInventoryService:
         )
 
         with pytest.raises(RuntimeError, match="sts failed"):
-            await service.sync_cluster("c1")
+            await service.sync_cluster("c1", user_id="user-1")
 
         snapshot_repo.create.assert_not_awaited()
 
@@ -207,7 +208,7 @@ class TestInventoryService:
         )
 
         with pytest.raises(RuntimeError, match="collector failed"):
-            await service.sync_cluster("c1")
+            await service.sync_cluster("c1", user_id="user-1")
 
         snapshot_repo.create.assert_not_awaited()
 
@@ -240,7 +241,7 @@ class TestInventoryService:
         )
 
         with pytest.raises(ValueError):
-            await service.sync_cluster("c1")
+            await service.sync_cluster("c1", user_id="user-1")
 
         snapshot_repo.create.assert_not_awaited()
 
@@ -271,6 +272,24 @@ class TestInventoryService:
         assert result.summary.total_assets == 1
         assert result.assets[0].asset_id == "s3:bucket-a"
         assert result.assets[0].details["arn"] == "arn:aws:s3:::bucket-a"
+        cluster_repo.get_by_id.assert_awaited_once_with("c1", user_id=None)
+
+    @pytest.mark.asyncio
+    async def test_get_cluster_assets_passes_user_id_through(self):
+        service, cluster_repo, snapshot_repo = make_service()
+        cluster_repo.get_by_id.return_value = SimpleNamespace(
+            id="c1",
+            name="prod",
+            cluster_type="aws",
+            aws_account_id="123456789012",
+            aws_role_arn="arn:aws:iam::123456789012:role/discovery",
+            aws_region="ap-northeast-2",
+        )
+        snapshot_repo.get_latest_by_cluster.return_value = None
+
+        await service.get_cluster_assets("c1", user_id="user-1")
+
+        cluster_repo.get_by_id.assert_awaited_once_with("c1", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_get_cluster_assets_returns_empty_when_no_snapshot_exists(self):
@@ -345,12 +364,38 @@ class TestInventoryService:
         assert result.asset_type == "iam_role"
         assert result.name == "role-a"
         assert result.cluster_id == "c1"
+        cluster_repo.get_by_id.assert_awaited_once_with("c1", user_id=None)
+
+    @pytest.mark.asyncio
+    async def test_get_asset_detail_filters_clusters_by_user_id(self):
+        service, cluster_repo, snapshot_repo = make_service()
+        cluster_repo.get_by_id.return_value = None
+        snapshot_repo.list_latest.return_value = [
+            SimpleNamespace(
+                cluster_id="c1",
+                raw_result_json={
+                    "iam_roles": [{"name": "role-a"}],
+                    "iam_users": [],
+                    "s3_buckets": [],
+                    "rds_instances": [],
+                    "ec2_instances": [],
+                },
+            )
+        ]
+
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.get_asset_detail("iam-role:role-a", user_id="user-1")
+
+        assert exc_info.value.status_code == 404
+        cluster_repo.get_by_id.assert_awaited_once_with("c1", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_get_asset_detail_uses_latest_snapshot_per_cluster(self):
         service, cluster_repo, snapshot_repo = make_service()
 
-        async def get_cluster(cluster_id: str):
+        async def get_cluster(cluster_id: str, user_id=None):
             return SimpleNamespace(
                 id=cluster_id,
                 name=f"cluster-{cluster_id}",

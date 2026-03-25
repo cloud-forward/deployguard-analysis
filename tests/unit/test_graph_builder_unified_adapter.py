@@ -84,6 +84,68 @@ async def test_build_from_unified_result_marks_ingress_exposed_pod_as_entry_poin
 
 
 @pytest.mark.asyncio
+async def test_build_from_unified_result_marks_load_balancer_service_as_entry_point():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(
+                    id="service:prod:public-api",
+                    type="service",
+                    metadata={"service_type": "LoadBalancer"},
+                ),
+            ],
+            edges=[],
+        )
+    )
+
+    assert graph.nodes["service:prod:public-api"]["is_entry_point"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_from_unified_result_marks_node_port_service_as_entry_point():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(
+                    id="service:prod:public-api",
+                    type="service",
+                    metadata={"service_type": "NodePort"},
+                ),
+            ],
+            edges=[],
+        )
+    )
+
+    assert graph.nodes["service:prod:public-api"]["is_entry_point"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_from_unified_result_marks_pod_behind_load_balancer_service_as_entry_point():
+    graph = await GraphBuilder().build_from_unified_result(
+        UnifiedGraphResult(
+            nodes=[
+                K8sGraphNode(
+                    id="service:prod:public-api",
+                    type="service",
+                    metadata={"service_type": "LoadBalancer"},
+                ),
+                K8sGraphNode(id="pod:prod:api", type="pod"),
+            ],
+            edges=[
+                K8sGraphEdge(
+                    source="service:prod:public-api",
+                    target="pod:prod:api",
+                    type="service_targets_pod",
+                ),
+            ],
+        )
+    )
+
+    assert graph.nodes["service:prod:public-api"]["is_entry_point"] is True
+    assert graph.nodes["pod:prod:api"]["is_entry_point"] is True
+
+
+@pytest.mark.asyncio
 async def test_build_from_unified_result_marks_sensitive_targets_as_crown_jewels():
     graph = await GraphBuilder().build_from_unified_result(
         UnifiedGraphResult(

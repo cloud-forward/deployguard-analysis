@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from datetime import datetime, UTC
 
 from app.application.services.analysis_service import AnalysisService
+from app.application.services.analysis_service import MAX_HOPS
 from app.core.constants import SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE, SCANNER_TYPE_K8S
 from app.main import app
 from src.facts.canonical_fact import Fact
@@ -1252,6 +1253,53 @@ async def test_execute_analysis_updates_job_steps_when_analysis_job_id_present(s
         ("job-123", "risk_calculation"),
         ("job-123", "optimization"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_uses_hop_limit_10_for_path_discovery(service):
+    service._load_scan_data = AsyncMock(side_effect=[
+        {"scan_id": "k8s-1", "cluster_id": "cluster-1", "pods": []},
+        {"scan_id": "aws-1", "aws_account_id": "123456789012"},
+        {"scan_id": "img-1"},
+    ])
+    k8s_result = K8sBuildResult(
+        nodes=[K8sGraphNode(id="pod:prod:api", type="pod")],
+        edges=[],
+        metadata={"scan_id": "k8s-1", "cluster_id": "cluster-1", "graph_id": "k8s-1-graph"},
+    )
+    aws_result = AWSBuildResult(
+        nodes=[AWSGraphNode(id="iam:123456789012:AppRole", type="iam_role", namespace="123456789012")],
+        edges=[],
+        metadata={"scan_id": "aws-1", "account_id": "123456789012", "graph_id": "aws-1-graph"},
+    )
+    unified_result = UnifiedGraphResult(nodes=[*k8s_result.nodes, *aws_result.nodes], edges=[], metadata={}, warnings=[])
+    graph = nx.DiGraph()
+    graph.add_node("pod:prod:api", id="pod:prod:api", type="pod", is_entry_point=True, is_crown_jewel=False, base_risk=0.3, metadata={})
+    graph.add_node("iam:123456789012:AppRole", id="iam:123456789012:AppRole", type="iam_role", is_entry_point=False, is_crown_jewel=True, base_risk=0.9, metadata={})
+
+    service._build_k8s_result = MagicMock(return_value=k8s_result)
+    service._extract_k8s_facts = MagicMock(return_value=[])
+    service._coerce_aws_scan_result = MagicMock(return_value=MagicMock())
+    service._bridge_builder.build = MagicMock(return_value=MagicMock(irsa_mappings=[], credential_facts=[], warnings=[]))
+    service._extract_aws_facts = MagicMock(return_value=[])
+    service._build_aws_result = MagicMock(return_value=aws_result)
+    service._unified_graph_builder.build = MagicMock(return_value=unified_result)
+    service._graph_builder.build_from_unified_result = AsyncMock(return_value=graph)
+    service._graph_builder.get_entry_points = MagicMock(return_value=["pod:prod:api"])
+    service._graph_builder.get_crown_jewels = MagicMock(return_value=["iam:123456789012:AppRole"])
+    service._path_finder.find_all_paths = MagicMock(return_value=[])
+    service._remediation_optimizer.optimize = MagicMock(return_value={"summary": {"selected_count": 0}, "recommendations": []})
+
+    await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
+
+    assert MAX_HOPS == 10
+    service._path_finder.find_all_paths.assert_called_once_with(
+        graph,
+        ["pod:prod:api"],
+        ["iam:123456789012:AppRole"],
+        max_path_length=10,
+        max_paths=100,
+    )
 
 
 def test_openapi_docs_distinguish_standard_and_debug_analysis_flows():

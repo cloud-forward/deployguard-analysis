@@ -56,7 +56,7 @@ from src.graph.builders.unified_graph_builder import UnifiedGraphBuilder
 
 logger = logging.getLogger(__name__)
 
-MAX_HOPS = 7
+MAX_HOPS = 10
 MAX_ATTACK_PATHS = 100
 PREVIEW_LIMIT = 5
 SEVERITY_ORDER = {severity.value: idx for idx, severity in enumerate(AttackGraphSeverity)}

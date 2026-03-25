@@ -39,6 +39,7 @@ class FakeScanRepository:
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
+        user_id: str | None = None,
         status: str = SCAN_STATUS_CREATED,
         request_source: str = "manual",
         requested_at=None,
@@ -48,6 +49,7 @@ class FakeScanRepository:
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
+            user_id=user_id,
             status=status,
             s3_keys=[],
             created_at=datetime.utcnow(),
@@ -58,8 +60,13 @@ class FakeScanRepository:
         self._store[scan_id] = record
         return record
 
-    async def get_by_scan_id(self, scan_id: str):
-        return self._store.get(scan_id)
+    async def get_by_scan_id(self, scan_id: str, user_id: str | None = None):
+        record = self._store.get(scan_id)
+        if record is None:
+            return None
+        if user_id is not None and record.user_id != user_id:
+            return None
+        return record
 
     async def update_status(self, scan_id: str, status: str, **kwargs):
         record = self._store.get(scan_id)
@@ -83,8 +90,11 @@ class FakeScanRepository:
             record.s3_keys = s3_keys
         return record
 
-    async def list_by_cluster(self, cluster_id: str):
-        return [r for r in self._store.values() if r.cluster_id == cluster_id]
+    async def list_by_cluster(self, cluster_id: str, user_id: str | None = None):
+        records = [r for r in self._store.values() if r.cluster_id == cluster_id]
+        if user_id is not None:
+            records = [r for r in records if r.user_id == user_id]
+        return records
 
     async def find_active_scan(self, cluster_id: str, scanner_type: str):
         for r in self._store.values():
@@ -126,10 +136,11 @@ class FakeScanRepository:
 
 
 class _FakeScanRecord:
-    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at, request_source, requested_at):
+    def __init__(self, scan_id, cluster_id, scanner_type, user_id, status, s3_keys, created_at, completed_at, request_source, requested_at):
         self.scan_id = scan_id
         self.cluster_id = cluster_id
         self.scanner_type = scanner_type
+        self.user_id = user_id
         self.status = status
         self.s3_keys = s3_keys
         self.created_at = created_at

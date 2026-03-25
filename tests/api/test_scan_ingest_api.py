@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 import logging
 from typing import Optional
 from unittest.mock import AsyncMock
@@ -9,6 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.auth import get_authenticated_cluster
+from app.application.di import get_auth_service
+from app.application.services.auth_service import AuthService
 from app.application.services.analysis_service import AnalysisService
 from app.application.di import get_scan_service
 from app.application.services.scan_service import ScanService
@@ -24,13 +27,35 @@ from app.core.constants import (
 )
 from app.main import app
 from app.models.schemas import ClusterResponse
+from app.security.passwords import hash_password
+
+
+@dataclass
+class FakeUser:
+    id: str
+    email: str
+    password_hash: str
+    is_active: bool = True
+
+
+class FakeUserRepository:
+    def __init__(self, users: list[FakeUser]):
+        self._by_email = {user.email: user for user in users}
+        self._by_id = {user.id: user for user in users}
+
+    async def get_by_email(self, email: str):
+        return self._by_email.get(email)
+
+    async def get_by_id(self, user_id: str):
+        return self._by_id.get(user_id)
 
 
 class _FakeScanRecord:
-    def __init__(self, scan_id, cluster_id, scanner_type, status, s3_keys, created_at, completed_at, request_source, requested_at):
+    def __init__(self, scan_id, cluster_id, scanner_type, user_id, status, s3_keys, created_at, completed_at, request_source, requested_at):
         self.scan_id = scan_id
         self.cluster_id = cluster_id
         self.scanner_type = scanner_type
+        self.user_id = user_id
         self.status = status
         self.s3_keys = s3_keys
         self.created_at = created_at
@@ -48,6 +73,7 @@ class FakeScanRepository:
         scan_id: str,
         cluster_id: str,
         scanner_type: str,
+        user_id: str | None = None,
         status: str = SCAN_STATUS_CREATED,
         request_source: str = "manual",
         requested_at=None,
@@ -58,6 +84,7 @@ class FakeScanRepository:
             scan_id=scan_id,
             cluster_id=cluster_id,
             scanner_type=scanner_type,
+            user_id=user_id,
             status=status,
             s3_keys=[],
             created_at=datetime.utcnow(),
@@ -68,8 +95,13 @@ class FakeScanRepository:
         self._store[scan_id] = record
         return record
 
-    async def get_by_scan_id(self, scan_id: str):
-        return self._store.get(scan_id)
+    async def get_by_scan_id(self, scan_id: str, user_id: str | None = None):
+        record = self._store.get(scan_id)
+        if record is None:
+            return None
+        if user_id is not None and record.user_id != user_id:
+            return None
+        return record
 
     async def update_status(self, scan_id: str, status: str, **kwargs):
         record = self._store.get(scan_id)
@@ -93,8 +125,11 @@ class FakeScanRepository:
             record.s3_keys = s3_keys
         return record
 
-    async def list_by_cluster(self, cluster_id: str):
-        return [r for r in self._store.values() if r.cluster_id == cluster_id]
+    async def list_by_cluster(self, cluster_id: str, user_id: str | None = None):
+        records = [r for r in self._store.values() if r.cluster_id == cluster_id]
+        if user_id is not None:
+            records = [r for r in records if r.user_id == user_id]
+        return records
 
     async def find_active_scan(self, cluster_id: str, scanner_type: str):
         for r in self._store.values():
@@ -214,6 +249,15 @@ def client():
     clusters = FakeClusterRepository()
     service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     async def _fake_auth_cluster():
         return ClusterResponse(
             id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -236,6 +280,15 @@ def client_with_repo():
     clusters = FakeClusterRepository()
     service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     async def _fake_auth_cluster():
         return ClusterResponse(
             id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -258,6 +311,15 @@ def client_missing_s3():
     clusters = FakeClusterRepository()
     service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     async def _fake_auth_cluster():
         return ClusterResponse(
             id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -280,6 +342,15 @@ def client_missing_s3_with_repo():
     clusters = FakeClusterRepository()
     service = ScanService(scan_repository=repo, s3_service=s3, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     async def _fake_auth_cluster():
         return ClusterResponse(
             id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -304,6 +375,15 @@ def client_with_analysis_repo():
     analysis = AnalysisService(jobs_repo=jobs_repo, scan_repo=repo)
     service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis, cluster_repository=clusters)
     app.dependency_overrides[get_scan_service] = lambda: service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
     async def _fake_auth_cluster():
         return ClusterResponse(
             id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -319,6 +399,15 @@ def client_with_analysis_repo():
     app.dependency_overrides.clear()
 
 
+def _auth_headers(client: TestClient, user_id: str = "user-1") -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": f"{user_id}@example.com", "password": "secret-password"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
 def _start(
     client,
     cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -326,6 +415,7 @@ def _start(
 ):
     return client.post(
         "/api/v1/scans/start",
+        headers=_auth_headers(client),
         json={"cluster_id": cluster_id, "request_source": request_source},
     )
 
@@ -445,6 +535,7 @@ class TestScanStart:
             scan_id=completed_scan_id,
             cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
             scanner_type="aws",
+            user_id="user-1",
             status=SCAN_STATUS_COMPLETED,
             s3_keys=[],
             created_at=datetime.utcnow(),
@@ -456,6 +547,7 @@ class TestScanStart:
             scan_id=failed_scan_id,
             cluster_id="b2c3d4e5-f6a7-8901-bcde-f12345678901",
             scanner_type="aws",
+            user_id="user-1",
             status=SCAN_STATUS_FAILED,
             s3_keys=[],
             created_at=datetime.utcnow(),
@@ -500,11 +592,22 @@ class TestScanStart:
     def test_omitted_request_source_uses_valid_default(self, client):
         resp = client.post(
             "/api/v1/scans/start",
+            headers=_auth_headers(client),
             json={
                 "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             },
         )
         assert resp.status_code == 201
+
+    def test_start_scan_persists_authenticated_user_id(self, client_with_repo):
+        client, repo = client_with_repo
+
+        resp = _start(client)
+
+        assert resp.status_code == 201
+        records = list(repo._store.values())
+        assert len(records) == 2
+        assert {record.user_id for record in records} == {"user-1"}
 
     def test_invalid_request_source_rejected(self, client):
         resp = _start(client, request_source="api")
@@ -517,7 +620,7 @@ class TestScanStart:
         assert repo._store == {}
 
     def test_missing_cluster_id_rejected(self, client):
-        resp = client.post("/api/v1/scans/start", json={})
+        resp = client.post("/api/v1/scans/start", headers=_auth_headers(client), json={})
         assert resp.status_code == 422
 
     def test_duplicate_active_scan_rejected(self, client):
@@ -544,7 +647,7 @@ class TestScanStart:
         with caplog.at_level(logging.INFO):
             resp = client.post(
                 "/api/v1/scans/start",
-                headers={"X-Request-ID": "req-start-1"},
+                headers={**_auth_headers(client), "X-Request-ID": "req-start-1"},
                 json={
                     "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "request_source": "manual",
@@ -585,7 +688,7 @@ class TestScanStart:
         with caplog.at_level(logging.WARNING):
             resp = client.post(
                 "/api/v1/scans/start",
-                headers={"X-Request-ID": "req-stale-1"},
+                headers={**_auth_headers(client), "X-Request-ID": "req-stale-1"},
                 json={
                     "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "request_source": "manual",
@@ -624,7 +727,7 @@ class TestUploadUrl:
         scan_id = _scan_id_for(_start(client), "k8s")
         _claim(client)
         _upload_url(client, scan_id)
-        status = client.get(f"/api/v1/scans/{scan_id}/status").json()["status"]
+        status = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"]
         assert status == SCAN_STATUS_UPLOADING
 
     def test_scan_not_found_returns_404(self, client):
@@ -658,7 +761,7 @@ class TestCompleteScan:
         url_resp = _upload_url(client, scan_id)
         s3_key = url_resp.json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
-        status_resp = client.get(f"/api/v1/scans/{scan_id}/status").json()
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()
         assert s3_key in status_resp["files"]
 
     def test_complete_sets_completed_at(self, client):
@@ -666,7 +769,7 @@ class TestCompleteScan:
         _claim(client)
         _complete(client, scan_id)
 
-        status_resp = client.get(f"/api/v1/scans/{scan_id}/status")
+        status_resp = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client))
         data = status_resp.json()
         assert data["status"] == SCAN_STATUS_COMPLETED
         assert data["completed_at"] is not None
@@ -679,7 +782,7 @@ class TestCompleteScan:
             json={"files": [f"scans/a1b2c3d4-e5f6-7890-abcd-ef1234567890/{scan_id}/k8s/k8s-snapshot.json"]},
         )
         assert resp.status_code == 202
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_COMPLETED
 
     def test_complete_scan_not_found_returns_404(self, client):
         resp = client.post("/api/v1/scans/ghost-scan/complete", json={"files": ["some/key.json"]})
@@ -747,6 +850,15 @@ class TestCompleteScan:
         analysis = AnalysisService(jobs_repo=FakeAnalysisJobRepository(), scan_repo=repo)
         service = ScanService(scan_repository=repo, s3_service=s3, analysis_service=analysis, cluster_repository=clusters)
         app.dependency_overrides[get_scan_service] = lambda: service
+        auth_service = AuthService(
+            user_repository=FakeUserRepository(
+                [
+                    FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                    FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+                ]
+            )
+        )
+        app.dependency_overrides[get_auth_service] = lambda: auth_service
 
         async def _fake_auth_cluster():
             return ClusterResponse(
@@ -801,7 +913,7 @@ class TestManualFail:
 
         assert resp.status_code == 202
         assert resp.json()["status"] == SCAN_STATUS_FAILED
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_FAILED
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_FAILED
 
     def test_manual_fail_processing_scan(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
@@ -865,34 +977,57 @@ class TestManualFail:
 
 
 class TestScanStatus:
+    def test_get_status_requires_jwt(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        resp = client.get(f"/api/v1/scans/{scan_id}/status")
+
+        assert resp.status_code == 401
+
     def test_get_status_created(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
-        resp = client.get(f"/api/v1/scans/{scan_id}/status")
+        resp = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client))
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == SCAN_STATUS_CREATED
         assert data["scan_id"] == scan_id
 
     def test_get_status_not_found(self, client):
-        resp = client.get("/api/v1/scans/ghost-id/status")
+        resp = client.get("/api/v1/scans/ghost-id/status", headers=_auth_headers(client))
         assert resp.status_code == 404
 
     def test_status_transitions_created_processing_uploading_completed(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_CREATED
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_CREATED
         _claim(client)
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_PROCESSING
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_PROCESSING
         _upload_url(client, scan_id)
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_UPLOADING
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_UPLOADING
         _complete(client, scan_id)
-        assert client.get(f"/api/v1/scans/{scan_id}/status").json()["status"] == SCAN_STATUS_COMPLETED
+        assert client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()["status"] == SCAN_STATUS_COMPLETED
+
+    def test_get_status_not_visible_to_other_user(self, client_with_repo):
+        client, repo = client_with_repo
+        scan_id = _scan_id_for(_start(client), "k8s")
+        repo._store[scan_id].user_id = "user-1"
+
+        resp = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client, "user-2"))
+
+        assert resp.status_code == 404
 
 
 class TestScanDetail:
-    def test_get_detail_returns_scan_metadata(self, client):
+    def test_get_detail_requires_jwt(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
 
         resp = client.get(f"/api/v1/scans/{scan_id}")
+
+        assert resp.status_code == 401
+
+    def test_get_detail_returns_scan_metadata(self, client):
+        scan_id = _scan_id_for(_start(client), "k8s")
+
+        resp = client.get(f"/api/v1/scans/{scan_id}", headers=_auth_headers(client))
 
         assert resp.status_code == 200
         data = resp.json()
@@ -910,7 +1045,7 @@ class TestScanDetail:
         s3_key = _upload_url(client, scan_id).json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
 
-        resp = client.get(f"/api/v1/scans/{scan_id}")
+        resp = client.get(f"/api/v1/scans/{scan_id}", headers=_auth_headers(client))
 
         assert resp.status_code == 200
         data = resp.json()
@@ -920,7 +1055,16 @@ class TestScanDetail:
         assert data["completed_at"] is not None
 
     def test_get_detail_not_found(self, client):
-        resp = client.get("/api/v1/scans/ghost-id")
+        resp = client.get("/api/v1/scans/ghost-id", headers=_auth_headers(client))
+        assert resp.status_code == 404
+
+    def test_get_detail_not_visible_to_other_user(self, client_with_repo):
+        client, repo = client_with_repo
+        scan_id = _scan_id_for(_start(client), "k8s")
+        repo._store[scan_id].user_id = "user-1"
+
+        resp = client.get(f"/api/v1/scans/{scan_id}", headers=_auth_headers(client, "user-2"))
+
         assert resp.status_code == 404
 
 
@@ -966,12 +1110,18 @@ class TestRawScanResultUrl:
 
 
 class TestClusterScanList:
+    def test_list_cluster_scans_requires_jwt(self, client):
+        resp = client.get("/api/v1/clusters/cluster-1/scans")
+
+        assert resp.status_code == 401
+
     def test_list_cluster_scans_returns_scan_summaries_newest_first(self, client_with_repo):
         client, repo = client_with_repo
         older = _FakeScanRecord(
             scan_id="older-scan",
             cluster_id="cluster-1",
             scanner_type="k8s",
+            user_id="user-1",
             status=SCAN_STATUS_COMPLETED,
             s3_keys=["scans/cluster-1/older-scan/k8s/k8s-snapshot.json"],
             created_at=datetime(2026, 3, 9, 10, 0, 0),
@@ -983,6 +1133,7 @@ class TestClusterScanList:
             scan_id="newer-scan",
             cluster_id="cluster-1",
             scanner_type="aws",
+            user_id="user-1",
             status=SCAN_STATUS_PROCESSING,
             s3_keys=[],
             created_at=datetime(2026, 3, 10, 10, 0, 0),
@@ -994,6 +1145,7 @@ class TestClusterScanList:
             scan_id="other-scan",
             cluster_id="cluster-2",
             scanner_type="image",
+            user_id="user-2",
             status=SCAN_STATUS_CREATED,
             s3_keys=[],
             created_at=datetime(2026, 3, 11, 10, 0, 0),
@@ -1007,7 +1159,7 @@ class TestClusterScanList:
             other_cluster.scan_id: other_cluster,
         }
 
-        resp = client.get("/api/v1/clusters/cluster-1/scans")
+        resp = client.get("/api/v1/clusters/cluster-1/scans", headers=_auth_headers(client))
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1019,10 +1171,45 @@ class TestClusterScanList:
         assert data["items"][1]["has_raw_result"] is True
 
     def test_list_cluster_scans_returns_empty_result_for_unknown_cluster(self, client):
-        resp = client.get("/api/v1/clusters/unknown-cluster/scans")
+        resp = client.get("/api/v1/clusters/unknown-cluster/scans", headers=_auth_headers(client))
 
         assert resp.status_code == 200
         assert resp.json() == {"items": [], "total": 0}
+
+    def test_list_cluster_scans_only_returns_authenticated_users_scans(self, client_with_repo):
+        client, repo = client_with_repo
+        repo._store = {
+            "scan-user-1": _FakeScanRecord(
+                scan_id="scan-user-1",
+                cluster_id="cluster-1",
+                scanner_type="k8s",
+                user_id="user-1",
+                status=SCAN_STATUS_CREATED,
+                s3_keys=[],
+                created_at=datetime(2026, 3, 11, 10, 0, 0),
+                completed_at=None,
+                request_source="manual",
+                requested_at=datetime(2026, 3, 11, 9, 59, 0),
+            ),
+            "scan-user-2": _FakeScanRecord(
+                scan_id="scan-user-2",
+                cluster_id="cluster-1",
+                scanner_type="aws",
+                user_id="user-2",
+                status=SCAN_STATUS_CREATED,
+                s3_keys=[],
+                created_at=datetime(2026, 3, 12, 10, 0, 0),
+                completed_at=None,
+                request_source="manual",
+                requested_at=datetime(2026, 3, 12, 9, 59, 0),
+            ),
+        }
+
+        resp = client.get("/api/v1/clusters/cluster-1/scans", headers=_auth_headers(client, "user-1"))
+
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+        assert [item["scan_id"] for item in resp.json()["items"]] == ["scan-user-1"]
 
 
 class TestClaimPendingScan:

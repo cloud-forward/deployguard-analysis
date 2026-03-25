@@ -73,6 +73,18 @@ class TestScanServiceStartScan:
         assert [scan.scanner_type for scan in result.scans] == ["aws"]
 
     @pytest.mark.asyncio
+    async def test_start_scan_passes_user_id_to_repository_create(self):
+        svc, repo, _, clusters = make_service()
+        repo.find_active_scan.return_value = None
+        clusters.get_by_id.return_value = SimpleNamespace(id="prod-01", cluster_type="aws")
+
+        await svc.start_scan("prod-01", "manual", user_id="user-1")
+
+        repo.create.assert_called_once()
+        _, kwargs = repo.create.call_args
+        assert kwargs["user_id"] == "user-1"
+
+    @pytest.mark.asyncio
     async def test_start_scan_duplicate_raises_409(self):
         """start_scan raises 409 if any fan-out scanner already has an active scan"""
         from fastapi import HTTPException
@@ -537,6 +549,20 @@ class TestScanServiceGetStatus:
         assert result.scan_id == "s1"
 
     @pytest.mark.asyncio
+    async def test_get_status_passes_user_id_to_repository(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="created",
+        )
+
+        await svc.get_scan_status("s1", user_id="user-1")
+
+        repo.get_by_scan_id.assert_awaited_with("s1", user_id="user-1")
+
+    @pytest.mark.asyncio
     async def test_get_status_not_found_raises_404(self):
         """get_scan_status raises 404 for unknown scan_id"""
         from fastapi import HTTPException
@@ -591,6 +617,20 @@ class TestScanServiceGetDetail:
         assert result.scanner_type == "k8s"
         assert result.status == "completed"
         assert result.s3_keys == ["scans/c1/s1/k8s/k8s-snapshot.json"]
+
+    @pytest.mark.asyncio
+    async def test_get_detail_passes_user_id_to_repository(self):
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status="created",
+        )
+
+        await svc.get_scan_detail("s1", user_id="user-1")
+
+        repo.get_by_scan_id.assert_awaited_with("s1", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_get_detail_not_found_raises_404(self):
@@ -656,6 +696,15 @@ class TestScanServiceListClusterScans:
         assert result.items[0].has_raw_result is False
         assert result.items[1].file_count == 1
         assert result.items[1].has_raw_result is True
+
+    @pytest.mark.asyncio
+    async def test_list_cluster_scans_passes_user_id_to_repository(self):
+        svc, repo, _, _ = make_service()
+        repo.list_by_cluster.return_value = []
+
+        await svc.list_cluster_scans("c1", user_id="user-1")
+
+        repo.list_by_cluster.assert_awaited_with("c1", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_list_cluster_scans_returns_empty_list(self):

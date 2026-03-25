@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.models.schemas import UserAssetListResponse, UserOverviewResponse
+from app.models.schemas import UserAssetListResponse, UserGroupListResponse, UserOverviewResponse
 
 
 @runtime_checkable
@@ -13,4 +13,8 @@ class UserOverviewRepository(Protocol):
 
     async def list_assets(self, user_id: str) -> UserAssetListResponse:
         """Return user-scoped owned asset list."""
+        ...
+
+    async def list_groups(self, user_id: str) -> UserGroupListResponse:
+        """Return user-scoped computed groups."""
         ...

@@ -344,3 +344,104 @@ async def test_me_assets_returns_empty_list_for_user_with_no_data(overview_clien
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "total": 0}
+
+
+@pytest.mark.asyncio
+async def test_me_groups_requires_jwt(overview_client):
+    response = overview_client["client"].get("/api/v1/me/groups")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_me_groups_returns_only_authenticated_users_computed_groups(overview_client):
+    await _seed_overview_data(overview_client["sessionmaker"])
+
+    response = overview_client["client"].get(
+        "/api/v1/me/groups",
+        headers=_auth_headers(overview_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "group_key": "aws_account_id:111111111111|cluster_type:aws",
+                "aws_account_id": "111111111111",
+                "cluster_type": "aws",
+                "cluster_count": 1,
+                "cluster_ids": ["c-aws-u1"],
+                "cluster_names": ["user1-aws"],
+                "analysis_job_count": 0,
+                "scan_record_count": 2,
+            },
+            {
+                "group_key": "aws_account_id:null|cluster_type:self-managed",
+                "aws_account_id": None,
+                "cluster_type": "self-managed",
+                "cluster_count": 1,
+                "cluster_ids": ["c-self-u1"],
+                "cluster_names": ["user1-self"],
+                "analysis_job_count": 2,
+                "scan_record_count": 1,
+            },
+            {
+                "group_key": "aws_account_id:null|cluster_type:eks",
+                "aws_account_id": None,
+                "cluster_type": "eks",
+                "cluster_count": 1,
+                "cluster_ids": ["c-eks-u1"],
+                "cluster_names": ["user1-eks"],
+                "analysis_job_count": 1,
+                "scan_record_count": 1,
+            },
+        ],
+        "total": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_me_groups_excludes_another_users_clusters_and_counts(overview_client):
+    await _seed_overview_data(overview_client["sessionmaker"])
+
+    response = overview_client["client"].get(
+        "/api/v1/me/groups",
+        headers=_auth_headers(overview_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "group_key": "aws_account_id:null|cluster_type:eks",
+                "aws_account_id": None,
+                "cluster_type": "eks",
+                "cluster_count": 1,
+                "cluster_ids": ["c-eks-u2"],
+                "cluster_names": ["user2-eks"],
+                "analysis_job_count": 1,
+                "scan_record_count": 1,
+            },
+            {
+                "group_key": "aws_account_id:222222222222|cluster_type:aws",
+                "aws_account_id": "222222222222",
+                "cluster_type": "aws",
+                "cluster_count": 1,
+                "cluster_ids": ["c-aws-u2"],
+                "cluster_names": ["user2-aws"],
+                "analysis_job_count": 0,
+                "scan_record_count": 1,
+            },
+        ],
+        "total": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_me_groups_returns_empty_list_for_user_with_no_data(overview_client):
+    response = overview_client["client"].get(
+        "/api/v1/me/groups",
+        headers=_auth_headers(overview_client["client"], "user-3"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0}

@@ -124,3 +124,34 @@ def test_get_current_user_fails_with_invalid_token():
     app.dependency_overrides.clear()
 
     assert response.status_code == 401
+
+
+def test_get_me_returns_authenticated_user_profile():
+    app.dependency_overrides.clear()
+    with _build_client() as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "user@example.com", "password": "secret-password"},
+        )
+        token = login.json()["access_token"]
+        response = client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "user-1",
+        "email": "user@example.com",
+        "is_active": True,
+    }
+
+
+def test_get_me_requires_jwt():
+    app.dependency_overrides.clear()
+    with _build_client() as client:
+        response = client.get("/api/v1/me")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401

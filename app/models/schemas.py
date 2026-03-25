@@ -224,6 +224,22 @@ class UserAssetListResponse(BaseModel):
     total: int = 0
 
 
+class UserGroupListItemResponse(BaseModel):
+    group_key: str
+    aws_account_id: str | None = None
+    cluster_type: str
+    cluster_count: int = 0
+    cluster_ids: list[str] = Field(default_factory=list)
+    cluster_names: list[str] = Field(default_factory=list)
+    analysis_job_count: int = 0
+    scan_record_count: int = 0
+
+
+class UserGroupListResponse(BaseModel):
+    items: list[UserGroupListItemResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str

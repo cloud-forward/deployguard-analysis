@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.repositories.user_overview_repository import UserOverviewRepository
 from app.gateway.models import AnalysisJob, AttackPath, Cluster, RemediationRecommendation, ScanRecord
-from app.models.schemas import UserAssetListItemResponse, UserAssetListResponse, UserOverviewResponse
+from app.models.schemas import (
+    UserAssetListItemResponse,
+    UserAssetListResponse,
+    UserGroupListItemResponse,
+    UserGroupListResponse,
+    UserOverviewResponse,
+)
 
 
 class SQLAlchemyUserOverviewRepository(UserOverviewRepository):
@@ -58,6 +64,35 @@ class SQLAlchemyUserOverviewRepository(UserOverviewRepository):
         )
 
     async def list_assets(self, user_id: str) -> UserAssetListResponse:
+        items = await self._list_asset_items(user_id)
+        return UserAssetListResponse(items=items, total=len(items))
+
+    async def list_groups(self, user_id: str) -> UserGroupListResponse:
+        asset_items = await self._list_asset_items(user_id)
+        grouped_items: list[UserGroupListItemResponse] = []
+        grouped_by_key: dict[tuple[str | None, str], UserGroupListItemResponse] = {}
+
+        for asset in asset_items:
+            group_tuple = (asset.aws_account_id, asset.cluster_type)
+            group = grouped_by_key.get(group_tuple)
+            if group is None:
+                group = UserGroupListItemResponse(
+                    group_key=self._group_key(asset.aws_account_id, asset.cluster_type),
+                    aws_account_id=asset.aws_account_id,
+                    cluster_type=asset.cluster_type,
+                )
+                grouped_by_key[group_tuple] = group
+                grouped_items.append(group)
+
+            group.cluster_count += 1
+            group.cluster_ids.append(asset.cluster_id)
+            group.cluster_names.append(asset.name)
+            group.analysis_job_count += asset.analysis_job_count
+            group.scan_record_count += asset.scan_record_count
+
+        return UserGroupListResponse(items=grouped_items, total=len(grouped_items))
+
+    async def _list_asset_items(self, user_id: str) -> list[UserAssetListItemResponse]:
         analysis_count_subquery = (
             select(func.count(AnalysisJob.id))
             .where(
@@ -125,8 +160,13 @@ class SQLAlchemyUserOverviewRepository(UserOverviewRepository):
             )
             for row in result.all()
         ]
-        return UserAssetListResponse(items=items, total=len(items))
+        return items
 
     async def _scalar_count(self, stmt) -> int:
         value = await self._session.scalar(stmt)
         return int(value or 0)
+
+    @staticmethod
+    def _group_key(aws_account_id: str | None, cluster_type: str) -> str:
+        normalized_account_id = aws_account_id if aws_account_id is not None else "null"
+        return f"aws_account_id:{normalized_account_id}|cluster_type:{cluster_type}"

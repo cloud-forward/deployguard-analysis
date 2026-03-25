@@ -108,3 +108,14 @@ async def test_update_cluster_passes_user_id_through_to_repository():
 
     repo.update.assert_awaited_once_with("cluster-1", user_id="user-42", name="owned-cluster", cluster_type="eks", description="updated")
     assert result.description == "updated"
+
+
+@pytest.mark.asyncio
+async def test_delete_cluster_passes_user_id_through_to_repository():
+    repo = AsyncMock()
+    repo.delete.return_value = True
+    service = ClusterService(cluster_repository=repo)
+
+    await service.delete_cluster("cluster-1", user_id="user-42")
+
+    repo.delete.assert_awaited_once_with("cluster-1", user_id="user-42")

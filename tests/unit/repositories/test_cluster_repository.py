@@ -125,3 +125,33 @@ class TestSQLAlchemyClusterRepository:
         assert updated is None
         assert found is not None
         assert found.description is None
+
+    @pytest.mark.asyncio
+    async def test_delete_succeeds_for_owning_user(self, repo):
+        created = await repo.create(
+            name="owned-delete-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_owned_delete",
+        )
+
+        deleted = await repo.delete(created.id, user_id="user-1")
+        found = await repo.get_by_id(created.id, user_id="user-1")
+
+        assert deleted is True
+        assert found is None
+
+    @pytest.mark.asyncio
+    async def test_delete_does_not_affect_other_users_cluster(self, repo):
+        created = await repo.create(
+            name="other-user-delete-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_other_user_delete",
+        )
+
+        deleted = await repo.delete(created.id, user_id="user-2")
+        found = await repo.get_by_id(created.id, user_id="user-1")
+
+        assert deleted is False
+        assert found is not None

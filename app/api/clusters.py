@@ -340,7 +340,8 @@ async def update_cluster(
 )
 async def delete_cluster(
     id: str,
+    user_id: str = Depends(get_request_user_id),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    await service.delete_cluster(id)
+    await service.delete_cluster(id, user_id=user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

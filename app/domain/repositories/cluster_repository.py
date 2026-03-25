@@ -41,6 +41,6 @@ class ClusterRepository(Protocol):
         """Update a cluster's details."""
         ...
 
-    async def delete(self, cluster_id: str) -> bool:
+    async def delete(self, cluster_id: str, user_id: Optional[str] = None) -> bool:
         """Delete a cluster."""
         ...

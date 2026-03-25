@@ -117,11 +117,14 @@ class FakeClusterRepository:
         record.updated_at = datetime.utcnow()
         return record
 
-    async def delete(self, cluster_id: str) -> bool:
-        if cluster_id in self._store:
-            del self._store[cluster_id]
-            return True
-        return False
+    async def delete(self, cluster_id: str, user_id: Optional[str] = None) -> bool:
+        record = self._store.get(cluster_id)
+        if record is None:
+            return False
+        if user_id is not None and record.user_id != user_id:
+            return False
+        del self._store[cluster_id]
+        return True
 
 
 @pytest.fixture
@@ -376,6 +379,22 @@ def test_update_cluster_returns_not_found_for_other_users_cluster(client):
     assert "not found" in resp.json()["detail"].lower()
 
 
+def test_delete_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-delete-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+
+    resp = client.delete(
+        f"/api/v1/clusters/{create_resp.json()['id']}",
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
+
+
 class FakeAttackGraphService:
     async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str):
         return RemediationRecommendationDetailEnvelopeResponse(
@@ -474,13 +493,13 @@ def test_existing_remediation_detail_get_behavior_remains_unchanged():
 
 
 def test_delete_cluster(client, created_cluster):
-    resp = client.delete(f"/api/v1/clusters/{created_cluster['id']}")
+    resp = client.delete(f"/api/v1/clusters/{created_cluster['id']}", headers=USER_HEADERS)
     assert resp.status_code == 204
     assert client.get(f"/api/v1/clusters/{created_cluster['id']}", headers=USER_HEADERS).status_code == 404
 
 
 def test_delete_cluster_not_found(client):
-    resp = client.delete("/api/v1/clusters/ghost-id")
+    resp = client.delete("/api/v1/clusters/ghost-id", headers=USER_HEADERS)
     assert resp.status_code == 404
 
 

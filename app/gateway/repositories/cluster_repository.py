@@ -83,9 +83,10 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         await self._session.refresh(cluster)
         return cluster
 
-    async def delete(self, cluster_id: str) -> bool:
-        result = await self._session.execute(
-            delete(Cluster).where(Cluster.id == cluster_id)
-        )
+    async def delete(self, cluster_id: str, user_id: Optional[str] = None) -> bool:
+        query = delete(Cluster).where(Cluster.id == cluster_id)
+        if user_id is not None:
+            query = query.where(Cluster.user_id == user_id)
+        result = await self._session.execute(query)
         await self._session.commit()
         return result.rowcount > 0

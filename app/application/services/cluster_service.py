@@ -114,7 +114,7 @@ class ClusterService:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")
         return ClusterResponse.model_validate(cluster)
 
-    async def delete_cluster(self, cluster_id: str) -> None:
-        success = await self._repo.delete(cluster_id)
+    async def delete_cluster(self, cluster_id: str, user_id: Optional[str] = None) -> None:
+        success = await self._repo.delete(cluster_id, user_id=user_id)
         if not success:
             raise HTTPException(status_code=404, detail=f"Cluster with ID '{cluster_id}' not found")

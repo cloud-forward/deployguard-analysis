@@ -176,11 +176,28 @@ def test_delete_cluster(client):
     create_resp = client.post("/api/v1/clusters", json={"name": "delete-me", "cluster_type": "eks"}, headers=USER_HEADERS)
     cluster_id = create_resp.json()["id"]
     
-    del_resp = client.delete(f"/api/v1/clusters/{cluster_id}")
+    del_resp = client.delete(f"/api/v1/clusters/{cluster_id}", headers=USER_HEADERS)
     assert del_resp.status_code == 204
     
     get_resp = client.get(f"/api/v1/clusters/{cluster_id}", headers=USER_HEADERS)
     assert get_resp.status_code == 404
+
+
+def test_delete_cluster_returns_not_found_for_other_users_cluster(client):
+    create_resp = client.post(
+        "/api/v1/clusters",
+        json={"name": "other-users-delete", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+    cluster_id = create_resp.json()["id"]
+
+    response = client.delete(
+        f"/api/v1/clusters/{cluster_id}",
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 
 def test_create_cluster_token_is_persisted_for_auth_lookup():

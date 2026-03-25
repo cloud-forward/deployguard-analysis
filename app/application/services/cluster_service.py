@@ -87,8 +87,8 @@ class ClusterService:
             return None
         return ClusterResponse.model_validate(cluster)
 
-    async def list_clusters(self) -> List[ClusterResponse]:
-        clusters = await self._repo.list_all()
+    async def list_clusters(self, user_id: str) -> List[ClusterResponse]:
+        clusters = await self._repo.list_all(user_id)
         return [ClusterResponse.model_validate(c) for c in clusters]
 
     async def update_cluster(self, cluster_id: str, request: ClusterUpdateRequest) -> ClusterResponse:

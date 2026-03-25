@@ -49,3 +49,22 @@ class TestSQLAlchemyClusterRepository:
         found = await repo.get_by_id(created.id)
         assert found is not None
         assert found.user_id == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_list_all_returns_only_clusters_for_requested_user(self, repo):
+        await repo.create(
+            name="user-1-cluster",
+            cluster_type="eks",
+            user_id="user-1",
+            api_token="dg_scanner_user_1",
+        )
+        await repo.create(
+            name="unowned-cluster",
+            cluster_type="eks",
+            user_id=None,
+            api_token="dg_scanner_none",
+        )
+
+        found = await repo.list_all("user-1")
+
+        assert [cluster.name for cluster in found] == ["user-1-cluster"]

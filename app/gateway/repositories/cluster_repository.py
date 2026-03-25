@@ -58,8 +58,10 @@ class SQLAlchemyClusterRepository(ClusterRepository):
         )
         return result.scalars().first()
 
-    async def list_all(self) -> List[Cluster]:
-        result = await self._session.execute(select(Cluster))
+    async def list_all(self, user_id: str) -> List[Cluster]:
+        result = await self._session.execute(
+            select(Cluster).where(Cluster.user_id == user_id)
+        )
         return list(result.scalars().all())
 
     async def update(self, cluster_id: str, **kwargs) -> Optional[Cluster]:

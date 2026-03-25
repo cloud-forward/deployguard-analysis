@@ -39,8 +39,8 @@ class InventoryService:
         )
         return _cluster_to_response(cluster)
 
-    async def list_clusters(self) -> ClusterListResponse:
-        clusters = await self._clusters.list_all()
+    async def list_clusters(self, user_id: str) -> ClusterListResponse:
+        clusters = await self._clusters.list_all(user_id)
         return ClusterListResponse(clusters=[_cluster_to_response(cluster) for cluster in clusters])
 
     async def sync_cluster(self, cluster_id: str) -> SyncResponse:

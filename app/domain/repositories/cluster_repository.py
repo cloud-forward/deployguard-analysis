@@ -33,8 +33,8 @@ class ClusterRepository(Protocol):
         """Get a cluster by its scanner API token."""
         ...
 
-    async def list_all(self) -> List[object]:
-        """List all clusters."""
+    async def list_all(self, user_id: str) -> List[object]:
+        """List all clusters for a user."""
         ...
 
     async def update(self, cluster_id: str, **kwargs) -> Optional[object]:

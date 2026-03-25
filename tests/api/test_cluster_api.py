@@ -96,8 +96,8 @@ class FakeClusterRepository:
                 return r
         return None
 
-    async def list_all(self):
-        return list(self._store.values())
+    async def list_all(self, user_id: str):
+        return [record for record in self._store.values() if record.user_id == user_id]
 
     async def update(self, cluster_id: str, **kwargs):
         record = self._store.get(cluster_id)
@@ -259,7 +259,7 @@ def test_get_cluster_not_found(client):
 def test_list_clusters(client):
     client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"}, headers=USER_HEADERS)
     client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"}, headers=USER_HEADERS)
-    resp = client.get("/api/v1/clusters")
+    resp = client.get("/api/v1/clusters", headers=USER_HEADERS)
     assert resp.status_code == 200
     names = [c["name"] for c in resp.json()]
     assert "c1" in names
@@ -268,9 +268,27 @@ def test_list_clusters(client):
 
 
 def test_list_clusters_empty(client):
-    resp = client.get("/api/v1/clusters")
+    resp = client.get("/api/v1/clusters", headers=USER_HEADERS)
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_list_clusters_uses_x_user_id_and_returns_only_owned_clusters(client):
+    client.post(
+        "/api/v1/clusters",
+        json={"name": "user-1-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-1"},
+    )
+    client.post(
+        "/api/v1/clusters",
+        json={"name": "user-2-cluster", "cluster_type": "eks"},
+        headers={"X-User-Id": "user-2"},
+    )
+
+    resp = client.get("/api/v1/clusters", headers={"X-User-Id": "user-1"})
+
+    assert resp.status_code == 200
+    assert [cluster["name"] for cluster in resp.json()] == ["user-1-cluster"]
 
 
 def test_update_cluster_description(client, created_cluster):

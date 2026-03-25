@@ -97,11 +97,23 @@ def test_list_clusters(client):
     client.post("/api/v1/clusters", json={"name": "c1", "cluster_type": "eks"}, headers=USER_HEADERS)
     client.post("/api/v1/clusters", json={"name": "c2", "cluster_type": "self-managed"}, headers=USER_HEADERS)
     
-    response = client.get("/api/v1/clusters")
+    response = client.get("/api/v1/clusters", headers=USER_HEADERS)
     assert response.status_code == 200
     data = response.json()
     assert len(data) >= 2
     assert all("api_token" not in c for c in data)
+
+
+def test_list_clusters_returns_only_clusters_for_requesting_user(client):
+    client.post("/api/v1/clusters", json={"name": "user-1-cluster", "cluster_type": "eks"}, headers={"X-User-Id": "user-1"})
+    client.post("/api/v1/clusters", json={"name": "user-2-cluster", "cluster_type": "eks"}, headers={"X-User-Id": "user-2"})
+
+    response = client.get("/api/v1/clusters", headers={"X-User-Id": "user-1"})
+
+    assert response.status_code == 200
+    names = [cluster["name"] for cluster in response.json()]
+    assert "user-1-cluster" in names
+    assert "user-2-cluster" not in names
 
 def test_get_cluster(client):
     create_resp = client.post("/api/v1/clusters", json={"name": "get-me", "cluster_type": "eks"}, headers=USER_HEADERS)

@@ -67,9 +67,10 @@ async def create_cluster(
     },
 )
 async def list_clusters(
+    user_id: str = Depends(get_request_user_id),
     service: ClusterService = Depends(get_cluster_service)
 ):
-    return await service.list_clusters()
+    return await service.list_clusters(user_id=user_id)
 
 
 @router.get(

@@ -91,8 +91,8 @@ class AttackGraphService:
         self._clusters = cluster_repository
         self._db = db
 
-    async def get_attack_graph(self, cluster_id: str) -> AttackGraphResponse:
-        cluster = await self._clusters.get_by_id(cluster_id)
+    async def get_attack_graph(self, cluster_id: str, user_id: str | None = None) -> AttackGraphResponse:
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
 
@@ -133,8 +133,8 @@ class AttackGraphService:
             paths=paths,
         )
 
-    async def get_attack_paths(self, cluster_id: str) -> AttackPathListResponse:
-        cluster = await self._clusters.get_by_id(cluster_id)
+    async def get_attack_paths(self, cluster_id: str, user_id: str | None = None) -> AttackPathListResponse:
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
 
@@ -154,8 +154,13 @@ class AttackGraphService:
             items=items,
         )
 
-    async def get_attack_path_detail(self, cluster_id: str, path_id: str) -> AttackPathDetailEnvelopeResponse:
-        cluster = await self._clusters.get_by_id(cluster_id)
+    async def get_attack_path_detail(
+        self,
+        cluster_id: str,
+        path_id: str,
+        user_id: str | None = None,
+    ) -> AttackPathDetailEnvelopeResponse:
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
 

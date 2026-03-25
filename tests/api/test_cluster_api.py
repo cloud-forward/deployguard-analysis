@@ -461,6 +461,15 @@ class FakeAttackGraphService:
             ),
         )
 
+    async def get_attack_graph(self, cluster_id: str, user_id: str | None = None):
+        return {"cluster_id": cluster_id, "analysis_run_id": None, "generated_at": None, "nodes": [], "edges": [], "paths": []}
+
+    async def get_attack_paths(self, cluster_id: str, user_id: str | None = None):
+        return {"cluster_id": cluster_id, "analysis_run_id": None, "generated_at": None, "items": []}
+
+    async def get_attack_path_detail(self, cluster_id: str, path_id: str, user_id: str | None = None):
+        return {"cluster_id": cluster_id, "analysis_run_id": None, "generated_at": None, "path": None}
+
 
 class FakeRecommendationExplanationService:
     def __init__(self):
@@ -605,6 +614,31 @@ def test_cluster_create_requires_jwt_and_ignores_x_user_id_only(client):
         headers={"X-User-Id": "user-1"},
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/v1/clusters/cluster-1/attack-graph", "get"),
+        ("/api/v1/clusters/cluster-1/attack-paths", "get"),
+        ("/api/v1/clusters/cluster-1/attack-paths/path-1", "get"),
+    ],
+)
+def test_attack_graph_and_path_routes_require_jwt_and_ignore_x_user_id_only(path, method):
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_attack_graph_service] = lambda: FakeAttackGraphService()
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as client:
+        response = getattr(client, method)(path, headers={"X-User-Id": "user-1"})
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
 
 
 def test_openapi_cluster_create_documents_token_issuance(client):

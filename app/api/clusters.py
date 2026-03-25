@@ -107,9 +107,10 @@ async def get_cluster(
 )
 async def get_attack_graph(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_graph(cluster_id)
+    return await service.get_attack_graph(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -124,9 +125,10 @@ async def get_attack_graph(
 )
 async def get_attack_paths(
     cluster_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_paths(cluster_id)
+    return await service.get_attack_paths(cluster_id, user_id=current_user.id)
 
 
 @router.get(
@@ -142,9 +144,10 @@ async def get_attack_paths(
 async def get_attack_path_detail(
     cluster_id: str,
     path_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AttackGraphService = Depends(get_attack_graph_service),
 ):
-    return await service.get_attack_path_detail(cluster_id, path_id)
+    return await service.get_attack_path_detail(cluster_id, path_id, user_id=current_user.id)
 
 
 @router.get(

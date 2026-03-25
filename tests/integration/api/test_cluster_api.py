@@ -447,7 +447,10 @@ async def test_get_attack_graph_returns_mvp_contract(attack_graph_client):
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
 
     body = response.json()
@@ -535,7 +538,10 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-paths",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -618,7 +624,10 @@ async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph
         )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-paths/path-detail")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-paths/path-detail",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
     assert response.status_code == 200
     body = response.json()
 
@@ -986,7 +995,10 @@ async def test_post_remediation_recommendation_explanation_returns_no_target_whe
 async def test_get_attack_graph_returns_empty_payload_when_no_analysis_exists(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -1079,7 +1091,11 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             )
         await session.commit()
 
-    response = attack_graph_client["client"].get(f"/api/v1/clusters/{cluster_id}/attack-graph")
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+
     assert response.status_code == 200
 
     body = response.json()
@@ -1126,7 +1142,6 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             },
         },
     ]
-
     assert body["edges"] == [
         {
             "id": "edge-keep-1",
@@ -1149,7 +1164,6 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             },
         },
     ]
-
     assert body["paths"] == [
         {
             "id": "path-keep",
@@ -1161,3 +1175,50 @@ async def test_get_attack_graph_normalizes_enums_and_skips_invalid_references(at
             "edge_ids": ["edge-keep-1", "edge-keep-2"],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/attack-graph",
+        "/api/v1/clusters/{cluster_id}/attack-paths",
+        "/api/v1/clusters/{cluster_id}/attack-paths/path-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_attack_graph_and_path_routes_require_jwt_and_ignore_x_user_id_only(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers={"X-User-Id": "user-1"},
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/clusters/{cluster_id}/attack-graph",
+        "/api/v1/clusters/{cluster_id}/attack-paths",
+        "/api/v1/clusters/{cluster_id}/attack-paths/path-1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_attack_graph_and_path_routes_hide_other_users_cluster(
+    attack_graph_client,
+    path_template,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+
+    response = attack_graph_client["client"].get(
+        path_template.format(cluster_id=cluster_id),
+        headers=_auth_headers(attack_graph_client["client"], "user-2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cluster not found"

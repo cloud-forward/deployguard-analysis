@@ -417,10 +417,11 @@ async def test_list_analysis_jobs_returns_cluster_jobs(service, jobs_repo):
         _make_job("job-1", status="completed", current_step=None, graph_id="graph-1"),
     ]
 
-    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    result = await service.list_analysis_jobs("a1b2c3d4-e5f6-7890-abcd-ef1234567890", user_id="user-1")
 
     jobs_repo.list_analysis_jobs.assert_awaited_once_with(
         cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        user_id="user-1",
         status=None,
     )
     assert result.total == 2
@@ -565,9 +566,9 @@ async def test_get_analysis_job_returns_detail(service, jobs_repo):
         aws_scan_id="aws-1",
     )
 
-    result = await service.get_analysis_job("job-123")
+    result = await service.get_analysis_job("job-123", user_id="user-1")
 
-    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123")
+    jobs_repo.get_analysis_job.assert_awaited_once_with("job-123", user_id="user-1")
     assert result.job_id == "job-123"
     assert result.cluster_id == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     assert result.status == "failed"
@@ -580,7 +581,7 @@ async def test_get_analysis_job_missing_raises_404(service, jobs_repo):
     jobs_repo.get_analysis_job.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.get_analysis_job("missing-job")
+        await service.get_analysis_job("missing-job", user_id="user-1")
 
     assert exc_info.value.status_code == 404
 

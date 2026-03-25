@@ -39,6 +39,7 @@ class AnalysisJobRepository(Protocol):
     async def list_analysis_jobs(
         self,
         cluster_id: str | UUID,
+        user_id: str,
         status: str | None = None,
     ) -> list[object]:
         """List persisted analysis jobs for a cluster, optionally filtered by status."""

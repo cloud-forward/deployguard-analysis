@@ -62,9 +62,10 @@ async def create_analysis_job(
 async def list_analysis_jobs(
     cluster_id: str,
     status: str | None = Query(default=None),
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AnalysisService = Depends(get_analysis_service),
 ):
-    return await service.list_analysis_jobs(cluster_id=cluster_id, status=status)
+    return await service.list_analysis_jobs(cluster_id=cluster_id, user_id=current_user.id, status=status)
 
 
 @router.get(
@@ -81,9 +82,10 @@ async def list_analysis_jobs(
 )
 async def get_analysis_job(
     job_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AnalysisService = Depends(get_analysis_service),
 ):
-    return await service.get_analysis_job(job_id)
+    return await service.get_analysis_job(job_id, user_id=current_user.id)
 
 
 # ✨ 새로운 엔드포인트 1: 분석 결과 조회
@@ -95,6 +97,7 @@ async def get_analysis_job(
 )
 async def get_analysis_result(
     job_id: str,
+    current_user: UserSummaryResponse = Depends(get_current_user),
     service: AnalysisService = Depends(get_analysis_service),
 ):
     """
@@ -102,7 +105,7 @@ async def get_analysis_result(
     
     Returns attack paths and risk scores.
     """
-    return await service.get_analysis_result(job_id)
+    return await service.get_analysis_result(job_id, user_id=current_user.id)
 
 
 # ✨ 새로운 엔드포인트 2: 즉시 실행 (테스트용)

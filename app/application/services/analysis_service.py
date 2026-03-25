@@ -5,10 +5,13 @@ Coordinates domain/core algorithms and repositories.
 from __future__ import annotations
 import asyncio
 import logging
+import json
 from typing import Dict, Any
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import inspect, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import SCANNER_TYPE_K8S, SCANNER_TYPE_AWS, SCANNER_TYPE_IMAGE
 from app.domain.entities.analysis import AnalysisRequest, AnalysisResponse
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
@@ -21,9 +24,15 @@ from app.core.remediation_optimizer import RemediationOptimizer
 from app.core.risk_engine import RiskEngine
 from app.models.schemas import (
     AnalysisJobDetailResponse,
+    AnalysisResultLinksResponse,
+    AnalysisResultResponse,
+    AnalysisResultSummaryResponse,
     AnalysisJobResponse,
     AnalysisJobSummaryResponse,
+    AttackGraphSeverity,
+    AttackPathListItemResponse,
     ClusterAnalysisJobListResponse,
+    RemediationRecommendationListItemResponse,
 )
 from src.facts.extractors.k8s_extractor import K8sFactExtractor
 from src.facts.extractors.aws_extractor import AWSFactExtractor
@@ -49,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 MAX_HOPS = 7
 MAX_ATTACK_PATHS = 100
+PREVIEW_LIMIT = 5
+SEVERITY_ORDER = {severity.value: idx for idx, severity in enumerate(AttackGraphSeverity)}
 
 
 def _context(**kwargs):
@@ -61,10 +72,12 @@ class AnalysisService:
         jobs_repo: AnalysisJobRepository,
         scan_repo: ScanRepository,
         s3_service: S3Service | None = None,
+        db: AsyncSession | None = None,
     ) -> None:
         self._jobs = jobs_repo
         self._scans = scan_repo
         self._s3 = s3_service
+        self._db = db
         self._k8s_extractor = K8sFactExtractor()
         self._aws_extractor = AWSFactExtractor()
         self._lateral_extractor = LateralMoveExtractor()
@@ -127,6 +140,34 @@ class AnalysisService:
         if job is None:
             raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
         return self._to_analysis_job_detail(job)
+
+    async def get_analysis_result(self, job_id: str) -> AnalysisResultResponse:
+        job = await self._jobs.get_analysis_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Analysis job not found: {job_id}")
+
+        job_detail = self._to_analysis_job_detail(job)
+        graph_id = str(job.graph_id) if job.graph_id is not None else None
+
+        summary = await self._get_analysis_result_summary(graph_id)
+        attack_paths_preview = (
+            await self._get_attack_paths_preview(graph_id, limit=PREVIEW_LIMIT)
+            if graph_id else
+            []
+        )
+        remediation_preview = (
+            await self._get_remediation_preview(graph_id, limit=PREVIEW_LIMIT)
+            if graph_id else
+            []
+        )
+
+        return AnalysisResultResponse(
+            job=job_detail,
+            summary=summary,
+            attack_paths_preview=attack_paths_preview,
+            remediation_preview=remediation_preview,
+            links=self._build_analysis_result_links(job_detail),
+        )
 
     async def execute_analysis_job(self, job_id: str) -> Dict[str, Any]:
         job = await self._jobs.get_analysis_job(job_id)
@@ -412,6 +453,220 @@ class AnalysisService:
             return
         await self._jobs.update_current_step(analysis_job_id, current_step)
 
+    async def _get_analysis_result_summary(self, graph_id: str | None) -> AnalysisResultSummaryResponse:
+        if not graph_id:
+            return AnalysisResultSummaryResponse()
+
+        db = self._require_db()
+        graph_snapshot = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id, completed_at, status, node_count, edge_count, entry_point_count, crown_jewel_count
+                    FROM graph_snapshots
+                    WHERE id = :graph_id
+                    LIMIT 1
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().first()
+
+        attack_path_count = await self._count_rows("attack_paths", graph_id)
+        remediation_count = await self._count_rows("remediation_recommendations", graph_id)
+
+        if graph_snapshot is None:
+            return AnalysisResultSummaryResponse(
+                graph_id=graph_id,
+                attack_path_count=attack_path_count,
+                remediation_recommendation_count=remediation_count,
+            )
+
+        return AnalysisResultSummaryResponse(
+            graph_id=str(graph_snapshot["id"]),
+            generated_at=graph_snapshot.get("completed_at"),
+            graph_status=self._normalize_optional_str(graph_snapshot.get("status")),
+            node_count=self._normalize_int(graph_snapshot.get("node_count")) or 0,
+            edge_count=self._normalize_int(graph_snapshot.get("edge_count")) or 0,
+            entry_point_count=self._normalize_int(graph_snapshot.get("entry_point_count")) or 0,
+            crown_jewel_count=self._normalize_int(graph_snapshot.get("crown_jewel_count")) or 0,
+            attack_path_count=attack_path_count,
+            remediation_recommendation_count=remediation_count,
+        )
+
+    async def _get_attack_paths_preview(
+        self,
+        graph_id: str,
+        limit: int = PREVIEW_LIMIT,
+    ) -> list[AttackPathListItemResponse]:
+        db = self._require_db()
+        columns = await self._get_table_columns("attack_paths")
+        if not columns:
+            return []
+
+        id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
+        if not id_col:
+            return []
+
+        title_col = self._pick_column(columns, "title", "name")
+        severity_col = self._pick_column(columns, "severity", "risk_level")
+        risk_score_col = self._pick_column(columns, "risk_score")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        hop_count_col = self._pick_column(columns, "hop_count")
+        entry_col = self._pick_column(columns, "entry_node_id")
+        target_col = self._pick_column(columns, "target_node_id")
+        node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
+
+        select_parts = [
+            f"{id_col} AS path_id",
+            f"{title_col} AS title" if title_col else "NULL AS title",
+            f"{severity_col} AS risk_level" if severity_col else "NULL AS risk_level",
+            f"{risk_score_col} AS risk_score" if risk_score_col else "NULL AS risk_score",
+            f"{raw_final_risk_col} AS raw_final_risk" if raw_final_risk_col else "NULL AS raw_final_risk",
+            f"{hop_count_col} AS hop_count" if hop_count_col else "NULL AS hop_count",
+            f"{entry_col} AS entry_node_id" if entry_col else "NULL AS entry_node_id",
+            f"{target_col} AS target_node_id" if target_col else "NULL AS target_node_id",
+            f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
+        ]
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM attack_paths
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().all()
+
+        items = [
+            AttackPathListItemResponse(
+                path_id=str(row["path_id"]),
+                title=self._normalize_path_title(
+                    row.get("title"),
+                    row.get("path_id"),
+                    self._normalize_string_list(row.get("node_ids")),
+                ),
+                risk_level=self._normalize_severity(row.get("risk_level")),
+                risk_score=self._normalize_float(row.get("risk_score")),
+                raw_final_risk=self._normalize_float(row.get("raw_final_risk")),
+                hop_count=self._normalize_int(row.get("hop_count")) or max(len(self._normalize_string_list(row.get("node_ids"))) - 1, 0),
+                entry_node_id=self._normalize_optional_str(row.get("entry_node_id")),
+                target_node_id=self._normalize_optional_str(row.get("target_node_id")),
+                node_ids=self._normalize_string_list(row.get("node_ids")),
+            )
+            for row in rows
+        ]
+        items.sort(
+            key=lambda item: (
+                SEVERITY_ORDER.get(item.risk_level, 99),
+                -(item.raw_final_risk or -1.0),
+                item.hop_count,
+                item.path_id,
+            )
+        )
+        return items[:limit]
+
+    async def _get_remediation_preview(
+        self,
+        graph_id: str,
+        limit: int = PREVIEW_LIMIT,
+    ) -> list[RemediationRecommendationListItemResponse]:
+        db = self._require_db()
+        columns = await self._get_table_columns("remediation_recommendations")
+        if not columns:
+            return []
+
+        id_col = self._pick_column(columns, "recommendation_id", "id")
+        rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
+        if not id_col or not rank_col:
+            return []
+
+        source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
+        target_col = self._pick_column(columns, "edge_target", "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        fix_type_col = self._pick_column(columns, "fix_type")
+        fix_desc_col = self._pick_column(columns, "fix_description", "description")
+        blocked_ids_col = self._pick_column(columns, "blocked_path_ids")
+        blocked_indices_col = self._pick_column(columns, "blocked_path_indices")
+        fix_cost_col = self._pick_column(columns, "fix_cost")
+        edge_score_col = self._pick_column(columns, "edge_score", "score")
+        covered_risk_col = self._pick_column(columns, "covered_risk")
+        cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+
+        select_parts = [
+            f"{id_col} AS recommendation_id",
+            f"{rank_col} AS recommendation_rank",
+            f"{source_col} AS edge_source" if source_col else "NULL AS edge_source",
+            f"{target_col} AS edge_target" if target_col else "NULL AS edge_target",
+            f"{type_col} AS edge_type" if type_col else "NULL AS edge_type",
+            f"{fix_type_col} AS fix_type" if fix_type_col else "NULL AS fix_type",
+            f"{fix_desc_col} AS fix_description" if fix_desc_col else "NULL AS fix_description",
+            f"{blocked_ids_col} AS blocked_path_ids" if blocked_ids_col else "NULL AS blocked_path_ids",
+            f"{blocked_indices_col} AS blocked_path_indices" if blocked_indices_col else "NULL AS blocked_path_indices",
+            f"{fix_cost_col} AS fix_cost" if fix_cost_col else "NULL AS fix_cost",
+            f"{edge_score_col} AS edge_score" if edge_score_col else "NULL AS edge_score",
+            f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
+            f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+        ]
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM remediation_recommendations
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().all()
+
+        items = [
+            RemediationRecommendationListItemResponse(
+                recommendation_id=str(row["recommendation_id"]),
+                recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+                edge_source=self._normalize_optional_str(row.get("edge_source")),
+                edge_target=self._normalize_optional_str(row.get("edge_target")),
+                edge_type=self._normalize_optional_str(row.get("edge_type")),
+                fix_type=self._normalize_optional_str(row.get("fix_type")),
+                fix_description=self._normalize_optional_str(row.get("fix_description")),
+                blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+                blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+                fix_cost=self._normalize_float(row.get("fix_cost")),
+                edge_score=self._normalize_float(row.get("edge_score")),
+                covered_risk=self._normalize_float(row.get("covered_risk")),
+                cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+                metadata=self._normalize_object(row.get("metadata")),
+            )
+            for row in rows
+        ]
+        items.sort(
+            key=lambda item: (
+                item.recommendation_rank,
+                -(item.cumulative_risk_reduction or -1.0),
+                item.recommendation_id,
+            )
+        )
+        return items[:limit]
+
+    def _build_analysis_result_links(self, job: AnalysisJobDetailResponse) -> AnalysisResultLinksResponse:
+        cluster_id = job.cluster_id
+        return AnalysisResultLinksResponse(
+            analysis_job=f"/api/v1/analysis/jobs/{job.job_id}",
+            attack_graph=f"/api/v1/clusters/{cluster_id}/attack-graph" if cluster_id else None,
+            attack_paths=f"/api/v1/clusters/{cluster_id}/attack-paths" if cluster_id else None,
+            remediation_recommendations=(
+                f"/api/v1/clusters/{cluster_id}/remediation-recommendations" if cluster_id else None
+            ),
+        )
+
     @staticmethod
     def _to_analysis_job_summary(job) -> AnalysisJobSummaryResponse:
         return AnalysisJobSummaryResponse(
@@ -526,6 +781,132 @@ class AnalysisService:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _require_db(self) -> AsyncSession:
+        if self._db is None:
+            raise RuntimeError("AnalysisService requires a database session for persisted result reads")
+        return self._db
+
+    async def _get_table_columns(self, table_name: str) -> set[str]:
+        db = self._require_db()
+        conn = await db.connection()
+
+        def _inspect_columns(sync_conn):
+            inspector = inspect(sync_conn)
+            if not inspector.has_table(table_name):
+                return set()
+            return {column["name"] for column in inspector.get_columns(table_name)}
+
+        return await conn.run_sync(_inspect_columns)
+
+    async def _count_rows(self, table_name: str, graph_id: str) -> int:
+        db = self._require_db()
+        columns = await self._get_table_columns(table_name)
+        if not columns or "graph_id" not in columns:
+            return 0
+        row = (
+            await db.execute(
+                text(f"SELECT COUNT(*) AS cnt FROM {table_name} WHERE graph_id = :graph_id"),
+                {"graph_id": graph_id},
+            )
+        ).mappings().first()
+        return int(row["cnt"]) if row else 0
+
+    @staticmethod
+    def _pick_column(columns: set[str], *candidates: str) -> str | None:
+        for candidate in candidates:
+            if candidate in columns:
+                return candidate
+        return None
+
+    @staticmethod
+    def _normalize_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_optional_str(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        return []
+
+    @staticmethod
+    def _normalize_int_list(value: Any) -> list[int]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            candidates = value
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+            if not isinstance(parsed, list):
+                return []
+            candidates = parsed
+        else:
+            return []
+
+        normalized: list[int] = []
+        for item in candidates:
+            try:
+                normalized.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return normalized
+
+    @staticmethod
+    def _normalize_object(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @staticmethod
+    def _normalize_severity(value: Any) -> AttackGraphSeverity:
+        normalized = str(value or "").strip().lower()
+        if normalized in AttackGraphSeverity._value2member_map_:
+            return AttackGraphSeverity(normalized)
+        return AttackGraphSeverity.none
+
+    @staticmethod
+    def _normalize_path_title(value: Any, path_id: Any, node_ids: list[str]) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if node_ids:
+            return f"{node_ids[0]} -> {node_ids[-1]}"
+        return f"Path {path_id}"
 
     def _build_k8s_result(self, k8s_scan: Dict[str, Any], scan_id: str):
         return K8sGraphBuilder().build(

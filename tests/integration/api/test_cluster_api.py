@@ -966,7 +966,7 @@ async def test_post_remediation_recommendation_explanation_returns_no_target_whe
     response = attack_graph_client["client"].post(
         f"/api/v1/clusters/{cluster_id}/remediation-recommendations/missing-rec/explanation",
         json={},
-        headers={"X-User-Id": "user-1"},
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
     )
     app.dependency_overrides.pop(get_recommendation_explanation_service, None)
 

@@ -505,7 +505,7 @@ def test_post_remediation_recommendation_explanation_manual_endpoint():
         response = client.post(
             f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
             json={"provider": "openai", "model": "gpt-4o-mini"},
-            headers={"X-User-Id": "user-1"},
+            headers=_auth_headers(client, "user-1"),
         )
     app.dependency_overrides.clear()
 
@@ -516,6 +516,38 @@ def test_post_remediation_recommendation_explanation_manual_endpoint():
     assert body["explanation_status"] == "base_only"
     assert len(explanation_service.calls) == 1
     assert explanation_service.calls[0][2] == "user-1"
+
+
+def test_remediation_explanation_route_requires_jwt_and_ignores_x_user_id_only():
+    repo = FakeClusterRepository()
+    cluster_service = ClusterService(cluster_repository=repo)
+    explanation_service = FakeRecommendationExplanationService()
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_cluster_service] = lambda: cluster_service
+    app.dependency_overrides[get_recommendation_explanation_service] = lambda: explanation_service
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/clusters",
+            json={"name": "explain-auth-cluster", "cluster_type": "eks"},
+            headers=_auth_headers(client, "user-1"),
+        )
+        cluster_id = create_resp.json()["id"]
+        response = client.post(
+            f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
+            json={},
+            headers={"X-User-Id": "user-1"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert explanation_service.calls == []
 
 
 def test_existing_remediation_detail_get_behavior_remains_unchanged():

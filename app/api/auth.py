@@ -63,5 +63,6 @@ async def get_current_user(
     return UserSummaryResponse(
         id=user.id,
         email=user.email,
+        name=user.name,
         is_active=user.is_active,
     )

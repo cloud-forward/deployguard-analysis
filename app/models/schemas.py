@@ -193,6 +193,7 @@ class HealthResponse(BaseModel):
 class UserSummaryResponse(BaseModel):
     id: str
     email: str
+    name: str | None = None
     is_active: bool
 
 
@@ -221,6 +222,26 @@ class UserAssetListItemResponse(BaseModel):
 
 class UserAssetListResponse(BaseModel):
     items: list[UserAssetListItemResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class MeAssetInventoryItemResponse(BaseModel):
+    asset_id: str
+    asset_type: str
+    asset_domain: str | None = None
+    name: str
+    cluster_id: str | None = None
+    cluster_name: str | None = None
+    aws_account_id: str | None = None
+    aws_region: str | None = None
+    risk_level: str | None = None
+    is_public: bool | None = None
+    is_entry_point: bool | None = None
+    is_crown_jewel: bool | None = None
+
+
+class MeAssetInventoryListResponse(BaseModel):
+    items: list[MeAssetInventoryItemResponse] = Field(default_factory=list)
     total: int = 0
 
 
@@ -269,6 +290,7 @@ class LoginResponse(BaseModel):
 class SignupRequest(BaseModel):
     email: str
     password: str
+    name: str | None = None
 
     @field_validator("email")
     @classmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from dataclasses import dataclass
 
 import pytest
@@ -7,10 +8,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.di import get_auth_service, get_user_overview_service
+from app.application.di import get_auth_service, get_inventory_view_service, get_user_overview_service
 from app.application.services.auth_service import AuthService
+from app.application.services.inventory_view_service import InventoryViewService
 from app.application.services.user_overview_service import UserOverviewService
 from app.gateway.db.base import Base
+from app.gateway.models import GraphNode, InventorySnapshot
+from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
+from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInventorySnapshotRepository
+from app.gateway.repositories.scan_repository import SQLAlchemyScanRepository
 from app.gateway.repositories.user_overview_repository import SQLAlchemyUserOverviewRepository
 from app.main import app
 from app.security.passwords import hash_password
@@ -21,6 +27,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -51,7 +58,17 @@ async def overview_client(tmp_path):
                 overview_repository=SQLAlchemyUserOverviewRepository(session=session),
             )
 
+    async def override_get_inventory_view_service():
+        async with sessionmaker() as session:
+            yield InventoryViewService(
+                cluster_repository=SQLAlchemyClusterRepository(session=session),
+                scan_repository=SQLAlchemyScanRepository(session=session),
+                snapshot_repository=SQLAlchemyInventorySnapshotRepository(session=session),
+                db=session,
+            )
+
     app.dependency_overrides[get_user_overview_service] = override_get_user_overview_service
+    app.dependency_overrides[get_inventory_view_service] = override_get_inventory_view_service
     app.dependency_overrides[get_auth_service] = lambda: AuthService(
         user_repository=FakeUserRepository(
             [
@@ -106,6 +123,111 @@ async def _seed_overview_data(sessionmaker) -> None:
                     ('g-u2-a', 'c-eks-u2', 'k3', NULL, NULL, 'completed', 0, 0, 0, 0, '2026-03-24 10:05:00', '2026-03-24 10:00:00')
                 """
             )
+        )
+        session.add_all(
+            [
+                GraphNode(
+                    id="gn-u1-1",
+                    graph_id="g-u1-a",
+                    node_id="pod:prod/api-5d6f",
+                    node_type="pod",
+                    label="api-5d6f",
+                    risk_level="critical",
+                    namespace="prod",
+                    base_risk=0.9,
+                    has_runtime_evidence=None,
+                    is_entry_point=True,
+                    is_crown_jewel=False,
+                    metadata_json={"name": "api-5d6f", "is_public": True},
+                ),
+                GraphNode(
+                    id="gn-u1-2",
+                    graph_id="g-u1-a",
+                    node_id="service:prod/api-svc",
+                    node_type="service",
+                    label="api-svc",
+                    risk_level="medium",
+                    namespace="prod",
+                    base_risk=0.5,
+                    has_runtime_evidence=None,
+                    is_entry_point=False,
+                    is_crown_jewel=True,
+                    metadata_json={"name": "api-svc"},
+                ),
+                GraphNode(
+                    id="gn-u1-3",
+                    graph_id="g-u1-b",
+                    node_id="service_account:ops/deployer",
+                    node_type="service_account",
+                    label="deployer",
+                    risk_level="low",
+                    namespace="ops",
+                    base_risk=0.2,
+                    has_runtime_evidence=None,
+                    is_entry_point=False,
+                    is_crown_jewel=False,
+                    metadata_json={"name": "deployer"},
+                ),
+                GraphNode(
+                    id="gn-u2-1",
+                    graph_id="g-u2-a",
+                    node_id="pod:default/user2-pod",
+                    node_type="pod",
+                    label="user2-pod",
+                    risk_level="high",
+                    namespace="default",
+                    base_risk=0.8,
+                    has_runtime_evidence=None,
+                    is_entry_point=True,
+                    is_crown_jewel=False,
+                    metadata_json={"name": "user2-pod", "is_public": False},
+                ),
+                InventorySnapshot(
+                    id="snap-u1-aws",
+                    cluster_id="c-aws-u1",
+                    scan_id="inv-u1-aws",
+                    scanned_at=datetime.fromisoformat("2026-03-24T12:30:00"),
+                    created_at=datetime.fromisoformat("2026-03-24T12:30:00"),
+                    raw_result_json={
+                        "s3_buckets": [
+                            {
+                                "name": "u1-public-bucket",
+                                "arn": "arn:aws:s3:::u1-public-bucket",
+                                "public_access_block": {
+                                    "block_public_acls": True,
+                                    "ignore_public_acls": True,
+                                    "block_public_policy": True,
+                                    "restrict_public_buckets": True,
+                                },
+                            }
+                        ],
+                        "rds_instances": [
+                            {
+                                "identifier": "u1-db",
+                                "arn": "arn:aws:rds:us-west-2:111111111111:db:u1-db",
+                                "publicly_accessible": True,
+                                "engine": "postgres",
+                            }
+                        ],
+                    },
+                ),
+                InventorySnapshot(
+                    id="snap-u2-aws",
+                    cluster_id="c-aws-u2",
+                    scan_id="inv-u2-aws",
+                    scanned_at=datetime.fromisoformat("2026-03-24T12:30:00"),
+                    created_at=datetime.fromisoformat("2026-03-24T12:30:00"),
+                    raw_result_json={
+                        "iam_users": [
+                            {
+                                "username": "user2-admin",
+                                "arn": "arn:aws:iam::222222222222:user/user2-admin",
+                                "has_mfa": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
         )
         await session.execute(
             text(
@@ -247,7 +369,7 @@ async def test_me_assets_requires_jwt(overview_client):
 
 
 @pytest.mark.asyncio
-async def test_me_assets_returns_only_authenticated_users_assets_with_counts(overview_client):
+async def test_me_assets_returns_unified_inventory_assets_for_authenticated_user(overview_client):
     await _seed_overview_data(overview_client["sessionmaker"])
 
     response = overview_client["client"].get(
@@ -259,45 +381,82 @@ async def test_me_assets_returns_only_authenticated_users_assets_with_counts(ove
     assert response.json() == {
         "items": [
             {
+                "asset_id": "pod:prod/api-5d6f",
+                "asset_type": "pod",
+                "asset_domain": "k8s",
+                "name": "api-5d6f",
+                "cluster_id": "c-eks-u1",
+                "cluster_name": "user1-eks",
+                "aws_account_id": None,
+                "aws_region": None,
+                "risk_level": "critical",
+                "is_public": True,
+                "is_entry_point": True,
+                "is_crown_jewel": False,
+            },
+            {
+                "asset_id": "service:prod/api-svc",
+                "asset_type": "service",
+                "asset_domain": "k8s",
+                "name": "api-svc",
+                "cluster_id": "c-eks-u1",
+                "cluster_name": "user1-eks",
+                "aws_account_id": None,
+                "aws_region": None,
+                "risk_level": "medium",
+                "is_public": None,
+                "is_entry_point": False,
+                "is_crown_jewel": True,
+            },
+            {
+                "asset_id": "service_account:ops/deployer",
+                "asset_type": "service_account",
+                "asset_domain": "k8s",
+                "name": "deployer",
+                "cluster_id": "c-self-u1",
+                "cluster_name": "user1-self",
+                "aws_account_id": None,
+                "aws_region": None,
+                "risk_level": "low",
+                "is_public": None,
+                "is_entry_point": False,
+                "is_crown_jewel": False,
+            },
+            {
+                "asset_id": "s3:u1-public-bucket",
+                "asset_type": "s3",
+                "asset_domain": "aws",
+                "name": "u1-public-bucket",
                 "cluster_id": "c-aws-u1",
-                "name": "user1-aws",
-                "cluster_type": "aws",
+                "cluster_name": "user1-aws",
+                "aws_account_id": "111111111111",
+                "aws_region": None,
+                "risk_level": None,
+                "is_public": False,
+                "is_entry_point": None,
+                "is_crown_jewel": None,
+            },
+            {
+                "asset_id": "rds:u1-db",
+                "asset_type": "rds",
+                "asset_domain": "aws",
+                "name": "u1-db",
+                "cluster_id": "c-aws-u1",
+                "cluster_name": "user1-aws",
                 "aws_account_id": "111111111111",
                 "aws_region": "us-west-2",
-                "analysis_job_count": 0,
-                "scan_record_count": 2,
-                "latest_analysis_status": None,
-                "latest_scan_status": "failed",
-            },
-            {
-                "cluster_id": "c-self-u1",
-                "name": "user1-self",
-                "cluster_type": "self-managed",
-                "aws_account_id": None,
-                "aws_region": None,
-                "analysis_job_count": 2,
-                "scan_record_count": 1,
-                "latest_analysis_status": "failed",
-                "latest_scan_status": "completed",
-            },
-            {
-                "cluster_id": "c-eks-u1",
-                "name": "user1-eks",
-                "cluster_type": "eks",
-                "aws_account_id": None,
-                "aws_region": None,
-                "analysis_job_count": 1,
-                "scan_record_count": 1,
-                "latest_analysis_status": "completed",
-                "latest_scan_status": "completed",
+                "risk_level": "high",
+                "is_public": True,
+                "is_entry_point": None,
+                "is_crown_jewel": None,
             },
         ],
-        "total": 3,
+        "total": 5,
     }
 
 
 @pytest.mark.asyncio
-async def test_me_assets_excludes_another_users_clusters_and_counts(overview_client):
+async def test_me_assets_excludes_another_users_clusters_and_returns_owned_inventory_only(overview_client):
     await _seed_overview_data(overview_client["sessionmaker"])
 
     response = overview_client["client"].get(
@@ -309,26 +468,32 @@ async def test_me_assets_excludes_another_users_clusters_and_counts(overview_cli
     assert response.json() == {
         "items": [
             {
+                "asset_id": "pod:default/user2-pod",
+                "asset_type": "pod",
+                "asset_domain": "k8s",
+                "name": "user2-pod",
                 "cluster_id": "c-eks-u2",
-                "name": "user2-eks",
-                "cluster_type": "eks",
+                "cluster_name": "user2-eks",
                 "aws_account_id": None,
                 "aws_region": None,
-                "analysis_job_count": 1,
-                "scan_record_count": 1,
-                "latest_analysis_status": "completed",
-                "latest_scan_status": "completed",
+                "risk_level": "high",
+                "is_public": False,
+                "is_entry_point": True,
+                "is_crown_jewel": False,
             },
             {
+                "asset_id": "iam-user:user2-admin",
+                "asset_type": "iam_user",
+                "asset_domain": "aws",
+                "name": "user2-admin",
                 "cluster_id": "c-aws-u2",
-                "name": "user2-aws",
-                "cluster_type": "aws",
+                "cluster_name": "user2-aws",
                 "aws_account_id": "222222222222",
-                "aws_region": "ap-northeast-2",
-                "analysis_job_count": 0,
-                "scan_record_count": 1,
-                "latest_analysis_status": None,
-                "latest_scan_status": "completed",
+                "aws_region": None,
+                "risk_level": None,
+                "is_public": None,
+                "is_entry_point": None,
+                "is_crown_jewel": None,
             },
         ],
         "total": 2,

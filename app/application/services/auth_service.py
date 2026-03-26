@@ -26,10 +26,10 @@ class AuthService:
             return None
         return user
 
-    async def signup_user(self, email: str, password: str):
+    async def signup_user(self, email: str, password: str, name: str | None = None):
         normalized_email = email.strip().lower()
         existing = await self._users.get_by_email(normalized_email)
         if existing is not None:
             raise DuplicateEmailError(normalized_email)
         password_hash = hash_password(password)
-        return await self._users.create_user(normalized_email, password_hash)
+        return await self._users.create_user(normalized_email, password_hash, name=name)

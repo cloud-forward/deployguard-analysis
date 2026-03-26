@@ -3,6 +3,7 @@ SQLAlchemy implementation of AnalysisJobRepository.
 """
 from __future__ import annotations
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
@@ -17,6 +18,8 @@ from app.gateway.models import (
     RemediationRecommendation,
 )
 from src.facts.canonical_fact import Fact
+
+logger = logging.getLogger(__name__)
 
 
 class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
@@ -266,9 +269,21 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         graph_id: str,
         graph: Any,
     ) -> None:
+        logger.info(
+            "analysis.persist_graph.entered",
+            extra={
+                "event": "analysis.persist_graph.entered",
+                "repository_class": type(self).__name__,
+                "repository_module": type(self).__module__,
+                "graph_id": graph_id,
+                "edge_count": graph.number_of_edges(),
+            },
+        )
         graph_node_columns = await self._get_table_columns("graph_nodes")
         graph_edge_columns = await self._get_table_columns("graph_edges")
         persisted_edge_ids_by_key = self._build_graph_edge_id_map(graph_id=graph_id, graph=graph)
+        fact_rows = await self._fact_rows_by_graph(graph_id=graph_id)
+        fact_ids_by_semantic_key = self._fact_id_lookup_from_rows(graph_id=graph_id, fact_rows=fact_rows)
 
         await self._session.execute(text("DELETE FROM graph_nodes WHERE graph_id = :graph_id"), {"graph_id": graph_id})
         await self._session.execute(text("DELETE FROM graph_edges WHERE graph_id = :graph_id"), {"graph_id": graph_id})
@@ -282,17 +297,55 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             )
             for node_id, attrs in graph.nodes(data=True)
         ]
-        edge_rows = [
-            self._graph_edge_row(
+        edge_rows: list[dict[str, Any]] = []
+        matched_edge_count = 0
+        unmatched_edge_count = 0
+        unmatched_by_edge_type: dict[str, int] = {}
+        for source, target, attrs in graph.edges(data=True):
+            source_node_id = str(source)
+            target_node_id = str(target)
+            edge_type = self._as_str(attrs.get("type")) or ""
+            edge_lookup_key = (source_node_id, target_node_id, edge_type)
+            matched_fact_id = fact_ids_by_semantic_key.get(edge_lookup_key)
+            if matched_fact_id is not None:
+                matched_edge_count += 1
+            else:
+                unmatched_edge_count += 1
+                unmatched_by_edge_type[edge_type] = unmatched_by_edge_type.get(edge_type, 0) + 1
+                if unmatched_edge_count <= 20:
+                    logger.debug(
+                        "analysis.persist_graph.unmatched_fact_edge",
+                        extra={
+                            "graph_id": graph_id,
+                            "edge_key": edge_lookup_key,
+                            "edge_metadata": self._as_dict(attrs.get("metadata")),
+                            "matched_fact_id": matched_fact_id,
+                        },
+                    )
+
+            edge_rows.append(self._graph_edge_row(
                 graph_edge_columns=graph_edge_columns,
                 graph_id=graph_id,
                 source=source,
                 target=target,
                 attrs=attrs,
                 persisted_edge_ids_by_key=persisted_edge_ids_by_key,
-            )
-            for source, target, attrs in graph.edges(data=True)
-        ]
+                fact_ids_by_semantic_key=fact_ids_by_semantic_key,
+            ))
+
+        print(
+            "analysis.edge_match_summary",
+            {
+                "event": "analysis.edge_match_summary",
+                "graph_id": graph_id,
+                "fact_row_count": len(fact_rows),
+                "fact_lookup_size": len(fact_ids_by_semantic_key),
+                "total_edge_count": len(edge_rows),
+                "matched_edge_count": matched_edge_count,
+                "unmatched_edge_count": unmatched_edge_count,
+                "unmatched_by_edge_type": unmatched_by_edge_type,
+            },
+        )
 
         await self._bulk_insert_rows("graph_nodes", node_rows)
         await self._bulk_insert_rows("graph_edges", edge_rows)
@@ -654,29 +707,125 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         target: Any,
         attrs: dict[str, Any],
         persisted_edge_ids_by_key: dict[str, str],
+        fact_ids_by_semantic_key: dict[tuple[str, str, str], str],
     ) -> dict[str, Any]:
         row: dict[str, Any] = {}
+        source_node_id = str(source)
+        target_node_id = str(target)
+        edge_type = self._as_str(attrs.get("type"))
         semantic_edge_key = self._graph_edge_key_from_values(source, target, attrs.get("type"))
         if "id" in graph_edge_columns:
             row["id"] = persisted_edge_ids_by_key[semantic_edge_key]
         if "graph_id" in graph_edge_columns:
             row["graph_id"] = graph_id
         if "source_node_id" in graph_edge_columns:
-            row["source_node_id"] = str(source)
+            row["source_node_id"] = source_node_id
         elif "source" in graph_edge_columns:
-            row["source"] = str(source)
+            row["source"] = source_node_id
         if "target_node_id" in graph_edge_columns:
-            row["target_node_id"] = str(target)
+            row["target_node_id"] = target_node_id
         elif "target" in graph_edge_columns:
-            row["target"] = str(target)
+            row["target"] = target_node_id
+        if "fact_id" in graph_edge_columns:
+            fact_lookup_key = (source_node_id, target_node_id, edge_type or "")
+            fact_id = fact_ids_by_semantic_key.get(fact_lookup_key)
+            row["fact_id"] = fact_id
+            if fact_id is None:
+                logger.debug(
+                    "analysis.persist_graph.unmatched_fact_edge",
+                    extra={
+                        "graph_id": graph_id,
+                        "source_node_id": source_node_id,
+                        "target_node_id": target_node_id,
+                        "edge_type": edge_type,
+                    },
+                )
         if "edge_type" in graph_edge_columns:
-            row["edge_type"] = self._as_str(attrs.get("type"))
+            row["edge_type"] = edge_type
         elif "type" in graph_edge_columns:
-            row["type"] = self._as_str(attrs.get("type"))
+            row["type"] = edge_type
         metadata_col = "metadata" if "metadata" in graph_edge_columns else None
         if metadata_col is not None:
             row[metadata_col] = json.dumps(self._as_dict(attrs.get("metadata")))
         return row
+
+    async def _fact_rows_by_graph(self, *, graph_id: str) -> list[dict[str, str]]:
+        facts_table = await self._reflect_table("facts")
+        if facts_table is None:
+            logger.debug(
+                "analysis.persist_graph.fact_lookup_missing_facts_table",
+                extra={"graph_id": graph_id},
+            )
+            return []
+
+        fact_columns = set(facts_table.c.keys())
+        required_columns = {"graph_id", "id", "subject_id", "object_id", "fact_type"}
+        if not required_columns.issubset(fact_columns):
+            logger.debug(
+                "analysis.persist_graph.fact_lookup_missing_columns",
+                extra={
+                    "graph_id": graph_id,
+                    "fact_columns": sorted(fact_columns),
+                },
+            )
+            return []
+
+        result = await self._session.execute(
+            select(
+                facts_table.c.id,
+                facts_table.c.subject_id,
+                facts_table.c.object_id,
+                facts_table.c.fact_type,
+            ).where(facts_table.c.graph_id == graph_id)
+        )
+
+        fact_rows = result.mappings().all()
+        logger.debug(
+            "analysis.persist_graph.fact_rows_loaded",
+            extra={
+                "graph_id": graph_id,
+                "fact_row_count": len(fact_rows),
+                "fact_row_samples": [
+                    {
+                        "id": str(row["id"]),
+                        "fact_type": str(row["fact_type"]),
+                        "subject_id": str(row["subject_id"]),
+                        "object_id": str(row["object_id"]),
+                    }
+                    for row in fact_rows[:5]
+                ],
+            },
+        )
+        return [
+            {
+                "id": str(row["id"]),
+                "subject_id": str(row["subject_id"]),
+                "object_id": str(row["object_id"]),
+                "fact_type": str(row["fact_type"]),
+            }
+            for row in fact_rows
+        ]
+
+    def _fact_id_lookup_from_rows(
+        self,
+        *,
+        graph_id: str,
+        fact_rows: list[dict[str, str]],
+    ) -> dict[tuple[str, str, str], str]:
+        lookup: dict[tuple[str, str, str], str] = {}
+        for row in fact_rows:
+            key = (row["subject_id"], row["object_id"], row["fact_type"])
+            lookup.setdefault(key, row["id"])
+        logger.debug(
+            "analysis.persist_graph.fact_lookup_built",
+            extra={
+                "graph_id": graph_id,
+                "fact_lookup_size": len(lookup),
+                "fact_lookup_key_samples": list(lookup.keys())[:10],
+            },
+        )
+        return lookup
+
 
     def _facts_delete_statement(
         self,

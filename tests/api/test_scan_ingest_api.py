@@ -36,6 +36,7 @@ class FakeUser:
     email: str
     password_hash: str
     is_active: bool = True
+    name: str = ""
 
 
 class FakeUserRepository:
@@ -766,7 +767,7 @@ class TestCompleteScan:
         s3_key = url_resp.json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
         status_resp = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client)).json()
-        assert s3_key in status_resp["files"]
+        assert s3_key in status_resp["s3_keys"]
 
     def test_complete_sets_completed_at(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
@@ -1103,7 +1104,7 @@ class TestRawScanResultUrl:
         s3_key = _upload_url(client, scan_id).json()["s3_key"]
         _complete(client, scan_id, files=[s3_key])
 
-        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url", headers=_auth_headers(client))
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1112,14 +1113,19 @@ class TestRawScanResultUrl:
         assert data["download_url"].startswith(f"https://fake-s3.example.com/{s3_key}")
         assert data["expires_in"] == 600
 
+    def test_get_raw_result_url_requires_auth(self, client):
+        """Unauthenticated request returns 401."""
+        resp = client.get("/api/v1/scans/any-scan-id/raw-result-url")
+        assert resp.status_code == 401
+
     def test_get_raw_result_url_not_found_when_scan_missing(self, client):
-        resp = client.get("/api/v1/scans/ghost-id/raw-result-url")
+        resp = client.get("/api/v1/scans/ghost-id/raw-result-url", headers=_auth_headers(client))
         assert resp.status_code == 404
 
     def test_get_raw_result_url_not_found_when_no_s3_keys(self, client):
         scan_id = _scan_id_for(_start(client), "k8s")
 
-        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url", headers=_auth_headers(client))
 
         assert resp.status_code == 404
 
@@ -1132,7 +1138,7 @@ class TestRawScanResultUrl:
             f"scans/{record.cluster_id}/{scan_id}/{record.scanner_type}/extra.json",
         ]
 
-        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+        resp = client.get(f"/api/v1/scans/{scan_id}/raw-result-url", headers=_auth_headers(client))
 
         assert resp.status_code == 409
 

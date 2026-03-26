@@ -193,12 +193,13 @@ class SQLAlchemyScanRepository(ScanRepository):
         return list(result.scalars().all())
 
     async def get_latest_completed_scans(self, cluster_id: str) -> dict:
-        # scan_records.cluster_id 가 VARCHAR 로 저장되어 있으므로 str 로 비교
-        cluster_id_str = str(cluster_id)
         subq = (
-            select(ScanRecord.scanner_type, func.max(ScanRecord.created_at).label("max_created_at"))
+            select(
+                ScanRecord.scanner_type,
+                func.max(func.coalesce(ScanRecord.completed_at, ScanRecord.created_at)).label("latest_at"),
+            )
             .where(
-                ScanRecord.cluster_id == cluster_id_str,
+                ScanRecord.cluster_id == cluster_id,
                 ScanRecord.status == "completed",
             )
             .group_by(ScanRecord.scanner_type)
@@ -208,8 +209,8 @@ class SQLAlchemyScanRepository(ScanRepository):
             select(ScanRecord).join(
                 subq,
                 (ScanRecord.scanner_type == subq.c.scanner_type) &
-                (ScanRecord.created_at == subq.c.max_created_at),
-            ).where(ScanRecord.cluster_id == cluster_id_str)
+                (func.coalesce(ScanRecord.completed_at, ScanRecord.created_at) == subq.c.latest_at),
+            ).where(ScanRecord.cluster_id == cluster_id)
         )
         return {record.scanner_type: record for record in result.scalars().all()}
 

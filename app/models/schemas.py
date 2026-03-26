@@ -445,7 +445,7 @@ class ScanStatusResponse(BaseModel):
     status: str = Field(..., description="created | processing | uploading | completed | failed")
     created_at: datetime
     completed_at: datetime | None = None
-    files: list[str] = Field(default_factory=list)
+    s3_keys: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(json_schema_extra={"examples": [
         {
@@ -455,7 +455,7 @@ class ScanStatusResponse(BaseModel):
             "status": "created",
             "created_at": "2024-01-15T10:00:00Z",
             "completed_at": None,
-            "files": [
+            "s3_keys": [
                 "scans/prod-cluster-01/20260309T113020-k8s/k8s/k8s-snapshot.json"
             ],
         }

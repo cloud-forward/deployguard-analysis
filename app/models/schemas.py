@@ -246,12 +246,13 @@ class MeAssetInventoryListResponse(BaseModel):
 class UserGroupListItemResponse(BaseModel):
     group_key: str
     aws_account_id: str | None = None
-    cluster_type: str
-    cluster_count: int = 0
-    cluster_ids: list[str] = Field(default_factory=list)
-    cluster_names: list[str] = Field(default_factory=list)
-    analysis_job_count: int = 0
-    scan_record_count: int = 0
+    asset_domain: str
+    total_assets: int = 0
+    k8s_assets: int = 0
+    aws_assets: int = 0
+    public_assets: int = 0
+    entry_point_assets: int = 0
+    crown_jewel_assets: int = 0
 
 
 class UserGroupListResponse(BaseModel):

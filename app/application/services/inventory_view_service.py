@@ -34,6 +34,8 @@ from app.models.schemas import (
     InvSummaryResponse,
     MeAssetInventoryItemResponse,
     MeAssetInventoryListResponse,
+    UserGroupListItemResponse,
+    UserGroupListResponse,
     UserOverviewResponse,
 )
 
@@ -690,6 +692,39 @@ class InventoryViewService:
             entry_point_assets=sum(1 for item in items if item.is_entry_point is True),
             crown_jewel_assets=sum(1 for item in items if item.is_crown_jewel is True),
         )
+
+    async def list_user_asset_groups(self, user_id: str) -> UserGroupListResponse:
+        asset_list = await self.list_user_assets(user_id)
+        grouped_items: list[UserGroupListItemResponse] = []
+        grouped_by_key: dict[tuple[str | None, str], UserGroupListItemResponse] = {}
+
+        for asset in asset_list.items:
+            asset_domain = asset.asset_domain or asset.asset_type
+            group_tuple = (asset.aws_account_id, asset_domain)
+            group = grouped_by_key.get(group_tuple)
+            if group is None:
+                normalized_account_id = asset.aws_account_id if asset.aws_account_id is not None else "null"
+                group = UserGroupListItemResponse(
+                    group_key=f"aws_account_id:{normalized_account_id}|asset_domain:{asset_domain}",
+                    aws_account_id=asset.aws_account_id,
+                    asset_domain=asset_domain,
+                )
+                grouped_by_key[group_tuple] = group
+                grouped_items.append(group)
+
+            group.total_assets += 1
+            if asset.asset_domain == "k8s":
+                group.k8s_assets += 1
+            if asset.asset_domain == "aws":
+                group.aws_assets += 1
+            if asset.is_public is True:
+                group.public_assets += 1
+            if asset.is_entry_point is True:
+                group.entry_point_assets += 1
+            if asset.is_crown_jewel is True:
+                group.crown_jewel_assets += 1
+
+        return UserGroupListResponse(items=grouped_items, total=len(grouped_items))
 
     # ------------------------------------------------------------------
     # GET /inventory/risk-spotlight

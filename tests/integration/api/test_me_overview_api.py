@@ -524,42 +524,34 @@ async def test_me_groups_returns_only_authenticated_users_computed_groups(overvi
     assert response.json() == {
         "items": [
             {
-                "group_key": "aws_account_id:111111111111|cluster_type:aws",
+                "group_key": "aws_account_id:null|asset_domain:k8s",
+                "aws_account_id": None,
+                "asset_domain": "k8s",
+                "total_assets": 3,
+                "k8s_assets": 3,
+                "aws_assets": 0,
+                "public_assets": 1,
+                "entry_point_assets": 1,
+                "crown_jewel_assets": 1,
+            },
+            {
+                "group_key": "aws_account_id:111111111111|asset_domain:aws",
                 "aws_account_id": "111111111111",
-                "cluster_type": "aws",
-                "cluster_count": 1,
-                "cluster_ids": ["c-aws-u1"],
-                "cluster_names": ["user1-aws"],
-                "analysis_job_count": 0,
-                "scan_record_count": 2,
-            },
-            {
-                "group_key": "aws_account_id:null|cluster_type:self-managed",
-                "aws_account_id": None,
-                "cluster_type": "self-managed",
-                "cluster_count": 1,
-                "cluster_ids": ["c-self-u1"],
-                "cluster_names": ["user1-self"],
-                "analysis_job_count": 2,
-                "scan_record_count": 1,
-            },
-            {
-                "group_key": "aws_account_id:null|cluster_type:eks",
-                "aws_account_id": None,
-                "cluster_type": "eks",
-                "cluster_count": 1,
-                "cluster_ids": ["c-eks-u1"],
-                "cluster_names": ["user1-eks"],
-                "analysis_job_count": 1,
-                "scan_record_count": 1,
+                "asset_domain": "aws",
+                "total_assets": 2,
+                "k8s_assets": 0,
+                "aws_assets": 2,
+                "public_assets": 1,
+                "entry_point_assets": 0,
+                "crown_jewel_assets": 0,
             },
         ],
-        "total": 3,
+        "total": 2,
     }
 
 
 @pytest.mark.asyncio
-async def test_me_groups_excludes_another_users_clusters_and_counts(overview_client):
+async def test_me_groups_excludes_another_users_assets_and_groups_inventory_only(overview_client):
     await _seed_overview_data(overview_client["sessionmaker"])
 
     response = overview_client["client"].get(
@@ -571,24 +563,26 @@ async def test_me_groups_excludes_another_users_clusters_and_counts(overview_cli
     assert response.json() == {
         "items": [
             {
-                "group_key": "aws_account_id:null|cluster_type:eks",
+                "group_key": "aws_account_id:null|asset_domain:k8s",
                 "aws_account_id": None,
-                "cluster_type": "eks",
-                "cluster_count": 1,
-                "cluster_ids": ["c-eks-u2"],
-                "cluster_names": ["user2-eks"],
-                "analysis_job_count": 1,
-                "scan_record_count": 1,
+                "asset_domain": "k8s",
+                "total_assets": 1,
+                "k8s_assets": 1,
+                "aws_assets": 0,
+                "public_assets": 0,
+                "entry_point_assets": 1,
+                "crown_jewel_assets": 0,
             },
             {
-                "group_key": "aws_account_id:222222222222|cluster_type:aws",
+                "group_key": "aws_account_id:222222222222|asset_domain:aws",
                 "aws_account_id": "222222222222",
-                "cluster_type": "aws",
-                "cluster_count": 1,
-                "cluster_ids": ["c-aws-u2"],
-                "cluster_names": ["user2-aws"],
-                "analysis_job_count": 0,
-                "scan_record_count": 1,
+                "asset_domain": "aws",
+                "total_assets": 1,
+                "k8s_assets": 0,
+                "aws_assets": 1,
+                "public_assets": 0,
+                "entry_point_assets": 0,
+                "crown_jewel_assets": 0,
             },
         ],
         "total": 2,

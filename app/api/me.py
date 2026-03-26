@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.auth import get_current_user
-from app.application.di import get_inventory_view_service, get_user_overview_service
+from app.application.di import get_inventory_view_service
 from app.application.services.inventory_view_service import InventoryViewService
 from app.models.schemas import (
     MeAssetInventoryListResponse,
@@ -42,6 +42,6 @@ async def get_my_assets(
 @router.get("/groups", response_model=UserGroupListResponse, summary="현재 사용자 계산 그룹 목록")
 async def get_my_groups(
     current_user: UserSummaryResponse = Depends(get_current_user),
-    service: UserOverviewService = Depends(get_user_overview_service),
+    service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> UserGroupListResponse:
-    return await service.list_groups(user_id=current_user.id)
+    return await service.list_user_asset_groups(user_id=current_user.id)

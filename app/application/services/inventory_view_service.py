@@ -34,6 +34,7 @@ from app.models.schemas import (
     InvSummaryResponse,
     MeAssetInventoryItemResponse,
     MeAssetInventoryListResponse,
+    UserOverviewResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -677,6 +678,18 @@ class InventoryViewService:
             items.extend(self._build_user_asset_items_from_snapshot(cluster, snapshot.raw_result_json or {}))
 
         return MeAssetInventoryListResponse(items=items, total=len(items))
+
+    async def get_user_asset_summary(self, user_id: str) -> UserOverviewResponse:
+        asset_list = await self.list_user_assets(user_id)
+        items = asset_list.items
+        return UserOverviewResponse(
+            total_assets=len(items),
+            k8s_assets=sum(1 for item in items if item.asset_domain == "k8s"),
+            aws_assets=sum(1 for item in items if item.asset_domain == "aws"),
+            public_assets=sum(1 for item in items if item.is_public is True),
+            entry_point_assets=sum(1 for item in items if item.is_entry_point is True),
+            crown_jewel_assets=sum(1 for item in items if item.is_crown_jewel is True),
+        )
 
     # ------------------------------------------------------------------
     # GET /inventory/risk-spotlight

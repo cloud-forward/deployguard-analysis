@@ -198,14 +198,12 @@ class UserSummaryResponse(BaseModel):
 
 
 class UserOverviewResponse(BaseModel):
-    total_clusters: int = 0
-    eks_clusters: int = 0
-    self_managed_clusters: int = 0
-    aws_clusters: int = 0
-    total_analysis_jobs: int = 0
-    total_scan_records: int = 0
-    total_attack_paths: int = 0
-    total_remediation_recommendations: int = 0
+    total_assets: int = 0
+    k8s_assets: int = 0
+    aws_assets: int = 0
+    public_assets: int = 0
+    entry_point_assets: int = 0
+    crown_jewel_assets: int = 0
 
 
 class UserAssetListItemResponse(BaseModel):

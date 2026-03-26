@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends
 from app.api.auth import get_current_user
 from app.application.di import get_inventory_view_service, get_user_overview_service
 from app.application.services.inventory_view_service import InventoryViewService
-from app.application.services.user_overview_service import UserOverviewService
 from app.models.schemas import (
     MeAssetInventoryListResponse,
     UserGroupListResponse,
@@ -27,9 +26,9 @@ async def get_me(
 @router.get("/overview", response_model=UserOverviewResponse, summary="현재 사용자 자산 개요")
 async def get_my_overview(
     current_user: UserSummaryResponse = Depends(get_current_user),
-    service: UserOverviewService = Depends(get_user_overview_service),
+    service: InventoryViewService = Depends(get_inventory_view_service),
 ) -> UserOverviewResponse:
-    return await service.get_overview(user_id=current_user.id)
+    return await service.get_user_asset_summary(user_id=current_user.id)
 
 
 @router.get("/assets", response_model=MeAssetInventoryListResponse, summary="현재 사용자 소유 자산 목록")

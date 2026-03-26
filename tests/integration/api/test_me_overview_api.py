@@ -299,7 +299,7 @@ async def test_me_overview_requires_jwt(overview_client):
 
 
 @pytest.mark.asyncio
-async def test_me_overview_returns_counts_only_for_authenticated_user(overview_client):
+async def test_me_overview_returns_asset_centered_summary_for_authenticated_user(overview_client):
     await _seed_overview_data(overview_client["sessionmaker"])
 
     response = overview_client["client"].get(
@@ -309,19 +309,17 @@ async def test_me_overview_returns_counts_only_for_authenticated_user(overview_c
 
     assert response.status_code == 200
     assert response.json() == {
-        "total_clusters": 3,
-        "eks_clusters": 1,
-        "self_managed_clusters": 1,
-        "aws_clusters": 1,
-        "total_analysis_jobs": 3,
-        "total_scan_records": 4,
-        "total_attack_paths": 3,
-        "total_remediation_recommendations": 3,
+        "total_assets": 5,
+        "k8s_assets": 3,
+        "aws_assets": 2,
+        "public_assets": 2,
+        "entry_point_assets": 1,
+        "crown_jewel_assets": 1,
     }
 
 
 @pytest.mark.asyncio
-async def test_me_overview_excludes_another_users_data(overview_client):
+async def test_me_overview_excludes_another_users_assets(overview_client):
     await _seed_overview_data(overview_client["sessionmaker"])
 
     response = overview_client["client"].get(
@@ -331,14 +329,12 @@ async def test_me_overview_excludes_another_users_data(overview_client):
 
     assert response.status_code == 200
     assert response.json() == {
-        "total_clusters": 2,
-        "eks_clusters": 1,
-        "self_managed_clusters": 0,
-        "aws_clusters": 1,
-        "total_analysis_jobs": 1,
-        "total_scan_records": 2,
-        "total_attack_paths": 1,
-        "total_remediation_recommendations": 1,
+        "total_assets": 2,
+        "k8s_assets": 1,
+        "aws_assets": 1,
+        "public_assets": 0,
+        "entry_point_assets": 1,
+        "crown_jewel_assets": 0,
     }
 
 
@@ -351,14 +347,12 @@ async def test_me_overview_returns_zeros_for_user_with_no_data(overview_client):
 
     assert response.status_code == 200
     assert response.json() == {
-        "total_clusters": 0,
-        "eks_clusters": 0,
-        "self_managed_clusters": 0,
-        "aws_clusters": 0,
-        "total_analysis_jobs": 0,
-        "total_scan_records": 0,
-        "total_attack_paths": 0,
-        "total_remediation_recommendations": 0,
+        "total_assets": 0,
+        "k8s_assets": 0,
+        "aws_assets": 0,
+        "public_assets": 0,
+        "entry_point_assets": 0,
+        "crown_jewel_assets": 0,
     }
 
 

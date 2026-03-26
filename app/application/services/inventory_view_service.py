@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -31,6 +32,11 @@ from app.models.schemas import (
     InvScannerItem,
     InvScannerStatusResponse,
     InvSummaryResponse,
+    MeAssetInventoryItemResponse,
+    MeAssetInventoryListResponse,
+    UserGroupListItemResponse,
+    UserGroupListResponse,
+    UserOverviewResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +121,26 @@ def _extract_name_from_raw(asset_type: str, raw: dict[str, Any]) -> str:
     return raw.get("name", raw.get("id", "unknown"))
 
 
+def _nullable_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _normalize_metadata(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
 def _build_node_id(asset_type: str, name: str, raw: dict[str, Any]) -> str:
     if asset_type == "ec2":
         return f"ec2:{raw.get('instance_id', name)}"
@@ -160,6 +186,43 @@ def _region_from_cluster(cluster: Any, asset_type: str) -> Optional[str]:
     if asset_type in {"s3", "iam_role", "iam_user"}:
         return None
     return getattr(cluster, "aws_region", None)
+
+
+def _base_risk_from_raw(raw: dict[str, Any]) -> Optional[float]:
+    value = raw.get("base_risk")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _is_public_from_raw(asset_type: str, raw: dict[str, Any]) -> Optional[bool]:
+    if asset_type == "s3":
+        pab = raw.get("public_access_block")
+        if isinstance(pab, dict):
+            flags = [
+                pab.get("block_public_acls"),
+                pab.get("ignore_public_acls"),
+                pab.get("block_public_policy"),
+                pab.get("restrict_public_buckets"),
+            ]
+            if all(flag is True for flag in flags):
+                return False
+        return None
+    if asset_type == "rds":
+        return _nullable_bool(raw.get("publicly_accessible"))
+    return None
+
+
+def _is_entry_point_from_raw(asset_type: str, raw: dict[str, Any]) -> Optional[bool]:
+    if asset_type == "ec2":
+        metadata_options = raw.get("metadata_options")
+        if isinstance(metadata_options, dict):
+            return metadata_options.get("http_tokens") == "optional"
+    return None
+
+
+def _is_crown_jewel_from_raw(asset_type: str, raw: dict[str, Any]) -> Optional[bool]:
+    return None
 
 
 # =============================================================================
@@ -357,6 +420,104 @@ class InventoryViewService:
                 ))
         return items
 
+    async def _get_latest_completed_graph_snapshot_ids_by_cluster(self, cluster_ids: list[str]) -> dict[str, Any]:
+        if not cluster_ids:
+            return {}
+        placeholders = ", ".join(f":cluster_id_{idx}" for idx, _ in enumerate(cluster_ids))
+        params = {f"cluster_id_{idx}": cluster_id for idx, cluster_id in enumerate(cluster_ids)}
+        try:
+            result = await self._db.execute(
+                text(f"""
+                    SELECT gs.cluster_id, gs.id, gs.completed_at
+                    FROM graph_snapshots gs
+                    JOIN (
+                        SELECT cluster_id, MAX(created_at) AS max_created_at
+                        FROM graph_snapshots
+                        WHERE status = 'completed' AND cluster_id IN ({placeholders})
+                        GROUP BY cluster_id
+                    ) latest
+                      ON latest.cluster_id = gs.cluster_id
+                     AND latest.max_created_at = gs.created_at
+                    WHERE gs.status = 'completed'
+                """),
+                params,
+            )
+            return {str(row["cluster_id"]): row for row in result.mappings().all()}
+        except Exception as e:
+            logger.error("_get_latest_completed_graph_snapshot_ids_by_cluster 에러: %s", e, exc_info=True)
+            return {}
+
+    async def _get_all_graph_nodes_for_graph_ids(self, graph_ids: list[str]) -> dict[str, list[Any]]:
+        if not graph_ids:
+            return {}
+        placeholders = ", ".join(f":graph_id_{idx}" for idx, _ in enumerate(graph_ids))
+        params = {f"graph_id_{idx}": graph_id for idx, graph_id in enumerate(graph_ids)}
+        try:
+            result = await self._db.execute(
+                text(f"""
+                    SELECT graph_id, node_id, node_type, base_risk, namespace,
+                           is_entry_point, is_crown_jewel, metadata
+                    FROM graph_nodes
+                    WHERE graph_id IN ({placeholders})
+                    ORDER BY graph_id, id
+                """),
+                params,
+            )
+            rows_by_graph_id: dict[str, list[Any]] = {}
+            for row in result.mappings().all():
+                rows_by_graph_id.setdefault(str(row["graph_id"]), []).append(row)
+            return rows_by_graph_id
+        except Exception as e:
+            logger.error("_get_all_graph_nodes_for_graph_ids 에러: %s", e, exc_info=True)
+            return {}
+
+    def _build_user_asset_items_from_graph_rows(self, cluster: Any, rows: list[Any]) -> list[MeAssetInventoryItemResponse]:
+        items: list[MeAssetInventoryItemResponse] = []
+        for row in rows:
+            metadata = _normalize_metadata(row["metadata"])
+            items.append(
+                MeAssetInventoryItemResponse(
+                    asset_id=row["node_id"],
+                    asset_type=row["node_type"],
+                    asset_domain=GRAPH_NODE_TYPE_TO_DOMAIN.get(row["node_type"]),
+                    name=metadata.get("name") or _node_name_from_node_id(row["node_id"]),
+                    cluster_id=getattr(cluster, "id", None),
+                    cluster_name=getattr(cluster, "name", None),
+                    aws_account_id=getattr(cluster, "aws_account_id", None),
+                    aws_region=getattr(cluster, "aws_region", None),
+                    base_risk=float(row["base_risk"]) if row["base_risk"] is not None else None,
+                    is_public=_nullable_bool(metadata.get("is_public")),
+                    is_entry_point=_nullable_bool(row["is_entry_point"]),
+                    is_crown_jewel=_nullable_bool(row["is_crown_jewel"]),
+                )
+            )
+        return items
+
+    def _build_user_asset_items_from_snapshot(self, cluster: Any, raw: dict[str, Any]) -> list[MeAssetInventoryItemResponse]:
+        items: list[MeAssetInventoryItemResponse] = []
+        for json_key, asset_type, domain in SNAPSHOT_KEY_MAP:
+            for raw_asset in raw.get(json_key, []):
+                if not isinstance(raw_asset, dict):
+                    continue
+                name = _extract_name_from_raw(asset_type, raw_asset)
+                items.append(
+                    MeAssetInventoryItemResponse(
+                        asset_id=_build_node_id(asset_type, name, raw_asset),
+                        asset_type=asset_type,
+                        asset_domain=domain,
+                        name=name,
+                        cluster_id=getattr(cluster, "id", None),
+                        cluster_name=getattr(cluster, "name", None),
+                        aws_account_id=getattr(cluster, "aws_account_id", None),
+                        aws_region=_region_from_cluster(cluster, asset_type),
+                        base_risk=_base_risk_from_raw(raw_asset),
+                        is_public=_is_public_from_raw(asset_type, raw_asset),
+                        is_entry_point=_is_entry_point_from_raw(asset_type, raw_asset),
+                        is_crown_jewel=_is_crown_jewel_from_raw(asset_type, raw_asset),
+                    )
+                )
+        return items
+
     # ------------------------------------------------------------------
     # GET /inventory/summary
     # ------------------------------------------------------------------
@@ -488,6 +649,83 @@ class InventoryViewService:
         total_count = len(filtered)
         paged = filtered[(page - 1) * page_size: (page - 1) * page_size + page_size]
         return InvAssetListResponse(graph_id=None, total_count=total_count, page=page, page_size=page_size, assets=paged)
+
+    async def list_user_assets(self, user_id: str) -> MeAssetInventoryListResponse:
+        clusters = await self._clusters.list_all(user_id)
+        if not clusters:
+            return MeAssetInventoryListResponse(items=[], total=0)
+
+        graph_snapshots_by_cluster = await self._get_latest_completed_graph_snapshot_ids_by_cluster(
+            [str(cluster.id) for cluster in clusters]
+        )
+        graph_rows_by_graph_id = await self._get_all_graph_nodes_for_graph_ids(
+            [str(row["id"]) for row in graph_snapshots_by_cluster.values()]
+        )
+
+        items: list[MeAssetInventoryItemResponse] = []
+        for cluster in clusters:
+            cluster_id = str(cluster.id)
+            graph_snapshot = graph_snapshots_by_cluster.get(cluster_id)
+            if graph_snapshot is not None:
+                items.extend(
+                    self._build_user_asset_items_from_graph_rows(
+                        cluster,
+                        graph_rows_by_graph_id.get(str(graph_snapshot["id"]), []),
+                    )
+                )
+                continue
+
+            snapshot = await self._get_latest_snapshot(cluster_id)
+            if snapshot is None:
+                continue
+            items.extend(self._build_user_asset_items_from_snapshot(cluster, snapshot.raw_result_json or {}))
+
+        return MeAssetInventoryListResponse(items=items, total=len(items))
+
+    async def get_user_asset_summary(self, user_id: str) -> UserOverviewResponse:
+        asset_list = await self.list_user_assets(user_id)
+        items = asset_list.items
+        return UserOverviewResponse(
+            total_assets=len(items),
+            k8s_assets=sum(1 for item in items if item.asset_domain == "k8s"),
+            aws_assets=sum(1 for item in items if item.asset_domain == "aws"),
+            public_assets=sum(1 for item in items if item.is_public is True),
+            entry_point_assets=sum(1 for item in items if item.is_entry_point is True),
+            crown_jewel_assets=sum(1 for item in items if item.is_crown_jewel is True),
+        )
+
+    async def list_user_asset_groups(self, user_id: str) -> UserGroupListResponse:
+        asset_list = await self.list_user_assets(user_id)
+        grouped_items: list[UserGroupListItemResponse] = []
+        grouped_by_key: dict[tuple[str | None, str], UserGroupListItemResponse] = {}
+
+        for asset in asset_list.items:
+            asset_domain = asset.asset_domain or asset.asset_type
+            group_tuple = (asset.aws_account_id, asset_domain)
+            group = grouped_by_key.get(group_tuple)
+            if group is None:
+                normalized_account_id = asset.aws_account_id if asset.aws_account_id is not None else "null"
+                group = UserGroupListItemResponse(
+                    group_key=f"aws_account_id:{normalized_account_id}|asset_domain:{asset_domain}",
+                    aws_account_id=asset.aws_account_id,
+                    asset_domain=asset_domain,
+                )
+                grouped_by_key[group_tuple] = group
+                grouped_items.append(group)
+
+            group.total_assets += 1
+            if asset.asset_domain == "k8s":
+                group.k8s_assets += 1
+            if asset.asset_domain == "aws":
+                group.aws_assets += 1
+            if asset.is_public is True:
+                group.public_assets += 1
+            if asset.is_entry_point is True:
+                group.entry_point_assets += 1
+            if asset.is_crown_jewel is True:
+                group.crown_jewel_assets += 1
+
+        return UserGroupListResponse(items=grouped_items, total=len(grouped_items))
 
     # ------------------------------------------------------------------
     # GET /inventory/risk-spotlight

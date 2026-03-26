@@ -18,6 +18,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -124,3 +125,79 @@ def test_get_current_user_fails_with_invalid_token():
     app.dependency_overrides.clear()
 
     assert response.status_code == 401
+
+
+def test_get_me_returns_authenticated_user_profile():
+    app.dependency_overrides.clear()
+    with _build_client() as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "user@example.com", "password": "secret-password"},
+        )
+        token = login.json()["access_token"]
+        response = client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "user-1",
+        "email": "user@example.com",
+        "name": None,
+        "is_active": True,
+    }
+
+
+def test_get_me_requires_jwt():
+    app.dependency_overrides.clear()
+    with _build_client() as client:
+        response = client.get("/api/v1/me")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_login_response_includes_name():
+    app.dependency_overrides.clear()
+    user = FakeUser(
+        id="user-2",
+        email="named@example.com",
+        password_hash=hash_password("pass"),
+        name="Bob",
+    )
+    auth_service = AuthService(user_repository=FakeUserRepository([user]))
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"email": "named@example.com", "password": "pass"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["user"]["name"] == "Bob"
+
+
+def test_get_me_returns_name():
+    app.dependency_overrides.clear()
+    user = FakeUser(
+        id="user-3",
+        email="menamed@example.com",
+        password_hash=hash_password("pass"),
+        name="Carol",
+    )
+    auth_service = AuthService(user_repository=FakeUserRepository([user]))
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "menamed@example.com", "password": "pass"},
+        )
+        token = login.json()["access_token"]
+        response = client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Carol"

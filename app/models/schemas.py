@@ -193,7 +193,71 @@ class HealthResponse(BaseModel):
 class UserSummaryResponse(BaseModel):
     id: str
     email: str
+    name: str | None = None
     is_active: bool
+
+
+class UserOverviewResponse(BaseModel):
+    total_assets: int = 0
+    k8s_assets: int = 0
+    aws_assets: int = 0
+    public_assets: int = 0
+    entry_point_assets: int = 0
+    crown_jewel_assets: int = 0
+
+
+class UserAssetListItemResponse(BaseModel):
+    cluster_id: str
+    name: str
+    cluster_type: str
+    aws_account_id: str | None = None
+    aws_region: str | None = None
+    analysis_job_count: int = 0
+    scan_record_count: int = 0
+    latest_analysis_status: str | None = None
+    latest_scan_status: str | None = None
+
+
+class UserAssetListResponse(BaseModel):
+    items: list[UserAssetListItemResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class MeAssetInventoryItemResponse(BaseModel):
+    asset_id: str
+    asset_type: str
+    asset_domain: str | None = None
+    name: str
+    cluster_id: str | None = None
+    cluster_name: str | None = None
+    aws_account_id: str | None = None
+    aws_region: str | None = None
+    base_risk: float | None = None
+    is_public: bool | None = None
+    is_entry_point: bool | None = None
+    is_crown_jewel: bool | None = None
+
+
+class MeAssetInventoryListResponse(BaseModel):
+    items: list[MeAssetInventoryItemResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class UserGroupListItemResponse(BaseModel):
+    group_key: str
+    aws_account_id: str | None = None
+    asset_domain: str
+    total_assets: int = 0
+    k8s_assets: int = 0
+    aws_assets: int = 0
+    public_assets: int = 0
+    entry_point_assets: int = 0
+    crown_jewel_assets: int = 0
+
+
+class UserGroupListResponse(BaseModel):
+    items: list[UserGroupListItemResponse] = Field(default_factory=list)
+    total: int = 0
 
 
 class LoginRequest(BaseModel):
@@ -225,6 +289,7 @@ class LoginResponse(BaseModel):
 class SignupRequest(BaseModel):
     email: str
     password: str
+    name: str | None = None
 
     @field_validator("email")
     @classmethod

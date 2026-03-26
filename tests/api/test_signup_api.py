@@ -16,6 +16,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -31,10 +32,10 @@ class FakeUserRepository:
     async def get_by_id(self, user_id: str):
         return self._by_id.get(user_id)
 
-    async def create_user(self, email: str, password_hash: str) -> FakeUser:
+    async def create_user(self, email: str, password_hash: str, name: str | None = None) -> FakeUser:
         user_id = f"new-user-{self._next_id}"
         self._next_id += 1
-        user = FakeUser(id=user_id, email=email, password_hash=password_hash)
+        user = FakeUser(id=user_id, email=email, password_hash=password_hash, name=name)
         self._by_email[email] = user
         self._by_id[user_id] = user
         return user
@@ -98,6 +99,39 @@ def test_signup_rejects_duplicate_email():
     app.dependency_overrides.clear()
 
     assert response.status_code == 409
+
+
+def test_signup_stores_name():
+    app.dependency_overrides.clear()
+    repo = FakeUserRepository()
+    client, repo = _build_client(repo)
+    with client:
+        response = client.post(
+            "/api/v1/auth/signup",
+            json={"email": "named@example.com", "password": "strongpass", "name": "Alice"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["user"]["name"] == "Alice"
+    stored = repo._by_email.get("named@example.com")
+    assert stored is not None
+    assert stored.name == "Alice"
+
+
+def test_signup_name_optional():
+    app.dependency_overrides.clear()
+    client, _ = _build_client()
+    with client:
+        response = client.post(
+            "/api/v1/auth/signup",
+            json={"email": "noname@example.com", "password": "strongpass"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["user"]["name"] is None
 
 
 def test_login_works_after_signup():

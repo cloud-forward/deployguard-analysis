@@ -24,8 +24,8 @@ class SQLAlchemyUserRepository(UserRepository):
         )
         return result.scalar_one_or_none()
 
-    async def create_user(self, email: str, password_hash: str) -> User:
-        user = User(id=str(uuid4()), email=email, password_hash=password_hash)
+    async def create_user(self, email: str, password_hash: str, name: str | None = None) -> User:
+        user = User(id=str(uuid4()), email=email, password_hash=password_hash, name=name)
         self._session.add(user)
         await self._session.commit()
         await self._session.refresh(user)

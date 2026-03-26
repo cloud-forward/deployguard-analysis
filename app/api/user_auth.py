@@ -37,6 +37,7 @@ async def login(
         user=UserSummaryResponse(
             id=user.id,
             email=user.email,
+            name=user.name,
             is_active=user.is_active,
         ),
     )
@@ -53,13 +54,14 @@ async def signup(
     auth_service: AuthService = Depends(get_auth_service),
 ):
     try:
-        user = await auth_service.signup_user(request.email, request.password)
+        user = await auth_service.signup_user(request.email, request.password, name=request.name)
     except DuplicateEmailError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
     return SignupResponse(
         user=UserSummaryResponse(
             id=user.id,
             email=user.email,
+            name=user.name,
             is_active=user.is_active,
         ),
     )

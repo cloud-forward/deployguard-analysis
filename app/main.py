@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, analyze, scan, clusters, sync, inventory, llm, user_auth
+from app.api import health, analyze, scan, clusters, sync, inventory, llm, user_auth, me
 from app.config import settings
 
 logger = logging.getLogger("deployguard.request")
@@ -73,6 +73,7 @@ app.include_router(sync.router)
 app.include_router(inventory.router)
 app.include_router(llm.router)
 app.include_router(user_auth.router)
+app.include_router(me.router)
 
 
 @app.middleware("http")

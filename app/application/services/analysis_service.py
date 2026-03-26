@@ -376,6 +376,15 @@ class AnalysisService:
                 image_scan_id=image_scan_id,
                 attack_paths=enriched_paths,
             )
+            logger.info(
+                "analysis.persist_facts.call",
+                extra={
+                    "event": "analysis.persist_facts.call",
+                    "repository_class": type(self._jobs).__name__,
+                    "repository_module": type(self._jobs).__module__,
+                    "graph_id": graph_id,
+                },
+            )
             await self._jobs.persist_facts(
                 cluster_id=cluster_id,
                 analysis_job_id=analysis_job_id,
@@ -384,6 +393,16 @@ class AnalysisService:
                 aws_scan_id=aws_scan_id,
                 image_scan_id=image_scan_id,
                 facts=extracted_facts,
+            )
+            logger.info(
+                "analysis.persist_graph.call",
+                extra={
+                    "event": "analysis.persist_graph.call",
+                    "repository_class": type(self._jobs).__name__,
+                    "repository_module": type(self._jobs).__module__,
+                    "graph_id": graph_id,
+                    "edge_count": graph.number_of_edges(),
+                },
             )
             await self._jobs.persist_graph(graph_id=graph_id, graph=graph)
             await self._jobs.finalize_graph_snapshot(

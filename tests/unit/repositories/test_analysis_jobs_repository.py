@@ -1,5 +1,6 @@
 import uuid
 import json
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from app.gateway.models import (
     AttackPathEdge,
     GraphEdge,
     GraphSnapshot,
+    PersistedFact,
     RemediationRecommendation,
 )
 from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
@@ -73,10 +75,20 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert "id" in columns
         assert "edge_id" not in columns
         assert "graph_id" in columns
+        assert "fact_id" in columns
         assert "source_node_id" in columns
         assert "target_node_id" in columns
         assert "source" not in columns
         assert "target" not in columns
+
+    def test_facts_model_exposes_graph_id_for_late_binding(self):
+        columns = PersistedFact.__table__.c
+        assert "id" in columns
+        assert "graph_id" in columns
+        assert columns.graph_id.nullable is True
+        assert "fact_type" in columns
+        assert "subject_id" in columns
+        assert "object_id" in columns
 
     @pytest.mark.asyncio
     async def test_create_analysis_job_persists_uuid_cluster_id(self, repo_and_session):
@@ -548,6 +560,160 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert path_edge_row_ids[0] != persisted_edge_id
 
     @pytest.mark.asyncio
+    async def test_persist_graph_sets_fact_id_for_fact_backed_edge(self, repo_and_session):
+        import networkx as nx
+
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="11111111-1111-1111-1111-111111111111",
+            k8s_scan_id="k8s-1",
+            aws_scan_id=None,
+            image_scan_id=None,
+            attack_paths=[],
+        )
+        await repo.persist_facts(
+            cluster_id=cluster_id,
+            analysis_job_id=None,
+            graph_id=graph_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id=None,
+            image_scan_id=None,
+            facts=[
+                Fact(
+                    fact_type="pod_uses_service_account",
+                    subject_id="pod:prod:api",
+                    subject_type="pod",
+                    object_id="sa:prod:api",
+                    object_type="service_account",
+                )
+            ],
+        )
+        fact_id = (
+            await session.execute(text("SELECT id FROM facts WHERE graph_id = :gid"), {"gid": graph_id})
+        ).scalar_one()
+
+        graph = nx.DiGraph()
+        graph.add_node("pod:prod:api", id="pod:prod:api", type="pod", metadata={})
+        graph.add_node("sa:prod:api", id="sa:prod:api", type="service_account", metadata={})
+        graph.add_edge("pod:prod:api", "sa:prod:api", type="pod_uses_service_account", metadata={})
+
+        await repo.persist_graph(graph_id=graph_id, graph=graph)
+
+        edge_row = (
+            await session.execute(
+                text(
+                    "SELECT fact_id FROM graph_edges WHERE graph_id = :gid "
+                    "AND source_node_id = :src AND target_node_id = :tgt AND edge_type = :etype"
+                ),
+                {
+                    "gid": graph_id,
+                    "src": "pod:prod:api",
+                    "tgt": "sa:prod:api",
+                    "etype": "pod_uses_service_account",
+                },
+            )
+        ).mappings().one()
+
+        assert edge_row["fact_id"] == fact_id
+
+    @pytest.mark.asyncio
+    async def test_persist_graph_sets_fact_id_for_multiple_fact_backed_edges_and_leaves_unmatched_null(
+        self,
+        repo_and_session,
+        caplog,
+    ):
+        import networkx as nx
+
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="11111111-1111-1111-1111-111111111111",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id=None,
+            attack_paths=[],
+        )
+        fact_payloads = [
+            ("pod:prod:api", "container_image:nginx:1.25", "uses_image", "pod", "container_image"),
+            ("sa:prod:api", "cluster_role:cluster-admin", "service_account_bound_cluster_role", "service_account", "cluster_role"),
+            ("iam:123456789012:AppRole", "s3:123456789012:data-bucket", "iam_role_access_resource", "iam_role", "s3_bucket"),
+            ("sg:123456789012:sg-123", "rds:123456789012:prod-db", "security_group_allows", "security_group", "rds"),
+            ("pod:prod:api", "service:prod:admin", "lateral_move", "pod", "service"),
+        ]
+        await repo.persist_facts(
+            cluster_id=cluster_id,
+            analysis_job_id=None,
+            graph_id=graph_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id=None,
+            facts=[
+                Fact(
+                    fact_type=fact_type,
+                    subject_id=subject_id,
+                    subject_type=subject_type,
+                    object_id=object_id,
+                    object_type=object_type,
+                )
+                for subject_id, object_id, fact_type, subject_type, object_type in fact_payloads
+            ],
+        )
+
+        expected_fact_ids = {
+            (row["subject_id"], row["object_id"], row["fact_type"]): row["id"]
+            for row in (
+                await session.execute(
+                    text("SELECT id, subject_id, object_id, fact_type FROM facts WHERE graph_id = :gid"),
+                    {"gid": graph_id},
+                )
+            ).mappings().all()
+        }
+
+        graph = nx.DiGraph()
+        node_ids = {
+            "pod:prod:api",
+            "container_image:nginx:1.25",
+            "sa:prod:api",
+            "cluster_role:cluster-admin",
+            "iam:123456789012:AppRole",
+            "s3:123456789012:data-bucket",
+            "sg:123456789012:sg-123",
+            "rds:123456789012:prod-db",
+            "service:prod:admin",
+            "node:worker-1",
+        }
+        for node_id in node_ids:
+            graph.add_node(node_id, id=node_id, type="generic", metadata={})
+        for source_id, object_id, fact_type in expected_fact_ids:
+            graph.add_edge(source_id, object_id, type=fact_type, metadata={})
+        graph.add_edge("pod:prod:api", "node:worker-1", type="escapes_to", metadata={})
+
+        with caplog.at_level(logging.DEBUG):
+            await repo.persist_graph(graph_id=graph_id, graph=graph)
+
+        edge_rows = (
+            await session.execute(
+                text(
+                    "SELECT source_node_id, target_node_id, edge_type, fact_id "
+                    "FROM graph_edges WHERE graph_id = :gid"
+                ),
+                {"gid": graph_id},
+            )
+        ).mappings().all()
+        fact_ids_by_edge = {
+            (row["source_node_id"], row["target_node_id"], row["edge_type"]): row["fact_id"]
+            for row in edge_rows
+        }
+
+        for key, expected_fact_id in expected_fact_ids.items():
+            assert fact_ids_by_edge[key] == expected_fact_id
+        assert fact_ids_by_edge[("pod:prod:api", "node:worker-1", "escapes_to")] is None
+        assert any(record.getMessage() == "analysis.persist_graph.unmatched_fact_edge" for record in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_finalize_graph_snapshot_marks_completed_with_real_counts(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -581,27 +747,6 @@ class TestSqlAlchemyAnalysisJobRepository:
     @pytest.mark.asyncio
     async def test_persist_facts_inserts_rows_aligned_with_in_memory_fact_count(self, repo_and_session):
         repo, session = repo_and_session
-        await session.execute(text("""
-            CREATE TABLE facts (
-                id TEXT PRIMARY KEY,
-                analysis_job_id TEXT NULL,
-                graph_id TEXT NOT NULL,
-                cluster_id TEXT NOT NULL,
-                scan_id TEXT NOT NULL,
-                k8s_scan_id TEXT NULL,
-                aws_scan_id TEXT NULL,
-                image_scan_id TEXT NULL,
-                fact_type TEXT NOT NULL,
-                subject_id TEXT NOT NULL,
-                subject_type TEXT NOT NULL,
-                object_id TEXT NOT NULL,
-                object_type TEXT NOT NULL,
-                metadata JSON NULL,
-                created_at TIMESTAMP NULL
-            )
-        """))
-        await session.commit()
-
         facts = [
             Fact(
                 fact_type="pod_uses_service_account",
@@ -661,22 +806,6 @@ class TestSqlAlchemyAnalysisJobRepository:
     @pytest.mark.asyncio
     async def test_persist_facts_parses_iso_created_at_to_datetime(self, repo_and_session):
         repo, session = repo_and_session
-        await session.execute(text("""
-            CREATE TABLE facts (
-                id TEXT PRIMARY KEY,
-                graph_id TEXT NOT NULL,
-                scan_id TEXT NOT NULL,
-                fact_type TEXT NOT NULL,
-                subject_id TEXT NOT NULL,
-                subject_type TEXT NOT NULL,
-                object_id TEXT NOT NULL,
-                object_type TEXT NOT NULL,
-                metadata JSON NULL,
-                created_at TIMESTAMP NULL
-            )
-        """))
-        await session.commit()
-
         fact = Fact(
             fact_type="pod_uses_service_account",
             subject_id="pod:prod:api",
@@ -712,21 +841,6 @@ class TestSqlAlchemyAnalysisJobRepository:
     @pytest.mark.asyncio
     async def test_persist_facts_replaces_existing_rows_for_same_graph(self, repo_and_session):
         repo, session = repo_and_session
-        await session.execute(text("""
-            CREATE TABLE facts (
-                id TEXT PRIMARY KEY,
-                graph_id TEXT NOT NULL,
-                scan_id TEXT NOT NULL,
-                fact_type TEXT NOT NULL,
-                subject_id TEXT NOT NULL,
-                subject_type TEXT NOT NULL,
-                object_id TEXT NOT NULL,
-                object_type TEXT NOT NULL,
-                metadata JSON NULL
-            )
-        """))
-        await session.commit()
-
         await repo.persist_facts(
             cluster_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             analysis_job_id=None,

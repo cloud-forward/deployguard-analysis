@@ -31,6 +31,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str = "Test User"
     is_active: bool = True
 
 

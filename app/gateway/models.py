@@ -196,8 +196,49 @@ class GraphEdge(Base):
     )
     source_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
     target_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    fact_id: Mapped[str | None] = mapped_column(UUID_COMPAT, nullable=True)
     edge_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+
+
+class PersistedFact(Base):
+    __tablename__ = "facts"
+    __table_args__ = (
+        Index("idx_facts_graph_id", "graph_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    analysis_job_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("analysis_jobs.id"),
+        nullable=True,
+    )
+    graph_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("graph_snapshots.id"),
+        nullable=True,
+    )
+    cluster_id: Mapped[str | None] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id"),
+        nullable=True,
+    )
+    scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    k8s_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aws_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image_scan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fact_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    object_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    object_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AnalysisJob(Base):

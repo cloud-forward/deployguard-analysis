@@ -232,7 +232,7 @@ class MeAssetInventoryItemResponse(BaseModel):
     cluster_name: str | None = None
     aws_account_id: str | None = None
     aws_region: str | None = None
-    risk_level: str | None = None
+    base_risk: float | None = None
     is_public: bool | None = None
     is_entry_point: bool | None = None
     is_crown_jewel: bool | None = None

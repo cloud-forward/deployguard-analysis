@@ -188,9 +188,10 @@ def _region_from_cluster(cluster: Any, asset_type: str) -> Optional[str]:
     return getattr(cluster, "aws_region", None)
 
 
-def _risk_level_from_raw(asset_type: str, raw: dict[str, Any]) -> Optional[str]:
-    if asset_type == "rds" and raw.get("publicly_accessible") is True:
-        return "high"
+def _base_risk_from_raw(raw: dict[str, Any]) -> Optional[float]:
+    value = raw.get("base_risk")
+    if isinstance(value, (int, float)):
+        return float(value)
     return None
 
 
@@ -454,7 +455,7 @@ class InventoryViewService:
         try:
             result = await self._db.execute(
                 text(f"""
-                    SELECT graph_id, node_id, node_type, risk_level, namespace,
+                    SELECT graph_id, node_id, node_type, base_risk, namespace,
                            is_entry_point, is_crown_jewel, metadata
                     FROM graph_nodes
                     WHERE graph_id IN ({placeholders})
@@ -484,7 +485,7 @@ class InventoryViewService:
                     cluster_name=getattr(cluster, "name", None),
                     aws_account_id=getattr(cluster, "aws_account_id", None),
                     aws_region=getattr(cluster, "aws_region", None),
-                    risk_level=row["risk_level"],
+                    base_risk=float(row["base_risk"]) if row["base_risk"] is not None else None,
                     is_public=_nullable_bool(metadata.get("is_public")),
                     is_entry_point=_nullable_bool(row["is_entry_point"]),
                     is_crown_jewel=_nullable_bool(row["is_crown_jewel"]),
@@ -509,7 +510,7 @@ class InventoryViewService:
                         cluster_name=getattr(cluster, "name", None),
                         aws_account_id=getattr(cluster, "aws_account_id", None),
                         aws_region=_region_from_cluster(cluster, asset_type),
-                        risk_level=_risk_level_from_raw(asset_type, raw_asset),
+                        base_risk=_base_risk_from_raw(raw_asset),
                         is_public=_is_public_from_raw(asset_type, raw_asset),
                         is_entry_point=_is_entry_point_from_raw(asset_type, raw_asset),
                         is_crown_jewel=_is_crown_jewel_from_raw(asset_type, raw_asset),

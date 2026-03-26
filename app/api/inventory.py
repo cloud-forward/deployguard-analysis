@@ -27,8 +27,12 @@ router = APIRouter(tags=["Inventory"])
     "/api/v1/clusters/{cluster_id}/assets",
     response_model=AssetInventoryListResponse,
     status_code=200,
-    summary="클러스터 Discovery Inventory 조회",
-    description="지정한 클러스터의 최신 Discovery Inventory 스냅샷을 읽어 자산 목록을 반환합니다.",
+    summary="레거시 클러스터 Discovery Inventory 조회",
+    description=(
+        "레거시 Discovery Inventory 스냅샷 기반 자산 목록 조회 API입니다. "
+        "새 구현은 /api/v1/clusters/{cluster_id}/inventory/assets 를 사용하세요."
+    ),
+    deprecated=True,
     responses={
         200: {"description": "클러스터 자산 목록"},
         404: {"description": "클러스터를 찾을 수 없습니다"},
@@ -70,7 +74,7 @@ async def get_asset_detail(
     "/api/v1/clusters/{cluster_id}/inventory/summary",
     response_model=InvSummaryResponse,
     status_code=200,
-    summary="[신규] Inventory Summary 조회",
+    summary="Inventory Summary 조회",
     description=(
         "Summary Bar용. 전체 자산 수, K8s/AWS 타입별 집계, 스캐너 커버리지, 위험 요약을 반환합니다."
     ),
@@ -87,7 +91,7 @@ async def get_inventory_summary(
     "/api/v1/clusters/{cluster_id}/inventory/assets",
     response_model=InvAssetListResponse,
     status_code=200,
-    summary="[신규] Inventory 자산 목록 조회",
+    summary="Inventory 자산 목록 조회",
     description=(
         "Asset Grid용. 필터/페이지네이션을 지원하는 자산 목록을 반환합니다."
     ),
@@ -119,7 +123,7 @@ async def get_inventory_assets(
     "/api/v1/clusters/{cluster_id}/inventory/risk-spotlight",
     response_model=InvRiskSpotlightResponse,
     status_code=200,
-    summary="[신규] Risk Spotlight 조회",
+    summary="Risk Spotlight 조회",
     description=(
         "Risk Spotlight 패널용. Entry Point / Crown Jewel 목록을 반환합니다."
     ),
@@ -136,7 +140,7 @@ async def get_inventory_risk_spotlight(
     "/api/v1/clusters/{cluster_id}/inventory/scanner-status",
     response_model=InvScannerStatusResponse,
     status_code=200,
-    summary="[신규] Scanner Status 조회",
+    summary="Scanner Status 조회",
     description=(
         "Scanner Status Bar용. 스캐너별 최신 스캔 상태 및 커버리지를 반환합니다."
     ),

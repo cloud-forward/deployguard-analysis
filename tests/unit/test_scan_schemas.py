@@ -86,9 +86,9 @@ class TestScanStatusResponse:
             status="completed",
             created_at=datetime(2024, 1, 15, 10, 0, 0),
             completed_at=datetime(2024, 1, 15, 10, 5, 0),
-            files=["scans/prod-01/abc-123/k8s/k8s-snapshot.json"]
+            s3_keys=["scans/prod-01/abc-123/k8s/k8s-snapshot.json"]
         )
         data = resp.model_dump()
         assert data["status"] == "completed"
         assert data["completed_at"] is not None
-        assert len(data["files"]) == 1
+        assert len(data["s3_keys"]) == 1

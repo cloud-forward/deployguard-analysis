@@ -21,6 +21,10 @@ def test_user_owned_models_expose_nullable_user_id_columns():
     assert LLMProviderConfig.__table__.columns["user_id"].nullable is True
 
 
+def test_scan_record_cluster_id_uses_same_uuid_type_as_cluster_id():
+    assert type(ScanRecord.__table__.columns["cluster_id"].type) is type(Cluster.__table__.columns["id"].type)
+
+
 def test_user_relationships_are_wired_on_both_sides():
     assert "clusters" in User.__mapper__.relationships
     assert "analysis_jobs" in User.__mapper__.relationships

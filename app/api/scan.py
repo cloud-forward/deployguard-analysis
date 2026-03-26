@@ -344,8 +344,12 @@ async def get_scan_detail(
         409: {"description": "원본 결과 파일이 여러 개라 기본 선택 규칙이 없습니다"},
     },
 )
-async def get_raw_result_download_url(scan_id: str, service: ScanService = Depends(get_scan_service)):
-    return await service.get_raw_result_download_url(scan_id=scan_id)
+async def get_raw_result_download_url(
+    scan_id: str,
+    service: ScanService = Depends(get_scan_service),
+    current_user: UserSummaryResponse = Depends(get_current_user),
+):
+    return await service.get_raw_result_download_url(scan_id=scan_id, user_id=current_user.id)
 
 
 @router.get(

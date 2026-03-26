@@ -218,6 +218,34 @@ class TestSQLAlchemyScanRepository:
         assert found.status == SCAN_STATUS_CREATED
 
     @pytest.mark.asyncio
+    async def test_get_latest_completed_scans_prefers_latest_completed_at_over_created_at(self, repo):
+        await repo.create(scan_id="img-older-completion", cluster_id=CLUSTER_1, scanner_type="image")
+        await repo.update_status(
+            "img-older-completion",
+            "completed",
+            completed_at=datetime(2026, 3, 9, 12, 0, 0),
+        )
+
+        await repo.create(scan_id="img-newer-completion", cluster_id=CLUSTER_1, scanner_type="image")
+        await repo.update_status(
+            "img-newer-completion",
+            "completed",
+            completed_at=datetime(2026, 3, 9, 13, 0, 0),
+        )
+
+        # Manually skew created_at so the older completion looks newer by creation time.
+        newer_by_created = await repo.get_by_scan_id("img-older-completion")
+        older_by_created = await repo.get_by_scan_id("img-newer-completion")
+        newer_by_created.created_at = datetime(2026, 3, 9, 15, 0, 0)
+        older_by_created.created_at = datetime(2026, 3, 9, 11, 0, 0)
+        await repo._session.commit()
+
+        latest = await repo.get_latest_completed_scans(CLUSTER_1)
+
+        assert latest["image"].scan_id == "img-newer-completion"
+
+
+    @pytest.mark.asyncio
     async def test_claim_next_queued_scan(self, repo):
         await repo.create(scan_id="q-001", cluster_id=CLUSTER_1, scanner_type="k8s", status="created", request_source="manual")
         now = datetime(2026, 3, 9, 12, 0, 0)

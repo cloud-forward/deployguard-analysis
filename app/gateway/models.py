@@ -488,7 +488,7 @@ class ScanRecord(Base):
     )
     scan_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     cluster_id: Mapped[str] = mapped_column(
-        String(255),          # DB에 VARCHAR 로 저장되어 있으므로 String 으로 선언
+        UUID_COMPAT,
         ForeignKey("clusters.id"),
         nullable=False,
     )

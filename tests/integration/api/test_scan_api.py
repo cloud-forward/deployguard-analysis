@@ -33,6 +33,7 @@ class FakeUser:
     email: str
     password_hash: str
     is_active: bool = True
+    name: str = ""
 
 
 class FakeUserRepository:
@@ -192,6 +193,9 @@ class FakeS3Service:
     def verify_file_exists(self, s3_key: str) -> bool:
         return self.file_exists
 
+    def generate_presigned_download_url(self, s3_key: str, expires_in: int = 600) -> str:
+        return f"https://fake-s3.example.com/{s3_key}?download=1&X-Amz-Expires={expires_in}"
+
 
 class FakeClusterRepository:
     def __init__(self):
@@ -331,6 +335,45 @@ def client_with_completed_scan():
     app.dependency_overrides[get_authenticated_cluster] = _fake_auth_cluster
     with TestClient(app) as c:
         c._completed_scan_id = scan_id
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_with_scan_with_files():
+    """TestClient pre-seeded with a completed scan that has s3_keys, owned by user-1."""
+    from datetime import datetime
+    fake_repo = FakeScanRepository()
+    fake_s3 = FakeS3Service(file_exists=True)
+    scan_id = "20260309T120000-k8s"
+    s3_key = f"scans/c1/{scan_id}/k8s/k8s-snapshot.json"
+    fake_repo._store[scan_id] = _FakeScanRecord(
+        scan_id=scan_id,
+        cluster_id="c1",
+        scanner_type="k8s",
+        user_id="user-1",
+        status="completed",
+        s3_keys=[s3_key],
+        created_at=datetime(2026, 3, 9, 12, 0, 0),
+        completed_at=datetime(2026, 3, 9, 12, 5, 0),
+        request_source="manual",
+        requested_at=datetime(2026, 3, 9, 11, 59, 0),
+    )
+    fake_clusters = FakeClusterRepository()
+    fake_service = ScanService(scan_repository=fake_repo, s3_service=fake_s3, cluster_repository=fake_clusters)
+    app.dependency_overrides[get_scan_service] = lambda: fake_service
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [
+                FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password")),
+                FakeUser(id="user-2", email="user-2@example.com", password_hash=hash_password("secret-password")),
+            ]
+        )
+    )
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+    with TestClient(app) as c:
+        c._scan_id = scan_id
+        c._s3_key = s3_key
         yield c
     app.dependency_overrides.clear()
 
@@ -640,3 +683,66 @@ class TestScanStatus:
         response = client.get(f"/api/v1/scans/{scan_id}/status", headers=_auth_headers(client, "user-2"))
 
         assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/scans/{scan_id}/raw-result-url  (auth + ownership)
+# ---------------------------------------------------------------------------
+
+class TestRawResultUrl:
+
+    def test_raw_result_url_requires_auth(self, client_with_scan_with_files):
+        """Request without Authorization header returns 401."""
+        scan_id = client_with_scan_with_files._scan_id
+        response = client_with_scan_with_files.get(f"/api/v1/scans/{scan_id}/raw-result-url")
+        assert response.status_code == 401
+
+    def test_raw_result_url_returns_download_url_for_owner(self, client_with_scan_with_files):
+        """Scan owner receives a presigned download URL."""
+        c = client_with_scan_with_files
+        response = c.get(f"/api/v1/scans/{c._scan_id}/raw-result-url", headers=_auth_headers(c))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["scan_id"] == c._scan_id
+        assert data["s3_key"] == c._s3_key
+        assert "download_url" in data
+
+    def test_raw_result_url_not_visible_to_other_user(self, client_with_scan_with_files):
+        """Another user's request returns 404 (ownership-scoped lookup)."""
+        c = client_with_scan_with_files
+        response = c.get(
+            f"/api/v1/scans/{c._scan_id}/raw-result-url",
+            headers=_auth_headers(c, "user-2"),
+        )
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /api/scans/{scan_id}/fail  (silent-None guard)
+# ---------------------------------------------------------------------------
+
+class TestFailScanSilentNone:
+
+    def test_fail_scan_raises_409_when_mark_failed_returns_none(self, client):
+        """409 is returned when mark_failed finds nothing to update (race condition guard)."""
+        import pytest
+        from unittest.mock import AsyncMock, patch
+
+        start_resp = client.post(
+            "/api/v1/scans/start",
+            headers=_auth_headers(client),
+            json={"cluster_id": AUTH_CLUSTER_ID},
+        )
+        scan_id = _scan_id_for(start_resp, "k8s")
+
+        # Patch mark_failed on the live service's repo to return None
+        service = client.app.dependency_overrides[get_scan_service]()
+        original_mark_failed = service._repo.mark_failed
+        async def _return_none(*args, **kwargs):
+            return None
+        service._repo.mark_failed = _return_none
+
+        response = client.post(f"/api/v1/scans/{scan_id}/fail", headers=_auth_headers(client))
+
+        service._repo.mark_failed = original_mark_failed
+        assert response.status_code == 409

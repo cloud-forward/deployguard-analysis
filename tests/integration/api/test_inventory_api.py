@@ -1,8 +1,10 @@
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -26,6 +28,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -295,6 +298,343 @@ def test_inventory_summary_not_visible_to_other_user(inventory_client):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cluster not found"
+
+
+@pytest.mark.asyncio
+async def test_inventory_summary_allows_legacy_cluster_with_null_owner(inventory_client):
+    legacy_cluster_id = "legacy-null-owner-cluster"
+    async with inventory_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (
+                    id, user_id, name, cluster_type, aws_account_id, aws_region, created_at, updated_at
+                )
+                VALUES (
+                    :cluster_id, NULL, 'legacy-cluster', 'aws', '123456789012', 'ap-northeast-2',
+                    '2026-03-24 10:00:00', '2026-03-24 10:00:00'
+                )
+                """
+            ),
+            {"cluster_id": legacy_cluster_id},
+        )
+        session.add(
+            InventorySnapshot(
+                cluster_id=legacy_cluster_id,
+                scan_id="legacy-scan",
+                scanned_at=datetime.fromisoformat("2026-03-24T10:05:00+00:00"),
+                raw_result_json={
+                    "iam_roles": [{"name": "legacy-role"}],
+                    "iam_users": [],
+                    "s3_buckets": [],
+                    "rds_instances": [],
+                    "ec2_instances": [],
+                },
+            )
+        )
+        await session.commit()
+
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{legacy_cluster_id}/inventory/summary",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == legacy_cluster_id
+    assert body["total_node_count"] == 1
+    assert body["aws_resources"] == {"iam_role": 1}
+
+
+@pytest.mark.asyncio
+async def test_inventory_scanner_status_allows_legacy_cluster_with_null_owner(inventory_client):
+    legacy_cluster_id = "legacy-null-owner-eks"
+    async with inventory_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (
+                    id, user_id, name, cluster_type, created_at, updated_at
+                )
+                VALUES (
+                    :cluster_id, NULL, 'legacy-eks', 'eks',
+                    '2026-03-24 10:00:00', '2026-03-24 10:00:00'
+                )
+                """
+            ),
+            {"cluster_id": legacy_cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO scan_records (
+                    id, user_id, scan_id, cluster_id, scanner_type, status, s3_keys,
+                    requested_at, request_source, created_at, completed_at
+                )
+                VALUES
+                    ('legacy-scan-row', NULL, 'legacy-k8s-scan', :cluster_id, 'k8s', 'completed', '[]',
+                     '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', '2026-03-24 10:10:00')
+                """
+            ),
+            {"cluster_id": legacy_cluster_id},
+        )
+        await session.commit()
+
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{legacy_cluster_id}/inventory/scanner-status",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["scanner_type"] for item in body["scanners"]] == ["k8s", "image"]
+    k8s_item = next(item for item in body["scanners"] if item["scanner_type"] == "k8s")
+    image_item = next(item for item in body["scanners"] if item["scanner_type"] == "image")
+    assert k8s_item["status"] == "active"
+    assert k8s_item["coverage_status"] == "covered"
+    assert image_item["status"] == "inactive"
+    assert image_item["coverage_status"] == "not_covered"
+
+
+@pytest.mark.asyncio
+async def test_inventory_summary_prefers_latest_completed_graph_by_completed_at(inventory_client):
+    async with inventory_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_snapshots (
+                    id, cluster_id, status, node_count, edge_count, entry_point_count, crown_jewel_count, completed_at, created_at
+                )
+                VALUES
+                    ('graph-older-created', :cluster_id, 'completed', 1, 0, 1, 0, '2026-03-24 12:00:00', '2026-03-24 13:00:00'),
+                    ('graph-newer-completed', :cluster_id, 'completed', 2, 0, 0, 1, '2026-03-24 14:00:00', '2026-03-24 12:00:00')
+                """
+            ),
+            {"cluster_id": inventory_client["cluster_id"]},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_nodes (
+                    id, graph_id, node_id, node_type, namespace, base_risk, is_entry_point, is_crown_jewel, metadata
+                )
+                VALUES
+                    ('gn-1', 'graph-older-created', 'pod:prod/old', 'pod', 'prod', 0.9, TRUE, FALSE, '{}'),
+                    ('gn-2', 'graph-newer-completed', 'pod:prod/api', 'pod', 'prod', 0.4, FALSE, FALSE, '{}'),
+                    ('gn-3', 'graph-newer-completed', 'service:prod/api', 'service', 'prod', 0.2, FALSE, TRUE, '{}')
+                """
+            )
+        )
+        await session.commit()
+
+    response = inventory_client["client"].get(
+        f"/api/v1/clusters/{inventory_client['cluster_id']}/inventory/summary",
+        headers=_auth_headers(inventory_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_node_count"] == 2
+    assert body["k8s_resources"] == {"pod": 1, "service": 1}
+    assert body["risk_summary"]["entry_point_count"] == 0
+    assert body["risk_summary"]["crown_jewel_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_inventory_scanner_status_uses_applicable_scanners_and_latest_scan_activity(tmp_path: Path):
+    db_path = tmp_path / "inventory_scanner_status.sqlite3"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    async def _setup():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    await _setup()
+
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override_get_inventory_service():
+        async with sessionmaker() as session:
+            yield InventoryService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                inventory_snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+            )
+
+    async def override_get_inventory_view_service():
+        async with sessionmaker() as session:
+            yield InventoryViewService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                scan_repository=SQLAlchemyScanRepository(session),
+                snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+                db=session,
+            )
+
+    async def override_get_cluster_service():
+        async with sessionmaker() as session:
+            yield ClusterService(cluster_repository=SQLAlchemyClusterRepository(session))
+
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password"))]
+        )
+    )
+
+    app.dependency_overrides[get_inventory_service] = override_get_inventory_service
+    app.dependency_overrides[get_inventory_view_service] = override_get_inventory_view_service
+    app.dependency_overrides[get_cluster_service] = override_get_cluster_service
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+
+    with TestClient(app) as client:
+        create_response = client.post(
+            "/api/v1/clusters",
+            json={"name": "eks-cluster", "cluster_type": "eks"},
+            headers=_auth_headers(client, "user-1"),
+        )
+        cluster_id = create_response.json()["id"]
+
+        async def _seed():
+            async with sessionmaker() as session:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO scan_records (
+                            id, user_id, scan_id, cluster_id, scanner_type, status, s3_keys,
+                            requested_at, request_source, created_at, completed_at
+                        )
+                        VALUES
+                            ('scan-1', 'user-1', 'k8s-created', :cluster_id, 'k8s', 'created', '[]',
+                             '2026-03-24 10:00:00', 'manual', '2026-03-24 10:00:00', NULL),
+                            ('scan-2', 'user-1', 'image-completed-old-create', :cluster_id, 'image', 'completed', '[]',
+                             '2026-03-24 09:00:00', 'manual', '2026-03-24 12:00:00', '2026-03-24 13:00:00'),
+                            ('scan-3', 'user-1', 'image-completed-new-completion', :cluster_id, 'image', 'completed', '[]',
+                             '2026-03-24 08:00:00', 'manual', '2026-03-24 11:00:00', '2026-03-24 14:00:00')
+                        """
+                    ),
+                    {"cluster_id": cluster_id},
+                )
+                await session.commit()
+
+        await _seed()
+
+        response = client.get(
+            f"/api/v1/clusters/{cluster_id}/inventory/scanner-status",
+            headers=_auth_headers(client, "user-1"),
+        )
+
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["scanner_type"] for item in body["scanners"]] == ["k8s", "image"]
+
+    k8s_item = next(item for item in body["scanners"] if item["scanner_type"] == "k8s")
+    image_item = next(item for item in body["scanners"] if item["scanner_type"] == "image")
+
+    assert k8s_item["status"] == "active"
+    assert k8s_item["coverage_status"] == "not_covered"
+    assert k8s_item["scan_id"] == "k8s-created"
+
+    assert image_item["status"] == "active"
+    assert image_item["coverage_status"] == "covered"
+    assert image_item["scan_id"] == "image-completed-new-completion"
+
+
+@pytest.mark.asyncio
+async def test_inventory_assets_falls_back_to_latest_graph_with_nodes_when_no_completed_graph(tmp_path: Path):
+    db_path = tmp_path / "inventory_graph_fallback.sqlite3"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    async def _setup():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    await _setup()
+
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override_get_inventory_service():
+        async with sessionmaker() as session:
+            yield InventoryService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                inventory_snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+            )
+
+    async def override_get_inventory_view_service():
+        async with sessionmaker() as session:
+            yield InventoryViewService(
+                cluster_repository=SQLAlchemyClusterRepository(session),
+                scan_repository=SQLAlchemyScanRepository(session),
+                snapshot_repository=SQLAlchemyInventorySnapshotRepository(session),
+                db=session,
+            )
+
+    async def override_get_cluster_service():
+        async with sessionmaker() as session:
+            yield ClusterService(cluster_repository=SQLAlchemyClusterRepository(session))
+
+    auth_service = AuthService(
+        user_repository=FakeUserRepository(
+            [FakeUser(id="user-1", email="user-1@example.com", password_hash=hash_password("secret-password"))]
+        )
+    )
+
+    app.dependency_overrides[get_inventory_service] = override_get_inventory_service
+    app.dependency_overrides[get_inventory_view_service] = override_get_inventory_view_service
+    app.dependency_overrides[get_cluster_service] = override_get_cluster_service
+    app.dependency_overrides[get_auth_service] = lambda: auth_service
+
+    with TestClient(app) as client:
+        create_response = client.post(
+            "/api/v1/clusters",
+            json={"name": "self-cluster", "cluster_type": "self-managed"},
+            headers=_auth_headers(client, "user-1"),
+        )
+        cluster_id = create_response.json()["id"]
+
+        async def _seed():
+            async with sessionmaker() as session:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO graph_snapshots (
+                            id, cluster_id, status, node_count, edge_count, entry_point_count, crown_jewel_count, completed_at, created_at
+                        )
+                        VALUES
+                            ('graph-pending', :cluster_id, 'pending', 2, 0, 1, 0, NULL, '2026-03-24 15:00:00')
+                        """
+                    ),
+                    {"cluster_id": cluster_id},
+                )
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO graph_nodes (
+                            id, graph_id, node_id, node_type, namespace, base_risk, is_entry_point, is_crown_jewel, metadata
+                        )
+                        VALUES
+                            ('fallback-1', 'graph-pending', 'pod:prod/web', 'pod', 'prod', 0.8, TRUE, FALSE, '{}'),
+                            ('fallback-2', 'graph-pending', 'service:prod/web', 'service', 'prod', 0.3, FALSE, FALSE, '{}')
+                        """
+                    )
+                )
+                await session.commit()
+
+        await _seed()
+
+        response = client.get(
+            f"/api/v1/clusters/{cluster_id}/inventory/assets",
+            headers=_auth_headers(client, "user-1"),
+        )
+
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["graph_id"] == "graph-pending"
+    assert body["total_count"] == 2
+    assert [asset["node_id"] for asset in body["assets"]] == ["pod:prod/web", "service:prod/web"]
 
 
 def test_empty_result_payload_after_sync_maps_to_empty_assets(tmp_path: Path, monkeypatch):

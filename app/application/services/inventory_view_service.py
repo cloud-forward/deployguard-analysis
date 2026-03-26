@@ -86,6 +86,12 @@ GRAPH_NODE_TYPE_TO_DOMAIN: dict[str, str] = {
     "security_group": "aws", "ec2_instance": "aws",
 }
 
+CLUSTER_TYPE_TO_SCANNERS: dict[str, list[str]] = {
+    "eks": ["k8s", "image"],
+    "self-managed": ["k8s", "image"],
+    "aws": ["aws"],
+}
+
 
 # =============================================================================
 # 헬퍼
@@ -95,6 +101,11 @@ def _compute_coverage_status(scanner_type: str, completed_scans: dict) -> InvSca
     if scanner_type in completed_scans:
         return InvScannerCoverageStatus.covered
     return InvScannerCoverageStatus.not_covered
+
+
+def _applicable_scanner_types(cluster: Any) -> list[str]:
+    cluster_type = str(getattr(cluster, "cluster_type", "") or "").lower()
+    return CLUSTER_TYPE_TO_SCANNERS.get(cluster_type, [])
 
 
 def _asset_scanner_coverage(node_type: str, completed_scans: dict) -> dict[str, str]:
@@ -241,14 +252,28 @@ class InventoryViewService:
     # ------------------------------------------------------------------
 
     async def _get_cluster_or_404(self, cluster_id: str, user_id: str | None = None):
+        if user_id is None:
+            cluster = await self._clusters.get_by_id(cluster_id)
+            if cluster is None:
+                raise HTTPException(status_code=404, detail="Cluster not found")
+            return cluster
+
+        # Prefer strict ownership for clusters already linked to the current user.
         cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        return cluster
+        if cluster is not None:
+            return cluster
+
+        # Transitional compatibility for legacy clusters created before user ownership
+        # was populated. Do not bypass access for clusters clearly owned by another user.
+        legacy_cluster = await self._clusters.get_by_id(cluster_id)
+        if legacy_cluster is not None and getattr(legacy_cluster, "user_id", None) is None:
+            return legacy_cluster
+
+        raise HTTPException(status_code=404, detail="Cluster not found")
 
     async def _get_completed_scans(self, cluster_id: str) -> dict:
         try:
-            return await self._scans.get_latest_completed_scans(str(cluster_id))
+            return await self._scans.get_latest_completed_scans(cluster_id)
         except Exception as e:
             logger.error("_get_completed_scans 에러: %s", e, exc_info=True)
             return {}
@@ -264,7 +289,7 @@ class InventoryViewService:
                            entry_point_count, crown_jewel_count
                     FROM graph_snapshots
                     WHERE cluster_id = :cluster_id AND status = 'completed'
-                    ORDER BY created_at DESC
+                    ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC
                     LIMIT 1
                 """),
                 {"cluster_id": cluster_id},
@@ -273,6 +298,53 @@ class InventoryViewService:
         except Exception as e:
             logger.error("_get_latest_graph_snapshot 에러: %s", e, exc_info=True)
             return None
+
+    async def _get_latest_inventory_graph_fallback(self, cluster_id: str) -> Optional[Any]:
+        try:
+            result = await self._db.execute(
+                text("""
+                    SELECT gs.id, gs.completed_at, gs.node_count, gs.edge_count,
+                           gs.entry_point_count, gs.crown_jewel_count
+                    FROM graph_snapshots gs
+                    WHERE gs.cluster_id = :cluster_id
+                      AND EXISTS (
+                          SELECT 1
+                          FROM graph_nodes gn
+                          WHERE gn.graph_id = gs.id
+                      )
+                    ORDER BY COALESCE(gs.completed_at, gs.created_at) DESC, gs.created_at DESC
+                    LIMIT 1
+                """),
+                {"cluster_id": cluster_id},
+            )
+            return result.mappings().first()
+        except Exception as e:
+            logger.error("_get_latest_inventory_graph_fallback 에러: %s", e, exc_info=True)
+            return None
+
+    async def _get_latest_scans(self, cluster_id: str) -> dict[str, Any]:
+        try:
+            result = await self._db.execute(
+                text("""
+                    WITH ranked AS (
+                        SELECT scan_id, scanner_type, status, completed_at, created_at,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY scanner_type
+                                   ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC
+                               ) AS rn
+                        FROM scan_records
+                        WHERE cluster_id = :cluster_id
+                    )
+                    SELECT scan_id, scanner_type, status, completed_at, created_at
+                    FROM ranked
+                    WHERE rn = 1
+                """),
+                {"cluster_id": cluster_id},
+            )
+            return {row["scanner_type"]: row for row in result.mappings().all()}
+        except Exception as e:
+            logger.error("_get_latest_scans 에러: %s", e, exc_info=True)
+            return {}
 
     async def _get_graph_node_type_counts(self, graph_id: str) -> dict[str, int]:
         try:
@@ -431,13 +503,14 @@ class InventoryViewService:
                     SELECT gs.cluster_id, gs.id, gs.completed_at
                     FROM graph_snapshots gs
                     JOIN (
-                        SELECT cluster_id, MAX(created_at) AS max_created_at
+                        SELECT cluster_id,
+                               MAX(COALESCE(completed_at, created_at)) AS latest_at
                         FROM graph_snapshots
                         WHERE status = 'completed' AND cluster_id IN ({placeholders})
                         GROUP BY cluster_id
                     ) latest
                       ON latest.cluster_id = gs.cluster_id
-                     AND latest.max_created_at = gs.created_at
+                     AND latest.latest_at = COALESCE(gs.completed_at, gs.created_at)
                     WHERE gs.status = 'completed'
                 """),
                 params,
@@ -526,6 +599,8 @@ class InventoryViewService:
         cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
         graph_snapshot = await self._get_latest_graph_snapshot(cluster_id)
+        if graph_snapshot is None:
+            graph_snapshot = await self._get_latest_inventory_graph_fallback(cluster_id)
 
         k8s_resources: dict[str, int] = {}
         aws_resources: dict[str, int] = {}
@@ -560,7 +635,7 @@ class InventoryViewService:
                 total_node_count = sum(aws_resources.values())
 
         scanner_coverage: dict[str, InvScannerCoverageDetail] = {}
-        for scanner_type in ("k8s", "aws", "image"):
+        for scanner_type in _applicable_scanner_types(cluster):
             record = completed_scans.get(scanner_type)
             if record is not None:
                 scanner_coverage[scanner_type] = InvScannerCoverageDetail(
@@ -599,6 +674,8 @@ class InventoryViewService:
         cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
         graph_snapshot = await self._get_latest_graph_snapshot(cluster_id)
+        if graph_snapshot is None:
+            graph_snapshot = await self._get_latest_inventory_graph_fallback(cluster_id)
 
         if graph_snapshot is not None:
             graph_id = str(graph_snapshot["id"])
@@ -619,7 +696,7 @@ class InventoryViewService:
                     is_crown_jewel=r["is_crown_jewel"],
                     base_risk=int(r["base_risk"] * 100) if r["base_risk"] is not None else None,
                     scanner_coverage=_asset_scanner_coverage(r["node_type"], completed_scans),
-                    metadata=dict(r["metadata"]) if r["metadata"] else {},
+                    metadata=_normalize_metadata(r["metadata"]),
                     timestamps={"last_scan_at": None, "last_analysis_at": last_analysis_at_str},
                 )
                 for r in paged
@@ -777,19 +854,30 @@ class InventoryViewService:
     # ------------------------------------------------------------------
 
     async def get_scanner_status(self, cluster_id: str, user_id: str | None = None) -> InvScannerStatusResponse:
-        await self._get_cluster_or_404(cluster_id, user_id=user_id)
+        cluster = await self._get_cluster_or_404(cluster_id, user_id=user_id)
         completed_scans = await self._get_completed_scans(cluster_id)
+        latest_scans = await self._get_latest_scans(cluster_id)
 
         scanners: list[InvScannerItem] = []
-        for scanner_type in ("k8s", "aws", "image"):
-            record = completed_scans.get(scanner_type)
+        for scanner_type in _applicable_scanner_types(cluster):
+            latest_record = latest_scans.get(scanner_type)
+            completed_record = completed_scans.get(scanner_type)
             display_name = SCANNER_DISPLAY_NAMES.get(scanner_type, scanner_type)
-            if record is not None:
+            if latest_record is not None:
                 scanners.append(InvScannerItem(
                     scanner_type=scanner_type, display_name=display_name, status="active",
-                    last_scan_at=getattr(record, "completed_at", None),
-                    scan_id=getattr(record, "scan_id", None),
-                    coverage_status=InvScannerCoverageStatus.covered, resources_collected=None,
+                    last_scan_at=(
+                        getattr(completed_record, "completed_at", None)
+                        if completed_record is not None
+                        else latest_record["completed_at"]
+                    ),
+                    scan_id=(
+                        getattr(completed_record, "scan_id", None)
+                        if completed_record is not None
+                        else latest_record["scan_id"]
+                    ),
+                    coverage_status=_compute_coverage_status(scanner_type, completed_scans),
+                    resources_collected=None,
                 ))
             else:
                 scanners.append(InvScannerItem(

@@ -591,7 +591,7 @@ class TestScanServiceGetStatus:
 
         assert result.created_at == requested_at
         assert result.completed_at is None
-        assert result.files == []
+        assert result.s3_keys == []
 
 
 class TestScanServiceGetDetail:
@@ -962,3 +962,49 @@ class TestScanServiceFailScan:
         assert record.scan_id == "s1"
         assert record.status_before == SCAN_STATUS_COMPLETED
         assert record.status_after == SCAN_STATUS_COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_fail_scan_raises_409_when_mark_failed_returns_none(self):
+        """If mark_failed returns None (race condition), fail_scan raises 409."""
+        from fastapi import HTTPException
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = SimpleNamespace(
+            scan_id="s1",
+            cluster_id="c1",
+            scanner_type="k8s",
+            status=SCAN_STATUS_CREATED,
+        )
+        repo.mark_failed.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.fail_scan("s1", user_id="user-1")
+
+        assert exc_info.value.status_code == 409
+
+
+class TestScanServiceGetRawResultDownloadUrlOwnership:
+
+    @pytest.mark.asyncio
+    async def test_get_raw_result_download_url_passes_user_id_to_repo(self):
+        """user_id is forwarded to get_by_scan_id for ownership scoping."""
+        svc, repo, s3, _ = make_service()
+        repo.get_by_scan_id.return_value = MagicMock(
+            scan_id="s1",
+            s3_keys=["scans/c1/s1/k8s/k8s-snapshot.json"],
+        )
+
+        await svc.get_raw_result_download_url("s1", user_id="user-1")
+
+        repo.get_by_scan_id.assert_awaited_with("s1", user_id="user-1")
+
+    @pytest.mark.asyncio
+    async def test_get_raw_result_download_url_returns_404_for_wrong_user(self):
+        """get_by_scan_id returning None (ownership mismatch) raises 404."""
+        from fastapi import HTTPException
+        svc, repo, _, _ = make_service()
+        repo.get_by_scan_id.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.get_raw_result_download_url("s1", user_id="user-2")
+
+        assert exc_info.value.status_code == 404

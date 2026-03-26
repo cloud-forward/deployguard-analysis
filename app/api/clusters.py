@@ -95,7 +95,7 @@ async def get_cluster(
 @router.get(
     "/{cluster_id}/attack-graph",
     response_model=AttackGraphResponse,
-    summary="[신규] Attack Graph 조회",
+    summary="Attack Graph 조회",
     description=(
         "Attack Graph 화면의 그래프, 경로 목록, 상세 패널을 한 번에 구동하기 위한 MVP 응답입니다.\n\n"
         "초기 단계에서는 backend가 `label`, `severity`, boolean 기본값, 빈 `metadata`를 직접 정규화해서 반환합니다."
@@ -116,7 +116,7 @@ async def get_attack_graph(
 @router.get(
     "/{cluster_id}/attack-paths",
     response_model=AttackPathListResponse,
-    summary="[신규] Persisted Attack Paths 조회",
+    summary="Persisted Attack Paths 조회",
     description="클러스터 기준 최신 분석에 연결된 persisted attack path 목록을 반환합니다.",
     responses={
         200: {"description": "클러스터 기준 최신 attack path 목록"},
@@ -134,7 +134,7 @@ async def get_attack_paths(
 @router.get(
     "/{cluster_id}/attack-paths/{path_id}",
     response_model=AttackPathDetailEnvelopeResponse,
-    summary="[신규] Persisted Attack Path 상세 조회",
+    summary="Persisted Attack Path 상세 조회",
     description="클러스터 기준 최신 분석에 연결된 특정 persisted attack path 상세를 반환합니다.",
     responses={
         200: {"description": "클러스터 기준 attack path 상세"},
@@ -153,7 +153,7 @@ async def get_attack_path_detail(
 @router.get(
     "/{cluster_id}/remediation-recommendations",
     response_model=RemediationRecommendationListResponse,
-    summary="[신규] Persisted Remediation Recommendations 조회",
+    summary="Persisted Remediation Recommendations 조회",
     description="클러스터 기준 최신 분석에 연결된 persisted remediation recommendation 목록을 반환합니다.",
     responses={
         200: {"description": "클러스터 기준 최신 remediation recommendation 목록"},
@@ -201,7 +201,7 @@ async def get_remediation_recommendations(
 @router.get(
     "/{cluster_id}/remediation-recommendations/{recommendation_id}",
     response_model=RemediationRecommendationDetailEnvelopeResponse,
-    summary="[신규] Persisted Remediation Recommendation 상세 조회",
+    summary="Persisted Remediation Recommendation 상세 조회",
     description="클러스터 기준 최신 분석에 연결된 특정 persisted remediation recommendation 상세를 반환합니다.",
     responses={
         200: {"description": "클러스터 기준 remediation recommendation 상세"},
@@ -257,7 +257,7 @@ async def get_remediation_recommendation_detail(
 @router.post(
     "/{cluster_id}/remediation-recommendations/{recommendation_id}/explanation",
     response_model=RecommendationExplanationResponse,
-    summary="[신규] Remediation Recommendation 설명 생성",
+    summary="Remediation Recommendation 설명 생성",
     description="수동 요청으로 특정 remediation recommendation 상세에 대한 설명을 생성합니다.",
     responses={
         200: {"description": "설명 생성 결과"},

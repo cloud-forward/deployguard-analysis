@@ -98,15 +98,14 @@ class AttackGraphService:
 
         analysis = await self._get_latest_analysis_context(cluster_id)
         if analysis is None:
-            return AttackGraphResponse(cluster_id=cluster_id)
+            return self._build_empty_attack_graph_response(cluster_id)
 
         graph_id = analysis.get("graph_id")
         if not graph_id:
-            return AttackGraphResponse(
-                cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id"),
-                generated_at=analysis.get("generated_at"),
-            )
+            return self._build_empty_attack_graph_response(cluster_id, analysis=analysis)
+
+        if not await self._graph_has_persisted_rows(str(graph_id)):
+            return self._build_empty_attack_graph_response(cluster_id, analysis=analysis)
 
         nodes = await self._get_nodes(str(graph_id))
         valid_node_ids = {node.id for node in nodes}
@@ -125,8 +124,8 @@ class AttackGraphService:
         )
 
         return AttackGraphResponse(
-            cluster_id=cluster_id,
-            analysis_run_id=analysis.get("analysis_run_id"),
+            cluster_id=self._normalize_response_str(cluster_id),
+            analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")),
             generated_at=analysis.get("generated_at"),
             nodes=nodes,
             edges=edges,
@@ -140,11 +139,10 @@ class AttackGraphService:
 
         analysis = await self._get_latest_analysis_context(cluster_id)
         if analysis is None or not analysis.get("graph_id"):
-            return AttackPathListResponse(
-                cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
-                generated_at=analysis.get("generated_at") if analysis else None,
-            )
+            return self._build_empty_attack_paths_response(cluster_id, analysis=analysis)
+
+        if not await self._attack_paths_exist(str(analysis["graph_id"])):
+            return self._build_empty_attack_paths_response(cluster_id, analysis=analysis)
 
         items = await self._get_attack_path_items(str(analysis["graph_id"]))
         return AttackPathListResponse(
@@ -152,6 +150,30 @@ class AttackGraphService:
             analysis_run_id=analysis.get("analysis_run_id"),
             generated_at=analysis.get("generated_at"),
             items=items,
+        )
+
+    def _build_empty_attack_graph_response(
+        self,
+        cluster_id: str,
+        *,
+        analysis: Optional[dict[str, Any]] = None,
+    ) -> AttackGraphResponse:
+        return AttackGraphResponse(
+            cluster_id=self._normalize_response_str(cluster_id),
+            analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
+            generated_at=analysis.get("generated_at") if analysis else None,
+        )
+
+    def _build_empty_attack_paths_response(
+        self,
+        cluster_id: str,
+        *,
+        analysis: Optional[dict[str, Any]] = None,
+    ) -> AttackPathListResponse:
+        return AttackPathListResponse(
+            cluster_id=cluster_id,
+            analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
+            generated_at=analysis.get("generated_at") if analysis else None,
         )
 
     async def get_attack_path_detail(
@@ -408,6 +430,29 @@ class AttackGraphService:
             },
         )
         return dict(row) if row else None
+
+    async def _graph_has_persisted_rows(self, graph_id: str) -> bool:
+        for table_name in ("graph_nodes", "graph_edges", "attack_paths"):
+            if await self._table_has_rows_for_graph(table_name, graph_id):
+                return True
+        return False
+
+    async def _attack_paths_exist(self, graph_id: str) -> bool:
+        return await self._table_has_rows_for_graph("attack_paths", graph_id)
+
+    async def _table_has_rows_for_graph(self, table_name: str, graph_id: str) -> bool:
+        result = await self._db.execute(
+            text(
+                f"""
+                SELECT 1
+                FROM {table_name}
+                WHERE graph_id = :graph_id
+                LIMIT 1
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        return result.first() is not None
 
     async def _get_table_columns(self, table_name: str) -> set[str]:
         conn = await self._db.connection()
@@ -1272,6 +1317,10 @@ class AttackGraphService:
             return None
         normalized = str(value)
         return normalized if normalized else None
+
+    @staticmethod
+    def _normalize_response_str(value: Any) -> str:
+        return str(value)
 
     @staticmethod
     def _normalize_int_list(value: Any) -> list[int]:

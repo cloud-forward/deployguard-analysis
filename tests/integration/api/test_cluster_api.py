@@ -22,6 +22,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str = "Test User"
     is_active: bool = True
 
 
@@ -563,6 +564,42 @@ async def test_get_attack_paths_returns_persisted_cluster_scoped_list(attack_gra
 
 
 @pytest.mark.asyncio
+async def test_get_attack_paths_returns_empty_payload_when_analysis_exists_but_path_rows_do_not(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-paths-empty"
+    analysis_run_id = "analysis-paths-empty"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 12:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 12:00:00', '2026-03-22 12:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-paths",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cluster_id": cluster_id,
+        "analysis_run_id": analysis_run_id,
+        "generated_at": "2026-03-22T12:05:00",
+        "items": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_attack_path_detail_returns_ordered_edge_sequence(attack_graph_client):
     cluster_id = attack_graph_client["cluster_id"]
     graph_id = "graph-paths-2"
@@ -1063,6 +1100,44 @@ async def test_get_attack_graph_returns_empty_payload_when_no_analysis_exists(at
         "cluster_id": cluster_id,
         "analysis_run_id": None,
         "generated_at": None,
+        "nodes": [],
+        "edges": [],
+        "paths": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_attack_graph_returns_empty_payload_when_analysis_exists_but_graph_rows_do_not(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-empty"
+    analysis_run_id = "analysis-empty"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 10:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 10:00:00', '2026-03-22 10:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/attack-graph",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cluster_id": cluster_id,
+        "analysis_run_id": analysis_run_id,
+        "generated_at": "2026-03-22T10:05:00",
         "nodes": [],
         "edges": [],
         "paths": [],

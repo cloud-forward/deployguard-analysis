@@ -323,13 +323,13 @@ class AttackPath(Base):
         ForeignKey("graph_snapshots.id"),
         nullable=False,
     )
-    path_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    path_id: Mapped[str] = mapped_column(Text, nullable=False)
     risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
     risk_score: Mapped[float | None] = mapped_column(nullable=True)
     raw_final_risk: Mapped[float | None] = mapped_column(nullable=True)
     hop_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    entry_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    target_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    entry_node_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_node_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     node_ids: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
 
 

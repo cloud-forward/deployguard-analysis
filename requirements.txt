@@ -3,6 +3,7 @@ uvicorn[standard]
 pydantic[email]
 pydantic-settings
 sqlalchemy[asyncio]
+alembic
 asyncpg
 networkx
 httpx

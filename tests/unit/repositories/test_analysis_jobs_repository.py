@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import Text, func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.gateway.db.base import Base
@@ -69,6 +69,9 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert "path_id" in columns
         assert "title" not in columns
         assert "edge_ids" not in columns
+        assert isinstance(columns.path_id.type, Text)
+        assert isinstance(columns.entry_node_id.type, Text)
+        assert isinstance(columns.target_node_id.type, Text)
 
     def test_graph_edges_uses_id_not_edge_id(self):
         columns = GraphEdge.__table__.c
@@ -290,6 +293,58 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert snapshot.k8s_scan_id == "k8s-1"
         assert snapshot.aws_scan_id == "aws-1"
         assert snapshot.image_scan_id == "img-1"
+
+    @pytest.mark.asyncio
+    async def test_persist_attack_paths_supports_long_canonical_identifiers(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        long_entry_node_id = "ingress:prod:web:" + ":".join(f"segment{i:02d}" for i in range(24))
+        long_mid_node_id = "pod:prod:api:" + ":".join(f"workload{i:02d}" for i in range(24))
+        long_target_node_id = "s3:prod-secrets:" + ":".join(f"resource{i:02d}" for i in range(24))
+        long_path_id = f"path:0:{long_entry_node_id}->{long_mid_node_id}->{long_target_node_id}"
+
+        assert len(long_path_id) > 255
+        assert len(long_entry_node_id) > 255
+        assert len(long_target_node_id) > 255
+
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="k8s-1-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": long_path_id,
+                    "path": [long_entry_node_id, long_mid_node_id, long_target_node_id],
+                    "raw_final_risk": 0.91,
+                    "risk_score": 0.91,
+                    "length": 3,
+                    "edges": [
+                        {
+                            "source": long_entry_node_id,
+                            "target": long_mid_node_id,
+                            "type": "ingress_exposes_service",
+                        },
+                        {
+                            "source": long_mid_node_id,
+                            "target": long_target_node_id,
+                            "type": "iam_role_access_resource",
+                        },
+                    ],
+                }
+            ],
+        )
+
+        path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
+
+        assert path is not None
+        assert path.path_id == long_path_id
+        assert path.entry_node_id == long_entry_node_id
+        assert path.target_node_id == long_target_node_id
+        assert len(path.path_id) > 255
+        assert len(path.entry_node_id) > 255
+        assert len(path.target_node_id) > 255
 
     @pytest.mark.asyncio
     async def test_persist_attack_paths_skips_zero_hop_self_paths(self, repo_and_session):

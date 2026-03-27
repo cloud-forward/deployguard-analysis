@@ -25,8 +25,10 @@ from app.gateway.repositories.inventory_snapshot_repository import SQLAlchemyInv
 from app.application.services.scan_service import ScanService
 from app.application.services.s3_service import S3Service
 from app.application.services.cluster_service import ClusterService
+from app.application.services.runtime_snapshot_service import RuntimeSnapshotService
 from app.application.services.user_overview_service import UserOverviewService
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
+from app.gateway.repositories.runtime_snapshot_repository import SQLAlchemyRuntimeSnapshotRepository
 from app.gateway.repositories.user_overview_repository import SQLAlchemyUserOverviewRepository
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,19 @@ def get_cluster_service(
 ) -> ClusterService:
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     return ClusterService(cluster_repository=cluster_repo)
+
+
+def get_runtime_snapshot_service(
+    db: AsyncSession = Depends(get_db),
+) -> RuntimeSnapshotService:
+    cluster_repo = SQLAlchemyClusterRepository(session=db)
+    runtime_repo = SQLAlchemyRuntimeSnapshotRepository(session=db)
+    runtime_s3_service = S3Service(bucket_name=settings.S3_RUNTIME_BUCKET_NAME, region=settings.AWS_REGION)
+    return RuntimeSnapshotService(
+        runtime_snapshot_repository=runtime_repo,
+        cluster_repository=cluster_repo,
+        s3_service=runtime_s3_service,
+    )
 
 
 def get_attack_graph_service(

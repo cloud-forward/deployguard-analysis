@@ -3,6 +3,7 @@ S3 service for generating presigned URLs and verifying file existence.
 """
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -16,6 +17,11 @@ from app.core.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def format_runtime_upload_timestamp(timestamp: datetime) -> str:
+    normalized = timestamp.astimezone(timezone.utc)
+    return normalized.strftime("%Y%m%dT%H%M%SZ")
 
 
 class S3Service:
@@ -70,6 +76,25 @@ class S3Service:
             )
         except ClientError as e:
             logger.error("Failed to generate presigned URL for key '%s': %s", s3_key, e)
+            raise
+        return presigned_url, s3_key
+
+    def generate_runtime_presigned_upload_url(
+        self,
+        cluster_id: str,
+        uploaded_at: datetime,
+        expires_in: int = 600,
+    ) -> tuple[str, str]:
+        timestamp = format_runtime_upload_timestamp(uploaded_at)
+        s3_key = f"runtime/{cluster_id}/{timestamp}/events.json"
+        try:
+            presigned_url = self.client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self.bucket_name, "Key": s3_key},
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.error("Failed to generate runtime presigned URL for key '%s': %s", s3_key, e)
             raise
         return presigned_url, s3_key
 

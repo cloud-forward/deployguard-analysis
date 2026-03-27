@@ -75,8 +75,8 @@ class SecretCredentialsExtractor:
     ) -> list[SecretContainsCredentialsFact]:
         metadata = secret.get("metadata")
         if not isinstance(metadata, dict):
-            logger.warning("Skipping Secret with invalid metadata structure")
-            return []
+            # Flat scanner format: namespace/name live at top level.
+            metadata = secret
 
         namespace = metadata.get("namespace")
         name = metadata.get("name")

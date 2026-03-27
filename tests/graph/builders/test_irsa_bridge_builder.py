@@ -492,3 +492,204 @@ def test_bridge_builder_emits_structured_warnings_for_unresolved_rds_and_s3_targ
             "note": "S3 credential pattern found but no scanned bucket matched",
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# Flat scanner format regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_builder_irsa_from_flat_format_service_account():
+    """Service accounts without a 'metadata' wrapper must still produce IRSA edges."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": aws_scan.iam_roles[0].arn,
+                },
+            }
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.irsa_mappings) == 1
+    assert result.irsa_mappings[0].sa_namespace == "production"
+    assert result.irsa_mappings[0].sa_name == "api-sa"
+    assert result.irsa_mappings[0].iam_role_name == "WebAppRole"
+    assert result.skipped_irsa == 0
+
+
+def test_bridge_builder_credentials_from_flat_format_secrets():
+    """Secrets without a 'metadata' wrapper must still produce credential edges."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "namespace": "production",
+                "name": "aws-credentials",
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            },
+            {
+                "namespace": "production",
+                "name": "db-credentials",
+                "stringData": {
+                    "host": "prod-db.example.us-east-1.rds.amazonaws.com",
+                    "username": "appuser",
+                    "password": "super-secret",
+                },
+            },
+            {
+                "namespace": "production",
+                "name": "s3-config",
+                "stringData": {
+                    "bucket": "sensitive-data-bucket",
+                    "region": "us-east-1",
+                },
+            },
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.credential_facts) == 3
+    facts_by_type = {fact.target_type: fact for fact in result.credential_facts}
+    assert facts_by_type["iam_user"].target_id == "web-app-deployer"
+    assert facts_by_type["rds"].target_id == "production-db"
+    assert facts_by_type["s3"].target_id == "sensitive-data-bucket"
+
+
+def test_bridge_builder_flat_format_feeds_into_aws_graph_builder():
+    """End-to-end: flat-format K8s scan -> bridge -> AWS graph edges."""
+    bridge_builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": aws_scan.iam_roles[0].arn,
+                },
+            }
+        ],
+        "secrets": [
+            {
+                "namespace": "production",
+                "name": "aws-credentials",
+                "stringData": {
+                    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+                    "AWS_SECRET_ACCESS_KEY": "super-secret",
+                },
+            },
+            {
+                "namespace": "production",
+                "name": "db-credentials",
+                "stringData": {
+                    "host": "prod-db.example.us-east-1.rds.amazonaws.com",
+                    "username": "appuser",
+                    "password": "super-secret",
+                },
+            },
+        ],
+    }
+
+    bridge_result = bridge_builder.build(k8s_scan, aws_scan)
+    build_result = AWSGraphBuilder(
+        aws_scan.aws_account_id,
+        aws_scan.scan_id,
+    ).build_with_bridge_result(aws_scan, bridge_result)
+
+    edge_triplets = {(edge.source, edge.target, edge.type) for edge in build_result.edges}
+    assert (
+        "sa:production:api-sa",
+        f"iam:{aws_scan.aws_account_id}:WebAppRole",
+        "service_account_assumes_iam_role",
+    ) in edge_triplets
+    assert (
+        "secret:production:aws-credentials",
+        f"iam_user:{aws_scan.aws_account_id}:web-app-deployer",
+        "secret_contains_aws_credentials",
+    ) in edge_triplets
+    assert (
+        "secret:production:db-credentials",
+        f"rds:{aws_scan.aws_account_id}:production-db",
+        "secret_contains_credentials",
+    ) in edge_triplets
+
+
+def test_bridge_builder_flat_format_warnings_include_malformed_arn():
+    """Warnings must work for flat-format SAs with bad ARNs."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": "not-an-arn",
+                },
+            }
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert result.irsa_mappings == []
+    assert result.skipped_irsa == 1
+    assert any(w["reason"] == "malformed_role_arn" for w in result.warnings)
+
+
+def test_bridge_builder_flat_format_candidate_counts_are_accurate():
+    """Candidate counts must reflect flat-format SAs and secrets."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "service_accounts": [
+            {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": aws_scan.iam_roles[0].arn,
+                },
+            },
+            {
+                "namespace": "production",
+                "name": "unannotated-sa",
+            },
+        ],
+        "secrets": [
+            {
+                "namespace": "production",
+                "name": "db-credentials",
+                "stringData": {
+                    "host": "prod-db.example.us-east-1.rds.amazonaws.com",
+                    "username": "appuser",
+                    "password": "super-secret",
+                },
+            },
+            {
+                "namespace": "production",
+                "name": "inert-secret",
+                "data": {
+                    "config": "not-credential-data",
+                },
+            },
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.irsa_mappings) == 1
+    assert result.skipped_irsa == 0
+    assert len(result.credential_facts) == 1
+    assert result.skipped_credentials == 0

@@ -51,8 +51,8 @@ class IRSAMappingExtractor:
     ) -> IRSAMapping | None:
         metadata = service_account.get("metadata")
         if not isinstance(metadata, dict):
-            logger.warning("Skipping service account with invalid metadata structure")
-            return None
+            # Flat scanner format: namespace/name/annotations live at top level.
+            metadata = service_account
 
         namespace = metadata.get("namespace")
         name = metadata.get("name")

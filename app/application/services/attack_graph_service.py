@@ -146,8 +146,8 @@ class AttackGraphService:
 
         items = await self._get_attack_path_items(str(analysis["graph_id"]))
         return AttackPathListResponse(
-            cluster_id=cluster_id,
-            analysis_run_id=analysis.get("analysis_run_id"),
+            cluster_id=self._normalize_response_str(cluster_id),
+            analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")),
             generated_at=analysis.get("generated_at"),
             items=items,
         )
@@ -171,7 +171,7 @@ class AttackGraphService:
         analysis: Optional[dict[str, Any]] = None,
     ) -> AttackPathListResponse:
         return AttackPathListResponse(
-            cluster_id=cluster_id,
+            cluster_id=self._normalize_response_str(cluster_id),
             analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
             generated_at=analysis.get("generated_at") if analysis else None,
         )
@@ -189,8 +189,8 @@ class AttackGraphService:
         analysis = await self._get_latest_analysis_context(cluster_id)
         if analysis is None or not analysis.get("graph_id"):
             return AttackPathDetailEnvelopeResponse(
-                cluster_id=cluster_id,
-                analysis_run_id=analysis.get("analysis_run_id") if analysis else None,
+                cluster_id=self._normalize_response_str(cluster_id),
+                analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")) if analysis else None,
                 generated_at=analysis.get("generated_at") if analysis else None,
                 path=None,
             )
@@ -200,8 +200,8 @@ class AttackGraphService:
             raise HTTPException(status_code=404, detail="Attack path not found")
 
         return AttackPathDetailEnvelopeResponse(
-            cluster_id=cluster_id,
-            analysis_run_id=analysis.get("analysis_run_id"),
+            cluster_id=self._normalize_response_str(cluster_id),
+            analysis_run_id=self._normalize_optional_str(analysis.get("analysis_run_id")),
             generated_at=analysis.get("generated_at"),
             path=path,
         )

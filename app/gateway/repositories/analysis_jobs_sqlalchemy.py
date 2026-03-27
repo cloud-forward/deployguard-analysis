@@ -139,6 +139,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
     ) -> str:
         normalized_cluster_id = str(UUID(str(cluster_id)))
         attack_path_columns = await self._get_table_columns("attack_paths")
+        attack_path_node_columns = await self._get_table_columns("attack_path_nodes")
         persisted_graph_id = await self._ensure_graph_snapshot(
             graph_id=graph_id,
             cluster_id=normalized_cluster_id,
@@ -148,6 +149,18 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         )
 
         path_ids_subquery = select(AttackPath.id).where(AttackPath.graph_id == persisted_graph_id)
+        attack_path_nodes_fk_column = self._attack_path_nodes_fk_column(attack_path_node_columns)
+        attack_path_nodes_table = (
+            await self._reflect_table("attack_path_nodes")
+            if attack_path_nodes_fk_column is not None
+            else None
+        )
+        if attack_path_nodes_table is not None:
+            await self._session.execute(
+                attack_path_nodes_table.delete().where(
+                    attack_path_nodes_table.c[attack_path_nodes_fk_column].in_(path_ids_subquery)
+                )
+            )
         await self._session.execute(delete(AttackPathEdge).where(AttackPathEdge.path_id.in_(path_ids_subquery)))
         await self._session.execute(delete(AttackPath).where(AttackPath.graph_id == persisted_graph_id))
 
@@ -184,6 +197,19 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
                         node_ids=node_ids,
                         path=path,
                     )
+                ],
+            )
+            await self._bulk_insert_rows(
+                "attack_path_nodes",
+                [
+                    self._attack_path_node_row(
+                        attack_path_node_columns=attack_path_node_columns,
+                        graph_id=persisted_graph_id,
+                        persisted_path_row_id=persisted_path_row_id,
+                        node_id=node_id,
+                        position=position,
+                    )
+                    for position, node_id in enumerate(node_ids)
                 ],
             )
 
@@ -694,9 +720,52 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             row["node_ids"] = json.dumps(node_ids)
         return row
 
+    def _attack_path_node_row(
+        self,
+        *,
+        attack_path_node_columns: set[str],
+        graph_id: str,
+        persisted_path_row_id: str,
+        node_id: str,
+        position: int,
+    ) -> dict[str, Any]:
+        row: dict[str, Any] = {}
+        fk_column = self._attack_path_nodes_fk_column(attack_path_node_columns)
+        position_column = self._attack_path_nodes_position_column(attack_path_node_columns)
+
+        if "id" in attack_path_node_columns:
+            row["id"] = self._attack_path_node_row_id(persisted_path_row_id, position, node_id)
+        if "graph_id" in attack_path_node_columns:
+            row["graph_id"] = graph_id
+        if fk_column is not None:
+            row[fk_column] = persisted_path_row_id
+        if "node_id" in attack_path_node_columns:
+            row["node_id"] = node_id
+        if position_column is not None:
+            row[position_column] = position
+        return row
+
     @staticmethod
     def _is_persistable_attack_path(node_ids: list[str]) -> bool:
         return len(node_ids) > 1 and node_ids[0] != node_ids[-1]
+
+    @staticmethod
+    def _attack_path_nodes_fk_column(columns: set[str]) -> str | None:
+        for candidate in ("attack_path_id", "path_id"):
+            if candidate in columns:
+                return candidate
+        return None
+
+    @staticmethod
+    def _attack_path_nodes_position_column(columns: set[str]) -> str | None:
+        for candidate in ("position", "sequence"):
+            if candidate in columns:
+                return candidate
+        return None
+
+    @staticmethod
+    def _attack_path_node_row_id(persisted_path_row_id: str, position: int, node_id: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"{persisted_path_row_id}:{position}:{node_id}"))
 
     def _graph_edge_row(
         self,

@@ -155,10 +155,11 @@ async def test_get_attack_graph_serializes_uuid_analysis_run_id_in_non_empty_res
 @pytest.mark.asyncio
 async def test_get_attack_paths_returns_empty_payload_when_analysis_exists_but_no_persisted_rows():
     service = AttackGraphService(cluster_repository=FakeClusterRepository(), db=SimpleNamespace())
+    analysis_run_id = uuid4()
 
     async def fake_get_latest_analysis_context(cluster_id: str):
         return {
-            "analysis_run_id": uuid4(),
+            "analysis_run_id": analysis_run_id,
             "graph_id": "graph-empty",
             "generated_at": None,
         }
@@ -173,6 +174,104 @@ async def test_get_attack_paths_returns_empty_payload_when_analysis_exists_but_n
     response = await service.get_attack_paths("cluster-1")
 
     assert response.cluster_id == "cluster-1"
-    assert isinstance(response.analysis_run_id, str)
+    assert response.analysis_run_id == str(analysis_run_id)
     assert response.generated_at is None
     assert response.items == []
+
+
+@pytest.mark.asyncio
+async def test_get_attack_paths_serializes_uuid_analysis_run_id_in_non_empty_response():
+    service = AttackGraphService(cluster_repository=FakeClusterRepository(), db=SimpleNamespace())
+    analysis_run_id = uuid4()
+
+    async def fake_get_latest_analysis_context(cluster_id: str):
+        return {
+            "analysis_run_id": analysis_run_id,
+            "graph_id": "graph-non-empty",
+            "generated_at": None,
+        }
+
+    async def fake_attack_paths_exist(graph_id: str) -> bool:
+        assert graph_id == "graph-non-empty"
+        return True
+
+    async def fake_get_attack_path_items(graph_id: str):
+        assert graph_id == "graph-non-empty"
+        return []
+
+    service._get_latest_analysis_context = fake_get_latest_analysis_context
+    service._attack_paths_exist = fake_attack_paths_exist
+    service._get_attack_path_items = fake_get_attack_path_items
+
+    response = await service.get_attack_paths("cluster-1")
+
+    assert response.cluster_id == "cluster-1"
+    assert response.analysis_run_id == str(analysis_run_id)
+    assert response.generated_at is None
+    assert response.items == []
+
+
+@pytest.mark.asyncio
+async def test_get_attack_path_detail_serializes_uuid_analysis_run_id_in_empty_response():
+    service = AttackGraphService(cluster_repository=FakeClusterRepository(), db=SimpleNamespace())
+    analysis_run_id = uuid4()
+
+    async def fake_get_latest_analysis_context(cluster_id: str):
+        return {
+            "analysis_run_id": analysis_run_id,
+            "graph_id": None,
+            "generated_at": None,
+        }
+
+    service._get_latest_analysis_context = fake_get_latest_analysis_context
+
+    response = await service.get_attack_path_detail("cluster-1", "path-1")
+
+    assert response.cluster_id == "cluster-1"
+    assert response.analysis_run_id == str(analysis_run_id)
+    assert response.generated_at is None
+    assert response.path is None
+
+
+@pytest.mark.asyncio
+async def test_get_attack_path_detail_serializes_uuid_analysis_run_id_in_non_empty_response():
+    service = AttackGraphService(cluster_repository=FakeClusterRepository(), db=SimpleNamespace())
+    analysis_run_id = uuid4()
+    detail = {
+        "path_id": "path-1",
+        "title": "Entry to target",
+        "risk_level": "critical",
+        "risk_score": 0.91,
+        "raw_final_risk": 0.91,
+        "hop_count": 2,
+        "entry_node_id": "ingress:prod:web",
+        "target_node_id": "s3:123:data",
+        "node_ids": ["ingress:prod:web", "pod:prod:api", "s3:123:data"],
+        "edge_ids": ["edge-1", "edge-2"],
+        "edges": [],
+    }
+
+    async def fake_get_latest_analysis_context(cluster_id: str):
+        return {
+            "analysis_run_id": analysis_run_id,
+            "graph_id": "graph-detail",
+            "generated_at": None,
+        }
+
+    async def fake_get_attack_path_detail(graph_id: str, path_id: str):
+        assert graph_id == "graph-detail"
+        assert path_id == "path-1"
+        return detail
+
+    service._get_latest_analysis_context = fake_get_latest_analysis_context
+    service._get_attack_path_detail = fake_get_attack_path_detail
+
+    response = await service.get_attack_path_detail("cluster-1", "path-1")
+
+    assert response.cluster_id == "cluster-1"
+    assert response.analysis_run_id == str(analysis_run_id)
+    assert response.generated_at is None
+    assert response.path is not None
+    assert response.path.path_id == "path-1"
+    assert response.path.node_ids == ["ingress:prod:web", "pod:prod:api", "s3:123:data"]
+    assert response.path.edge_ids == ["edge-1", "edge-2"]

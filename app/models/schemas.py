@@ -558,6 +558,43 @@ class PendingScanClaimResponse(BaseModel):
     files: list[str] = Field(default_factory=list)
 
 
+class RuntimeUploadUrlResponse(BaseModel):
+    upload_url: str = Field(..., description="Runtime snapshot S3 presigned PUT URL")
+    s3_key: str = Field(
+        ...,
+        description="Runtime snapshot S3 object key",
+        example="runtime/a1b2c3d4-e5f6-7890-abcd-ef1234567890/20260327T120000Z/events.json",
+    )
+    expires_in: int = Field(default=600, description="URL expiration in seconds")
+
+
+class RuntimeCompleteRequest(BaseModel):
+    s3_key: str = Field(
+        ...,
+        description="Uploaded runtime snapshot S3 key",
+        example="runtime/a1b2c3d4-e5f6-7890-abcd-ef1234567890/20260327T120000Z/events.json",
+    )
+    snapshot_at: datetime = Field(..., description="Observed runtime snapshot timestamp")
+    fact_count: int | None = Field(default=None, ge=0, description="Optional runtime fact count")
+
+
+class RuntimeCompleteResponse(BaseModel):
+    upload_id: str
+    cluster_id: str
+    s3_key: str
+    snapshot_at: datetime
+    uploaded_at: datetime
+    fact_count: int | None = None
+
+
+class RuntimeStatusResponse(BaseModel):
+    cluster_id: str
+    last_uploaded_at: datetime | None = None
+    snapshot_at: datetime | None = None
+    fact_count: int | None = None
+    is_stale: bool
+
+
 ALLOWED_CLUSTER_TYPES = ("eks", "self-managed", "aws")
 
 

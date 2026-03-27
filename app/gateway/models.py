@@ -457,6 +457,43 @@ class Cluster(Base):
     user: Mapped["User"] = relationship("User", back_populates="clusters")
 
 
+class RuntimeSnapshot(Base):
+    __tablename__ = "runtime_snapshots"
+    __table_args__ = (
+        Index("idx_runtime_snapshots_cluster_uploaded_at", "cluster_id", text("uploaded_at DESC")),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        primary_key=True,
+        default=lambda: str(uuid4()),
+        server_default=text("gen_random_uuid()"),
+    )
+    cluster_id: Mapped[str] = mapped_column(
+        UUID_COMPAT,
+        ForeignKey("clusters.id"),
+        nullable=False,
+    )
+    s3_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+    fact_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+
 class InventorySnapshot(Base):
     __tablename__ = "inventory_snapshots"
     __table_args__ = (

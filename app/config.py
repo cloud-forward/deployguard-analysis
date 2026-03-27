@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     S3_BUCKET_NAME: str = "dg-raw-scans"
+    S3_RUNTIME_BUCKET_NAME: str = "dg-runtime-scans"
     AWS_REGION: str = "ap-northeast-2"
+    RUNTIME_STALE_THRESHOLD_SECONDS: int = 3600
     CORS_ALLOWED_ORIGINS: list[str] = [
         "http://localhost:5173",
         "https://deployguard.org",

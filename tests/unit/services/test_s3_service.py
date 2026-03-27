@@ -1,4 +1,5 @@
 from unittest.mock import patch, MagicMock
+from datetime import datetime, timezone
 import pytest
 from app.application.services.s3_service import S3Service
 
@@ -133,6 +134,35 @@ class TestS3Service:
 
         call_args = self.mock_s3_client.generate_presigned_url.call_args
         assert call_args[1]["ExpiresIn"] == 300
+
+    def test_generate_runtime_presigned_upload_url_returns_runtime_key(self):
+        self.mock_s3_client.generate_presigned_url.return_value = "https://runtime-url"
+
+        url, key = self.service.generate_runtime_presigned_upload_url(
+            cluster_id="cluster-1",
+            uploaded_at=datetime(2026, 3, 27, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        assert url == "https://runtime-url"
+        assert key == "runtime/cluster-1/20260327T120000Z/events.json"
+
+    def test_generate_runtime_presigned_upload_url_uses_bucket_and_key(self):
+        self.mock_s3_client.generate_presigned_url.return_value = "https://runtime-url"
+
+        self.service.generate_runtime_presigned_upload_url(
+            cluster_id="cluster-1",
+            uploaded_at=datetime(2026, 3, 27, 12, 0, 0, tzinfo=timezone.utc),
+            expires_in=300,
+        )
+
+        self.mock_s3_client.generate_presigned_url.assert_called_with(
+            "put_object",
+            Params={
+                "Bucket": "test-bucket",
+                "Key": "runtime/cluster-1/20260327T120000Z/events.json",
+            },
+            ExpiresIn=300,
+        )
 
     def test_download_presigned_url_expiration_default(self):
         """Default download expiration is 600 seconds"""

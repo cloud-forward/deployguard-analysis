@@ -103,7 +103,7 @@ class IRSABridgeBuilder:
         for service_account in service_accounts:
             metadata = service_account.get("metadata")
             if not isinstance(metadata, dict):
-                continue
+                metadata = service_account
             annotations = metadata.get("annotations")
             if not isinstance(annotations, dict):
                 continue
@@ -191,7 +191,7 @@ class IRSABridgeBuilder:
         for service_account in service_accounts:
             metadata = service_account.get("metadata")
             if not isinstance(metadata, dict):
-                continue
+                metadata = service_account
 
             namespace = metadata.get("namespace")
             name = metadata.get("name")
@@ -271,7 +271,7 @@ class IRSABridgeBuilder:
         for secret in secrets:
             metadata = secret.get("metadata")
             if not isinstance(metadata, dict):
-                continue
+                metadata = secret
 
             namespace = metadata.get("namespace")
             name = metadata.get("name")

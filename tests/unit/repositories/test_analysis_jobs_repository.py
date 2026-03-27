@@ -295,6 +295,76 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert snapshot.image_scan_id == "img-1"
 
     @pytest.mark.asyncio
+    async def test_persist_attack_paths_stores_ordered_attack_path_nodes_when_table_exists(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+        await session.execute(
+            text(
+                """
+                CREATE TABLE attack_path_nodes (
+                    id TEXT PRIMARY KEY,
+                    attack_path_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    position INTEGER NOT NULL
+                )
+                """
+            )
+        )
+        await session.commit()
+
+        graph_id = await repo.persist_attack_paths(
+            cluster_id=cluster_id,
+            graph_id="k8s-1-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:ingress:prod:web->pod:prod:api->s3:123:data",
+                    "path": ["ingress:prod:web", "pod:prod:api", "s3:123:data"],
+                    "nodes": ["wrong:field"],
+                    "node_ids": ["wrong:field"],
+                    "raw_final_risk": 0.91,
+                    "risk_score": 0.91,
+                    "length": 3,
+                    "edges": [
+                        {"source": "ingress:prod:web", "target": "pod:prod:api", "type": "ingress_exposes_service"},
+                        {"source": "pod:prod:api", "target": "s3:123:data", "type": "iam_role_access_resource"},
+                    ],
+                }
+            ],
+        )
+
+        path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
+        edge_rows = (
+            await session.execute(
+                select(AttackPathEdge)
+                .where(AttackPathEdge.path_id == path.id)
+                .order_by(AttackPathEdge.sequence)
+            )
+        ).scalars().all()
+        node_rows = (
+            await session.execute(
+                text(
+                    """
+                    SELECT attack_path_id, node_id, position
+                    FROM attack_path_nodes
+                    ORDER BY position
+                    """
+                )
+            )
+        ).mappings().all()
+
+        assert path is not None
+        assert path.node_ids == ["ingress:prod:web", "pod:prod:api", "s3:123:data"]
+        assert len(edge_rows) == 2
+        assert [edge.sequence for edge in edge_rows] == [0, 1]
+        assert [row["attack_path_id"] for row in node_rows] == [path.id, path.id, path.id]
+        assert [row["node_id"] for row in node_rows] == ["ingress:prod:web", "pod:prod:api", "s3:123:data"]
+        assert [row["position"] for row in node_rows] == [0, 1, 2]
+
+    @pytest.mark.asyncio
     async def test_persist_attack_paths_supports_long_canonical_identifiers(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

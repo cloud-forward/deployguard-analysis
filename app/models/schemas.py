@@ -1192,3 +1192,23 @@ class InvRiskSpotlightResponse(BaseModel):
         default_factory=list,
         description="[임시값] graph_nodes.is_crown_jewel 미연동. 빈 배열 (MVP).",
     )
+
+
+class CloudTrailEvent(BaseModel):
+    event_id: str
+    event_time: datetime
+    event_name: str
+    event_source: str
+    source_ip: str | None = None
+    user_identity_type: str | None = None
+    user_identity_arn: str | None = None
+    request_parameters: dict | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class CloudTrailEventListResponse(BaseModel):
+    scanned_at: datetime
+    hours: int
+    total: int
+    items: list[CloudTrailEvent] = Field(default_factory=list)

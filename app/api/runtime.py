@@ -3,12 +3,13 @@ Runtime snapshot direct upload API endpoints.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.auth import get_authenticated_cluster, get_current_user
 from app.application.di import get_runtime_snapshot_service
 from app.application.services.runtime_snapshot_service import RuntimeSnapshotService
 from app.models.schemas import (
+    RuntimeActivityListResponse,
     ClusterResponse,
     RuntimeCompleteRequest,
     RuntimeCompleteResponse,
@@ -62,3 +63,23 @@ async def get_runtime_status(
     service: RuntimeSnapshotService = Depends(get_runtime_snapshot_service),
 ):
     return await service.get_status(cluster_id=cluster_id, user_id=current_user.id)
+
+
+@router.get(
+    "/clusters/{cluster_id}/runtime/activities",
+    response_model=RuntimeActivityListResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_runtime_activities(
+    cluster_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    snapshot_limit: int = Query(default=1, ge=1, le=20),
+    current_user: UserSummaryResponse = Depends(get_current_user),
+    service: RuntimeSnapshotService = Depends(get_runtime_snapshot_service),
+):
+    return await service.get_activities(
+        cluster_id=cluster_id,
+        user_id=current_user.id,
+        limit=limit,
+        snapshot_limit=snapshot_limit,
+    )

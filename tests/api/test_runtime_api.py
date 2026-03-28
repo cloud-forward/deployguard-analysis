@@ -51,8 +51,44 @@ class FakeRuntimeSnapshotService:
             "cluster_id": cluster_id,
             "last_uploaded_at": None,
             "snapshot_at": None,
-            "fact_count": None,
-            "is_stale": True,
+                "fact_count": None,
+                "is_stale": True,
+            }
+
+    async def get_activities(self, cluster_id: str, user_id: str, limit: int = 50, snapshot_limit: int = 1):
+        assert user_id == "user-1"
+        assert cluster_id == "cluster-1"
+        assert limit == 1
+        assert snapshot_limit == 2
+        return {
+            "cluster_id": cluster_id,
+            "snapshot_count": 2,
+            "items": [
+                {
+                    "snapshot_at": datetime(2026, 3, 27, 12, 5, 0, tzinfo=timezone.utc),
+                    "observed_at": datetime(2026, 3, 27, 12, 4, 0, tzinfo=timezone.utc),
+                    "source": "k8s_audit",
+                    "fact_type": "secret_read",
+                    "fact_family": "credential_access",
+                    "category": "k8s_api",
+                    "action": "get",
+                    "title": "Secret access detected",
+                    "summary": "Secret ecr-secret was accessed in namespace deployguard",
+                    "severity": "high",
+                    "notable": True,
+                    "namespace": "deployguard",
+                    "pod_name": "api-6d4cf",
+                    "service_account": "api",
+                    "workload_name": "api",
+                    "target": "ecr-secret",
+                    "target_type": "secret",
+                    "target_resource": "secrets",
+                    "target_namespace": "deployguard",
+                    "success": None,
+                    "response_code": None,
+                    "scenario_tags": ["credential_access", "irsa_chain"],
+                }
+            ],
         }
 
 
@@ -133,4 +169,44 @@ def test_runtime_status_uses_user_auth_and_hides_s3_key(client):
         "snapshot_at": "2026-03-27T12:00:00Z",
         "fact_count": 0,
         "is_stale": False,
+    }
+
+
+def test_runtime_activities_returns_dashboard_ready_items(client):
+    response = client.get(
+        "/api/v1/clusters/cluster-1/runtime/activities?limit=1&snapshot_limit=2",
+        headers={"Authorization": "Bearer jwt-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "cluster_id": "cluster-1",
+        "snapshot_count": 2,
+        "items": [
+            {
+                "snapshot_at": "2026-03-27T12:05:00Z",
+                "observed_at": "2026-03-27T12:04:00Z",
+                "source": "k8s_audit",
+                "fact_type": "secret_read",
+                "fact_family": "credential_access",
+                "category": "k8s_api",
+                "action": "get",
+                "title": "Secret access detected",
+                "summary": "Secret ecr-secret was accessed in namespace deployguard",
+                "severity": "high",
+                "notable": True,
+                "namespace": "deployguard",
+                "pod_name": "api-6d4cf",
+                "service_account": "api",
+                "workload_name": "api",
+                "target": "ecr-secret",
+                "target_type": "secret",
+                "target_resource": "secrets",
+                "target_namespace": "deployguard",
+                "success": None,
+                "response_code": None,
+                "scenario_tags": ["credential_access", "irsa_chain"],
+            }
+        ],
     }

@@ -58,3 +58,12 @@ class SQLAlchemyRuntimeSnapshotRepository(RuntimeSnapshotRepository):
             .limit(1)
         )
         return result.scalars().first()
+
+    async def list_recent_by_cluster_id(self, cluster_id: str, limit: int) -> list[RuntimeSnapshot]:
+        result = await self._session.execute(
+            select(RuntimeSnapshot)
+            .where(RuntimeSnapshot.cluster_id == cluster_id)
+            .order_by(RuntimeSnapshot.uploaded_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())

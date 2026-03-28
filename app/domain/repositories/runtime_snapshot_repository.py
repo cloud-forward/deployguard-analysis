@@ -27,3 +27,7 @@ class RuntimeSnapshotRepository(Protocol):
     async def get_latest_by_cluster_id(self, cluster_id: str) -> object | None:
         """Fetch the most recently uploaded runtime snapshot for a cluster."""
         ...
+
+    async def list_recent_by_cluster_id(self, cluster_id: str, limit: int) -> list[object]:
+        """Fetch recent runtime snapshots for a cluster ordered by uploaded_at desc."""
+        ...

@@ -14,6 +14,7 @@ from src.graph.builders.aws_scanner_types import (
 )
 from src.graph.builders.cross_domain_types import IRSAMapping, SecretContainsCredentialsFact
 from src.graph.builders.irsa_mapping_extractor import IRSAMappingExtractor
+from src.graph.builders.iam_policy_parser import IAMPolicyParser
 from src.graph.builders.iam_policy_types import (
     IAMPolicyAnalysisResult,
     IAMUserPolicyAnalysisResult,
@@ -509,6 +510,81 @@ def test_irsa_extractor_output_integrates_with_aws_graph_builder():
     assert edge.target == f"iam:{account_id}:WebAppRole"
     assert edge.metadata["source_type"] == "irsa_mapper"
     assert edge.metadata["annotation_value"] == role_arn
+
+
+def test_broad_irsa_trust_without_sub_integrates_with_aws_graph_builder():
+    account_id = "123456789012"
+    scan_id = "20260309T113025-aws"
+    role_arn = f"arn:aws:iam::{account_id}:role/WebAppRole"
+
+    iam_role = IAMRoleScan(
+        name="WebAppRole",
+        arn=role_arn,
+        is_irsa=True,
+        irsa_oidc_issuer="https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE",
+        attached_policies=[],
+        inline_policies=[],
+        trust_policy={
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": (
+                            f"arn:aws:iam::{account_id}:"
+                            "oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+                        )
+                    },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud": "sts.amazonaws.com",
+                        }
+                    },
+                }
+            ]
+        },
+    )
+    scan = AWSScanResult(
+        scan_id=scan_id,
+        aws_account_id=account_id,
+        scanned_at="2026-03-09T11:30:25Z",
+        iam_roles=[iam_role],
+        s3_buckets=[],
+        rds_instances=[],
+        ec2_instances=[],
+        security_groups=[],
+    )
+    service_accounts = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "api-sa",
+                "annotations": {
+                    "eks.amazonaws.com/role-arn": role_arn,
+                },
+            }
+        }
+    ]
+
+    irsa_mappings = IRSAMappingExtractor().extract(service_accounts, scan.iam_roles)
+    policy_results = [IAMPolicyParser().parse(iam_role)]
+
+    builder = AWSGraphBuilder(account_id, scan_id)
+    result = builder.build(
+        scan,
+        irsa_mappings=irsa_mappings,
+        credential_facts=[],
+        policy_results=policy_results,
+    )
+
+    edge = next(e for e in result.edges if e.type == "service_account_assumes_iam_role")
+    node = next(n for n in result.nodes if n.id == f"iam:{account_id}:WebAppRole")
+
+    assert edge.source == "sa:production:api-sa"
+    assert edge.target == f"iam:{account_id}:WebAppRole"
+    assert node.metadata["trust"]["has_broad_irsa_trust"] is True
+    assert node.metadata["trust"]["allowed_sa_explicit"] == []
+    assert node.metadata["trust"]["allowed_sa_patterns"] == []
 
 
 def test_secret_credentials_extractor_output_integrates_with_aws_graph_builder():

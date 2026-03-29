@@ -16,6 +16,7 @@ class TrustPolicyAnalysis:
     allows_ec2: bool
     allows_lambda: bool
     cross_account_principals: list[str]
+    has_broad_irsa_trust: bool = False
 
 
 @dataclass

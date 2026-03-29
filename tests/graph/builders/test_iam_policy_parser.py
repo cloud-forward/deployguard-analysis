@@ -66,6 +66,48 @@ class TestTrustPolicyParsing:
         assert result.trust_analysis.is_irsa_enabled is True
         assert result.trust_analysis.allows_all_sa is False
         assert "system:serviceaccount:production:api-sa" in result.trust_analysis.allowed_sa_explicit
+        assert result.trust_analysis.has_broad_irsa_trust is False
+
+    def test_trust_policy_irsa_without_sub_marks_broad_trust(self):
+        trust = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": OIDC_FEDERATED},
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud": "sts.amazonaws.com"
+                        }
+                    },
+                }
+            ]
+        }
+        role = make_role(trust_policy=trust)
+        result = IAMPolicyParser().parse(role)
+        assert result.trust_analysis.is_irsa_enabled is True
+        assert result.trust_analysis.allowed_sa_explicit == []
+        assert result.trust_analysis.allowed_sa_patterns == []
+        assert result.trust_analysis.has_broad_irsa_trust is True
+
+    def test_trust_policy_irsa_without_sub_and_without_aud_is_not_broad(self):
+        trust = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": OIDC_FEDERATED},
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:iss": "issuer"
+                        }
+                    },
+                }
+            ]
+        }
+        role = make_role(trust_policy=trust)
+        result = IAMPolicyParser().parse(role)
+        assert result.trust_analysis.has_broad_irsa_trust is False
 
     def test_trust_policy_ec2(self):
         trust = {

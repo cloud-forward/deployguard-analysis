@@ -154,6 +154,8 @@ class IRSAMappingExtractor:
             return True
         if trust_analysis.allows_all_sa:
             return True
+        if trust_analysis.has_broad_irsa_trust:
+            return True
 
         return any(
             self._matches_pattern(service_account_subject, pattern)
@@ -175,6 +177,8 @@ class IRSAMappingExtractor:
                 continue
             if not self._statement_has_sts_audience(statement):
                 continue
+            if not self._statement_has_subject_condition(statement):
+                return True
             if self._statement_allows_subject(statement, service_account_subject):
                 return True
         return False
@@ -241,6 +245,23 @@ class IRSAMappingExtractor:
                         continue
                     if self._matches_pattern(service_account_subject, subject_or_pattern):
                         return True
+        return False
+
+    def _statement_has_subject_condition(self, statement: dict[str, Any]) -> bool:
+        conditions = statement.get("Condition", {})
+        if not isinstance(conditions, dict):
+            return False
+
+        for condition_op, condition_vals in conditions.items():
+            if condition_op not in ("StringLike", "StringEquals"):
+                continue
+            if not isinstance(condition_vals, dict):
+                continue
+            if any(
+                key == "sts:amazonaws.com:sub" or key.endswith(":sub")
+                for key in condition_vals
+            ):
+                return True
         return False
 
     def _matches_pattern(self, subject: str, pattern: str) -> bool:

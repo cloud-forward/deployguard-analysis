@@ -260,6 +260,75 @@ def test_wildcard_trust_pattern_emits_mapping():
     assert mappings[0].sa_name == "api-sa"
 
 
+def test_valid_irsa_annotation_with_broad_no_sub_trust_policy_emits_mapping():
+    extractor = IRSAMappingExtractor()
+    service_accounts = [
+        make_service_account(
+            "production",
+            "api-sa",
+            "arn:aws:iam::123456789012:role/WebAppRole",
+        )
+    ]
+    iam_roles = [
+        make_role(
+            "WebAppRole",
+            {
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Federated": OIDC_PROVIDER_ARN},
+                        "Action": "sts:AssumeRoleWithWebIdentity",
+                        "Condition": {
+                            "StringEquals": {
+                                "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud": "sts.amazonaws.com",
+                            }
+                        },
+                    }
+                ]
+            },
+        )
+    ]
+
+    mappings = extractor.extract(service_accounts, iam_roles)
+
+    assert len(mappings) == 1
+    assert mappings[0].sa_name == "api-sa"
+
+
+def test_no_sub_trust_without_sts_audience_emits_no_mapping():
+    extractor = IRSAMappingExtractor()
+    service_accounts = [
+        make_service_account(
+            "production",
+            "api-sa",
+            "arn:aws:iam::123456789012:role/WebAppRole",
+        )
+    ]
+    iam_roles = [
+        make_role(
+            "WebAppRole",
+            {
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Federated": OIDC_PROVIDER_ARN},
+                        "Action": "sts:AssumeRoleWithWebIdentity",
+                        "Condition": {
+                            "StringEquals": {
+                                "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:iss": "issuer",
+                            }
+                        },
+                    }
+                ]
+            },
+        )
+    ]
+
+    mappings = extractor.extract(service_accounts, iam_roles)
+
+    assert mappings == []
+
+
 def test_multiple_service_accounts_only_valid_mappings_emitted():
     extractor = IRSAMappingExtractor()
     service_accounts = [

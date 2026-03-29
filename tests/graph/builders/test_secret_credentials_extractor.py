@@ -424,6 +424,38 @@ def test_secret_with_rds_host_but_no_matching_endpoint_and_multiple_scanned_rds_
     assert facts == []
 
 
+def test_secret_with_rds_key_metadata_only_and_one_scanned_rds_emits_fallback_fact():
+    extractor = SecretCredentialsExtractor()
+    secrets = [
+        {
+            "metadata": {
+                "namespace": "production",
+                "name": "db-credentials",
+            },
+            "data_keys": ["database", "host", "password", "port", "username"],
+        }
+    ]
+    rds_instances = [
+        RDSInstanceScan(
+            identifier="production-db",
+            arn="arn:aws:rds:us-east-1:123456789012:db:production-db",
+            engine="postgres",
+            storage_encrypted=True,
+            publicly_accessible=False,
+            vpc_security_groups=[],
+            endpoint="prod-db.example.us-east-1.rds.amazonaws.com",
+        )
+    ]
+
+    facts = extractor.extract(secrets, iam_users=[], rds_instances=rds_instances)
+
+    assert len(facts) == 1
+    assert facts[0].target_type == "rds"
+    assert facts[0].target_id == "production-db"
+    assert facts[0].matched_keys == ["host", "password", "port", "username"]
+    assert facts[0].confidence == "medium"
+
+
 def test_typed_rds_model_without_endpoint_and_one_scanned_rds_emits_fallback_fact():
     extractor = SecretCredentialsExtractor()
     secrets = [

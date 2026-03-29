@@ -125,13 +125,27 @@ class IRSABridgeBuilder:
 
     def _secret_key_names(self, secret: dict[str, Any]) -> list[str]:
         keys: list[str] = []
-        for field_name in ("data", "stringData"):
-            value = secret.get(field_name)
-            if not isinstance(value, dict):
+        metadata = secret.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        for value in (
+            secret.get("data"),
+            secret.get("stringData"),
+            secret.get("data_keys"),
+            secret.get("string_data_keys"),
+            metadata.get("data_keys"),
+            metadata.get("string_data_keys"),
+        ):
+            if isinstance(value, dict):
+                for key in value:
+                    if isinstance(key, str) and key not in keys:
+                        keys.append(key)
                 continue
-            for key in value:
-                if isinstance(key, str) and key not in keys:
-                    keys.append(key)
+            if isinstance(value, list):
+                for key in value:
+                    if isinstance(key, str) and key not in keys:
+                        keys.append(key)
         return keys
 
     def _is_iam_candidate(self, detected_keys: list[str]) -> bool:

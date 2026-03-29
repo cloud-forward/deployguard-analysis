@@ -218,6 +218,33 @@ def test_node_metadata_is_enriched_from_raw_k8s_scan():
     assert nodes_by_id["service:production:api-service"].metadata["service_type"] == "ClusterIP"
 
 
+def test_secret_node_metadata_preserves_precomputed_key_lists():
+    builder = K8sGraphBuilder()
+    k8s_scan = make_k8s_scan()
+    k8s_scan["secrets"] = [
+        {
+            "namespace": "production",
+            "name": "db-creds",
+            "type": "Opaque",
+            "data_keys": ["database", "host", "username"],
+            "string_data_keys": ["password", "port"],
+        }
+    ]
+
+    result = build(builder, make_internal_facts(), k8s_scan)
+    nodes_by_id = {node.id: node for node in result.nodes}
+
+    assert nodes_by_id["secret:production:db-creds"].metadata["data_keys"] == [
+        "database",
+        "host",
+        "username",
+    ]
+    assert nodes_by_id["secret:production:db-creds"].metadata["string_data_keys"] == [
+        "password",
+        "port",
+    ]
+
+
 def test_missing_internal_nodes_referenced_by_facts_are_created_as_fallback():
     builder = K8sGraphBuilder()
     facts = [

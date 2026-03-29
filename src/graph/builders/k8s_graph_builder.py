@@ -162,8 +162,16 @@ class K8sGraphBuilder:
                     metadata={
                         "namespace": namespace,
                         "secret_type": secret.get("type"),
-                        "data_keys": self._dict_keys(secret.get("data")),
-                        "string_data_keys": self._dict_keys(secret.get("stringData")),
+                        "data_keys": self._secret_key_list(
+                            secret.get("data"),
+                            secret.get("data_keys"),
+                            metadata.get("data_keys"),
+                        ),
+                        "string_data_keys": self._secret_key_list(
+                            secret.get("stringData"),
+                            secret.get("string_data_keys"),
+                            metadata.get("string_data_keys"),
+                        ),
                     },
                 )
             )
@@ -255,4 +263,12 @@ class K8sGraphBuilder:
     def _dict_keys(self, value: Any) -> list[str]:
         if isinstance(value, dict):
             return list(value.keys())
+        return []
+
+    def _secret_key_list(self, value: Any, *fallback_sources: Any) -> list[str]:
+        if isinstance(value, dict):
+            return list(value.keys())
+        for fallback_keys in fallback_sources:
+            if isinstance(fallback_keys, list):
+                return [key for key in fallback_keys if isinstance(key, str)]
         return []

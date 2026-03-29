@@ -21,6 +21,18 @@ FIX_COST_BY_TYPE: dict[str, float] = {
     "rotate_credentials": 1.7,
 }
 
+FIX_TYPE_DISPLAY_MAP_KO: dict[str, str] = {
+    "delete_resource": "리소스를 삭제",
+    "remove_role_binding": "role binding을 제거하거나 범위를 축소",
+    "apply_network_policy": "네트워크 접근 제어를 적용",
+    "restrict_iam_policy": "IAM 정책을 제한",
+    "change_service_account": "workload의 service account를 변경",
+    "remove_secret_mount": "secret mount를 제거",
+    "restrict_ingress": "Ingress 노출을 제한",
+    "remove_privileged": "Privileged 또는 탈출 가능 Pod 설정을 제거",
+    "rotate_credentials": "노출된 자격 증명을 교체",
+}
+
 EDGE_FIX_COST_OVERRIDE: dict[str, float] = {
     "service_account_bound_role": 1.8,
     "service_account_bound_cluster_role": 2.8,
@@ -29,87 +41,87 @@ EDGE_FIX_COST_OVERRIDE: dict[str, float] = {
 EDGE_FIX_TYPE_MAP: dict[str, tuple[str, str]] = {
     "ingress_exposes_service": (
         "restrict_ingress",
-        "restrict ingress exposure",
+        "Ingress 노출을 제한",
     ),
     "service_account_bound_role": (
         "remove_role_binding",
-        "remove or narrow the role binding",
+        "role binding을 제거하거나 범위를 축소",
     ),
     "service_account_bound_cluster_role": (
         "remove_role_binding",
-        "remove or narrow the cluster role binding",
+        "cluster role binding을 제거하거나 범위를 축소",
     ),
     "lateral_move": (
         "apply_network_policy",
-        "apply network controls",
+        "네트워크 접근 제어를 적용",
     ),
     "service_account_assumes_iam_role": (
         "restrict_iam_policy",
-        "restrict the IAM trust or attached policy",
+        "IAM trust policy 또는 연결된 권한을 제한",
     ),
     "instance_profile_assumes": (
         "restrict_iam_policy",
-        "restrict the instance profile trust or attached policy",
+        "instance profile의 trust policy 또는 연결된 권한을 제한",
     ),
     "iam_principal_assumes_iam_role": (
         "restrict_iam_policy",
-        "restrict the AssumeRole permission or trust policy",
+        "AssumeRole 권한 또는 신뢰 정책을 제한",
     ),
     "iam_role_access_resource": (
         "restrict_iam_policy",
-        "restrict the IAM policy",
+        "IAM 정책을 제한",
     ),
     "iam_user_access_resource": (
         "restrict_iam_policy",
-        "restrict the IAM policy",
+        "IAM 정책을 제한",
     ),
     "pod_uses_service_account": (
         "change_service_account",
-        "change the workload service account",
+        "workload의 service account를 변경",
     ),
     "pod_mounts_secret": (
         "remove_secret_mount",
-        "remove the secret mount",
+        "secret mount를 제거",
     ),
     "pod_uses_env_from_secret": (
         "remove_secret_mount",
-        "remove secret-backed environment injection",
+        "secret 기반 환경 변수 주입을 제거",
     ),
     "escapes_to": (
         "remove_privileged",
-        "remove privileged or escape-capable pod settings",
+        "Privileged 또는 탈출 가능 Pod 설정을 제거",
     ),
     "exposes_token": (
         "rotate_credentials",
-        "rotate the exposed credential",
+        "노출된 자격 증명을 교체",
     ),
     "secret_contains_credentials": (
         "rotate_credentials",
-        "rotate the exposed credential",
+        "노출된 자격 증명을 교체",
     ),
     "secret_contains_aws_credentials": (
         "rotate_credentials",
-        "rotate the exposed AWS credential",
+        "노출된 AWS 자격 증명을 교체",
     ),
 }
 
 EDGE_IMPACT_REASON_MAP: dict[str, str] = {
-    "ingress_exposes_service": "this public ingress step exposes an internal service",
-    "service_account_bound_role": "this binding grants the service account additional permissions",
-    "service_account_bound_cluster_role": "this cluster-wide binding grants the service account additional permissions",
-    "lateral_move": "this edge allows lateral movement between workloads or network zones",
-    "service_account_assumes_iam_role": "this trust path lets a Kubernetes identity assume an IAM role",
-    "instance_profile_assumes": "this trust path lets the instance profile assume broader IAM access",
-    "iam_principal_assumes_iam_role": "this IAM principal can explicitly assume the target IAM role",
-    "iam_role_access_resource": "this policy edge grants direct resource access",
-    "iam_user_access_resource": "this policy edge grants direct resource access",
-    "pod_uses_service_account": "this workload inherits the service account permissions on the path",
-    "pod_mounts_secret": "this workload can read mounted secret material",
-    "pod_uses_env_from_secret": "this workload can read secret-backed environment values",
-    "escapes_to": "this edge represents a container escape step to the node",
-    "exposes_token": "this edge leaks a credential that can be reused later in the path",
-    "secret_contains_credentials": "this secret contains reusable credentials",
-    "secret_contains_aws_credentials": "this secret contains reusable AWS credentials",
+    "ingress_exposes_service": "이 공개 Ingress 단계가 내부 서비스를 노출하기 때문입니다",
+    "service_account_bound_role": "이 role binding이 service account에 추가 권한을 부여하기 때문입니다",
+    "service_account_bound_cluster_role": "이 cluster role binding이 service account에 추가 권한을 부여하기 때문입니다",
+    "lateral_move": "이 edge가 workload 또는 네트워크 구간 사이의 lateral movement를 허용하기 때문입니다",
+    "service_account_assumes_iam_role": "이 trust path를 통해 Kubernetes identity가 IAM Role을 Assume할 수 있기 때문입니다",
+    "instance_profile_assumes": "이 trust path를 통해 instance profile이 더 넓은 IAM 권한을 획득할 수 있기 때문입니다",
+    "iam_principal_assumes_iam_role": "이 IAM 주체가 대상 IAM Role을 명시적으로 Assume할 수 있기 때문입니다",
+    "iam_role_access_resource": "이 edge가 direct resource access를 허용하기 때문입니다",
+    "iam_user_access_resource": "이 edge가 direct resource access를 허용하기 때문입니다",
+    "pod_uses_service_account": "이 workload가 path 상의 service account 권한을 상속받기 때문입니다",
+    "pod_mounts_secret": "이 workload가 mount된 secret 값을 읽을 수 있기 때문입니다",
+    "pod_uses_env_from_secret": "이 workload가 secret 기반 환경 변수 값을 읽을 수 있기 때문입니다",
+    "escapes_to": "이 edge가 node로의 container escape 단계를 나타내기 때문입니다",
+    "exposes_token": "이 edge가 이후 path에서 재사용 가능한 자격 증명을 노출하기 때문입니다",
+    "secret_contains_credentials": "이 secret에 재사용 가능한 자격 증명이 포함되어 있기 때문입니다",
+    "secret_contains_aws_credentials": "이 secret에 재사용 가능한 AWS 자격 증명이 포함되어 있기 때문입니다",
 }
 
 
@@ -265,7 +277,7 @@ class RemediationOptimizer:
         if target in graph:
             metadata["edge_target_type"] = graph.nodes[target].get("type")
         metadata["base_action"] = base_action
-        metadata["impact_reason"] = EDGE_IMPACT_REASON_MAP.get(edge_type, "this edge keeps the attack path open")
+        metadata["impact_reason"] = EDGE_IMPACT_REASON_MAP.get(edge_type, "이 edge가 attack path를 계속 열어 두기 때문입니다")
         metadata["effective_fix_cost"] = fix_cost
 
         return RemediationCandidate(
@@ -374,15 +386,14 @@ class RemediationOptimizer:
         cumulative_risk_reduction: float,
     ) -> str:
         base_action = str(candidate.metadata.get("base_action") or self._fallback_action(candidate.fix_type))
-        impact_reason = str(candidate.metadata.get("impact_reason") or "this edge keeps the attack path open")
+        impact_reason = str(candidate.metadata.get("impact_reason") or "이 edge가 attack path를 계속 열어 두기 때문입니다")
         source_ref = self._describe_node_ref(candidate.edge_source, candidate.metadata.get("edge_source_type"))
         target_ref = self._describe_node_ref(candidate.edge_target, candidate.metadata.get("edge_target_type"))
-        path_label = "path" if blocked_path_count == 1 else "paths"
 
         return (
-            f"Change {source_ref} -> {target_ref}: {base_action}. "
-            f"This matters because {impact_reason}. "
-            f"Expected effect: block {blocked_path_count} risky {path_label} and reduce raw risk by {covered_risk:.2f} "
+            f"{source_ref} -> {target_ref} 변경: {base_action}. "
+            f"중요한 이유: {impact_reason} "
+            f"예상 효과: risky path {blocked_path_count}개를 차단하고, Raw risk를 {covered_risk:.2f}만큼 줄입니다 "
             f"(cumulative reduction ratio {cumulative_risk_reduction:.2f})."
         )
 
@@ -395,7 +406,7 @@ class RemediationOptimizer:
 
     @staticmethod
     def _fallback_action(fix_type: str) -> str:
-        return fix_type.replace("_", " ")
+        return FIX_TYPE_DISPLAY_MAP_KO.get(fix_type, "권장 변경을 적용")
 
     @staticmethod
     def _candidate_id(source: str, target: str, edge_type: str, fix_type: str) -> str:

@@ -323,6 +323,7 @@ class AWSGraphBuilder:
                     "allows_ec2": analysis.trust_analysis.allows_ec2,
                     "allows_lambda": analysis.trust_analysis.allows_lambda,
                     "cross_account_principals": analysis.trust_analysis.cross_account_principals,
+                    "has_broad_irsa_trust": analysis.trust_analysis.has_broad_irsa_trust,
                 }
             else:
                 metadata["tier"] = None

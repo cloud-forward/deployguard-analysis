@@ -79,6 +79,7 @@ class IAMPolicyParser:
         allows_ec2 = False
         allows_lambda = False
         cross_account_principals: list[str] = []
+        has_broad_irsa_trust = False
 
         statements = self._normalize_statements(trust_policy)
         for statement in statements:
@@ -122,24 +123,22 @@ class IAMPolicyParser:
                 if principal_account_id and principal_account_id != current_account_id:
                     cross_account_principals.append(arn)
 
-            # Parse OIDC conditions for service account patterns (only when IRSA)
             if is_irsa_enabled:
-                conditions = statement.get("Condition", {})
-                for condition_op, condition_vals in conditions.items():
-                    if condition_op not in ("StringLike", "StringEquals"):
-                        continue
-                    for key, val in condition_vals.items():
-                        if not (key == "sts:amazonaws.com:sub" or key.endswith(":sub")):
-                            continue
-                        values = [val] if isinstance(val, str) else val
-                        for v in values:
-                            if v == "system:serviceaccount:*:*":
-                                allows_all_sa = True
-                                allowed_sa_patterns.append(v)
-                            elif "*" in v:
-                                allowed_sa_patterns.append(v)
-                            else:
-                                allowed_sa_explicit.append(v)
+                sub_values = self._get_irsa_subject_values(statement)
+                if sub_values:
+                    for value in sub_values:
+                        if value == "system:serviceaccount:*:*":
+                            allows_all_sa = True
+                            allowed_sa_patterns.append(value)
+                        elif "*" in value:
+                            allowed_sa_patterns.append(value)
+                        else:
+                            allowed_sa_explicit.append(value)
+                elif (
+                    self._statement_allows_web_identity(statement)
+                    and self._statement_has_valid_irsa_audience(statement)
+                ):
+                    has_broad_irsa_trust = True
 
         return TrustPolicyAnalysis(
             is_irsa_enabled=is_irsa_enabled,
@@ -150,7 +149,50 @@ class IAMPolicyParser:
             allows_ec2=allows_ec2,
             allows_lambda=allows_lambda,
             cross_account_principals=cross_account_principals,
+            has_broad_irsa_trust=has_broad_irsa_trust,
         )
+
+    def _statement_allows_web_identity(self, statement: dict[str, Any]) -> bool:
+        actions = statement.get("Action", [])
+        if isinstance(actions, str):
+            actions = [actions]
+        return "sts:AssumeRoleWithWebIdentity" in actions
+
+    def _statement_has_valid_irsa_audience(self, statement: dict[str, Any]) -> bool:
+        conditions = statement.get("Condition", {})
+        if not isinstance(conditions, dict):
+            return False
+
+        for condition_op, condition_vals in conditions.items():
+            if condition_op not in ("StringLike", "StringEquals"):
+                continue
+            if not isinstance(condition_vals, dict):
+                continue
+            for key, val in condition_vals.items():
+                if not (key == "sts:aud" or key.endswith(":aud")):
+                    continue
+                values = [val] if isinstance(val, str) else val
+                if any(v == "sts.amazonaws.com" for v in values):
+                    return True
+        return False
+
+    def _get_irsa_subject_values(self, statement: dict[str, Any]) -> list[str]:
+        conditions = statement.get("Condition", {})
+        if not isinstance(conditions, dict):
+            return []
+
+        subject_values: list[str] = []
+        for condition_op, condition_vals in conditions.items():
+            if condition_op not in ("StringLike", "StringEquals"):
+                continue
+            if not isinstance(condition_vals, dict):
+                continue
+            for key, val in condition_vals.items():
+                if not (key == "sts:amazonaws.com:sub" or key.endswith(":sub")):
+                    continue
+                values = [val] if isinstance(val, str) else val
+                subject_values.extend(v for v in values if isinstance(v, str))
+        return subject_values
 
     def _parse_permission_policies(
         self, attached: list[dict], inline: list[dict]

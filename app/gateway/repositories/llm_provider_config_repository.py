@@ -26,15 +26,24 @@ class SQLAlchemyLLMProviderConfigRepository(LLMProviderConfigRepository):
             .limit(1)
         )
         config = result.scalar_one_or_none()
+        any_config_result = await self._session.execute(
+            select(LLMProviderConfig.id)
+            .where(LLMProviderConfig.user_id == user_id)
+            .limit(1)
+        )
+        has_any_config = any_config_result.scalar_one_or_none() is not None
         logger.info(
             "remediation_provider_config_lookup",
             extra={
                 "lookup_mode": "active",
                 "user_id": user_id,
                 "config_found": config is not None,
+                "has_any_config": has_any_config,
+                "inactive_configs_present": has_any_config and config is None,
                 "provider": str(config.provider) if config is not None else None,
                 "default_model": getattr(config, "default_model", None) if config is not None else None,
                 "api_key_present": bool(getattr(config, "api_key", None)) if config is not None else False,
+                "config_is_active": bool(getattr(config, "is_active", False)) if config is not None else None,
             },
         )
         return config
@@ -57,6 +66,7 @@ class SQLAlchemyLLMProviderConfigRepository(LLMProviderConfigRepository):
                 "provider": str(config.provider) if config is not None else None,
                 "default_model": getattr(config, "default_model", None) if config is not None else None,
                 "api_key_present": bool(getattr(config, "api_key", None)) if config is not None else False,
+                "config_is_active": bool(getattr(config, "is_active", False)) if config is not None else None,
             },
         )
         return config

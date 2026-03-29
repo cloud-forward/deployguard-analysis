@@ -973,15 +973,43 @@ class _MissingConfigRepo:
         return None
 
 
+class _ActiveConfigRepo:
+    async def get_active(self, user_id: str):
+        return type(
+            "Config",
+            (),
+            {
+                "provider": "openai",
+                "api_key": "integration-openai-key",
+                "default_model": "gpt-4o-mini",
+                "is_active": True,
+            },
+        )()
+
+    async def get_by_provider(self, user_id: str, provider: str):
+        if provider != "openai":
+            return None
+        return await self.get_active(user_id)
+
+
 class _RecordingProvider:
     provider_name = "openai"
 
-    def __init__(self):
+    def __init__(self, text: str = "provider-generated explanation"):
         self.calls = []
+        self.text = text
 
     async def generate_explanation(self, prompt):
         self.calls.append(prompt)
-        raise AssertionError("provider should not be called")
+        return type(
+            "Result",
+            (),
+            {
+                "text": self.text,
+                "provider": prompt.provider,
+                "model": prompt.model,
+            },
+        )()
 
 
 @pytest.mark.parametrize(
@@ -1084,6 +1112,80 @@ async def test_post_remediation_recommendation_explanation_returns_no_target_whe
     assert body["model"] is None
     assert body["fallback_reason"] == "recommendation_not_found"
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_post_remediation_recommendation_explanation_returns_llm_generated_when_provider_config_is_valid(
+    attack_graph_client,
+):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-llm-success"
+    analysis_run_id = "analysis-recommendations-llm-success"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:00:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:00:00', '2026-03-22 15:05:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES (
+                    :graph_id, 'rotate-credentials-1', 0, 'secret:prod:db-creds', 'rds:prod-db', 'secret_contains_credentials',
+                    'rotate_credentials', '노출된 데이터베이스 자격 증명을 교체합니다.', '["path-db"]', '[4]', 1.3, 0.9,
+                    0.9, 0.9, '{"impact_reason":"이 secret에 재사용 가능한 자격 증명이 포함되어 있기 때문입니다"}'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider(text="LLM enriched explanation.")
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_ActiveConfigRepo(),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
+        json={},
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == cluster_id
+    assert body["recommendation_id"] == "rotate-credentials-1"
+    assert body["explanation_status"] == "llm_generated"
+    assert body["used_llm"] is True
+    assert body["provider"] == "openai"
+    assert body["model"] == "gpt-4o-mini"
+    assert body["final_explanation"] == "LLM enriched explanation."
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio

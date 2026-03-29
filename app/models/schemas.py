@@ -595,6 +595,37 @@ class RuntimeStatusResponse(BaseModel):
     is_stale: bool
 
 
+class RuntimeActivityItemResponse(BaseModel):
+    snapshot_at: datetime
+    observed_at: datetime
+    source: str | None = None
+    fact_type: str
+    fact_family: str | None = None
+    category: str | None = None
+    action: str | None = None
+    title: str
+    summary: str
+    severity: str | None = None
+    notable: bool = False
+    namespace: str | None = None
+    pod_name: str | None = None
+    service_account: str | None = None
+    workload_name: str | None = None
+    target: str | None = None
+    target_type: str | None = None
+    target_resource: str | None = None
+    target_namespace: str | None = None
+    success: bool | None = None
+    response_code: int | None = None
+    scenario_tags: list[str] = Field(default_factory=list)
+
+
+class RuntimeActivityListResponse(BaseModel):
+    cluster_id: str
+    snapshot_count: int = 0
+    items: list[RuntimeActivityItemResponse] = Field(default_factory=list)
+
+
 ALLOWED_CLUSTER_TYPES = ("eks", "self-managed", "aws")
 
 
@@ -1161,3 +1192,23 @@ class InvRiskSpotlightResponse(BaseModel):
         default_factory=list,
         description="[임시값] graph_nodes.is_crown_jewel 미연동. 빈 배열 (MVP).",
     )
+
+
+class CloudTrailEvent(BaseModel):
+    event_id: str
+    event_time: datetime
+    event_name: str
+    event_source: str
+    source_ip: str | None = None
+    user_identity_type: str | None = None
+    user_identity_arn: str | None = None
+    request_parameters: dict | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class CloudTrailEventListResponse(BaseModel):
+    scanned_at: datetime
+    hours: int
+    total: int
+    items: list[CloudTrailEvent] = Field(default_factory=list)

@@ -49,9 +49,9 @@ def test_optimizer_prefers_shared_low_cost_edge_fix_that_blocks_multiple_paths()
     assert result["recommendations"][0]["cumulative_risk_reduction"] == 1.0
     assert result["recommendations"][0]["fix_cost"] == 3.2
     assert result["recommendations"][0]["fix_description"] == (
-        "Change ingress `ingress:prod:web` -> service `service:prod:web`: restrict ingress exposure. "
-        "This matters because this public ingress step exposes an internal service. "
-        "Expected effect: block 2 risky paths and reduce raw risk by 1.50 (cumulative reduction ratio 1.00)."
+        "ingress `ingress:prod:web` -> service `service:prod:web` 변경: Ingress 노출을 제한. "
+        "중요한 이유: 이 공개 Ingress 단계가 내부 서비스를 노출하기 때문입니다 "
+        "예상 효과: risky path 2개를 차단하고, Raw risk를 1.50만큼 줄입니다 (cumulative reduction ratio 1.00)."
     )
 
 
@@ -104,9 +104,9 @@ def test_optimizer_uses_fix_type_cost_and_selects_multiple_edge_breakpoints_when
     assert any(item.startswith("restrict_ingress:") for item in recommendation_ids)
     assert any(item.startswith("remove_privileged:") for item in recommendation_ids)
     assert result["recommendations"][1]["fix_description"] == (
-        "Change pod `pod:prod:escape` -> node `node:worker-1`: remove privileged or escape-capable pod settings. "
-        "This matters because this edge represents a container escape step to the node. "
-        "Expected effect: block 1 risky path and reduce raw risk by 0.70 (cumulative reduction ratio 1.00)."
+        "pod `pod:prod:escape` -> node `node:worker-1` 변경: Privileged 또는 탈출 가능 Pod 설정을 제거. "
+        "중요한 이유: 이 edge가 node로의 container escape 단계를 나타내기 때문입니다 "
+        "예상 효과: risky path 1개를 차단하고, Raw risk를 0.70만큼 줄입니다 (cumulative reduction ratio 1.00)."
     )
 
 

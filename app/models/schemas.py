@@ -974,12 +974,37 @@ class LLMProviderConfigListResponse(BaseModel):
     items: list[LLMProviderConfigResponse] = Field(default_factory=list)
 
 
+class AnalysisResultStatsGraphResponse(BaseModel):
+    nodes: int
+    edges: int
+    entry_points: int
+    crown_jewels: int
+
+
+class AnalysisResultStatsPathsResponse(BaseModel):
+    total: int
+    returned: int
+
+
+class AnalysisResultStatsFactsResponse(BaseModel):
+    total: int
+
+
+class AnalysisResultStatsResponse(BaseModel):
+    facts: AnalysisResultStatsFactsResponse | None = None
+    graph: AnalysisResultStatsGraphResponse | None = None
+    paths: AnalysisResultStatsPathsResponse | None = None
+
+
 class AnalysisResultResponse(BaseModel):
     job: AnalysisJobDetailResponse
     summary: AnalysisResultSummaryResponse
     attack_paths_preview: list[AttackPathListItemResponse] = Field(default_factory=list)
     remediation_preview: list[RemediationRecommendationListItemResponse] = Field(default_factory=list)
+    attack_paths: list[AttackPathDetailResponse] = Field(default_factory=list)
+    remediation_recommendations: list[RemediationRecommendationDetailResponse] = Field(default_factory=list)
     links: AnalysisResultLinksResponse
+    stats: AnalysisResultStatsResponse | None = None
 
 
 class SyncResponse(BaseModel):

@@ -26,12 +26,19 @@ from app.models.schemas import (
     AnalysisJobDetailResponse,
     AnalysisResultLinksResponse,
     AnalysisResultResponse,
+    AnalysisResultStatsFactsResponse,
+    AnalysisResultStatsGraphResponse,
+    AnalysisResultStatsPathsResponse,
+    AnalysisResultStatsResponse,
     AnalysisResultSummaryResponse,
     AnalysisJobResponse,
     AnalysisJobSummaryResponse,
     AttackGraphSeverity,
+    AttackPathDetailResponse,
+    AttackPathEdgeSequenceResponse,
     AttackPathListItemResponse,
     ClusterAnalysisJobListResponse,
+    RemediationRecommendationDetailResponse,
     RemediationRecommendationListItemResponse,
 )
 from src.facts.extractors.k8s_extractor import K8sFactExtractor
@@ -158,18 +165,28 @@ class AnalysisService:
             if graph_id else
             []
         )
+        attack_paths = await self._get_attack_paths(graph_id) if graph_id else []
         remediation_preview = (
             await self._get_remediation_preview(graph_id, limit=PREVIEW_LIMIT)
             if graph_id else
             []
         )
+        remediation_recommendations = (
+            await self._get_remediation_recommendations(graph_id)
+            if graph_id else
+            []
+        )
+        stats = await self._build_result_stats(graph_id, summary, attack_paths)
 
         return AnalysisResultResponse(
             job=job_detail,
             summary=summary,
             attack_paths_preview=attack_paths_preview,
             remediation_preview=remediation_preview,
+            attack_paths=attack_paths,
+            remediation_recommendations=remediation_recommendations,
             links=self._build_analysis_result_links(job_detail),
+            stats=stats,
         )
 
     async def execute_analysis_job(self, job_id: str, user_id: str | None = None) -> Dict[str, Any]:
@@ -369,6 +386,7 @@ class AnalysisService:
                 or ""
             ) or None
             graph_id = await self._jobs.persist_attack_paths(
+                analysis_job_id=analysis_job_id,
                 cluster_id=cluster_id,
                 graph_id=preferred_graph_id,
                 k8s_scan_id=k8s_scan_id,
@@ -415,6 +433,7 @@ class AnalysisService:
             await self._update_step(analysis_job_id, "optimization")
             remediation_optimization = self._remediation_optimizer.optimize(enriched_paths, graph)
             await self._jobs.persist_remediation_recommendations(
+                analysis_job_id=analysis_job_id,
                 cluster_id=cluster_id,
                 graph_id=graph_id,
                 k8s_scan_id=k8s_scan_id,
@@ -516,6 +535,31 @@ class AnalysisService:
             remediation_recommendation_count=remediation_count,
         )
 
+    async def _build_result_stats(
+        self,
+        graph_id: str | None,
+        summary: AnalysisResultSummaryResponse,
+        attack_paths: list[AttackPathDetailResponse],
+    ) -> AnalysisResultStatsResponse | None:
+        if not graph_id:
+            return None
+
+        facts_count = await self._count_rows("facts", graph_id)
+
+        return AnalysisResultStatsResponse(
+            facts=AnalysisResultStatsFactsResponse(total=facts_count),
+            graph=AnalysisResultStatsGraphResponse(
+                nodes=summary.node_count,
+                edges=summary.edge_count,
+                entry_points=summary.entry_point_count,
+                crown_jewels=summary.crown_jewel_count,
+            ),
+            paths=AnalysisResultStatsPathsResponse(
+                total=summary.attack_path_count,
+                returned=len(attack_paths),
+            ),
+        )
+
     async def _get_attack_paths_preview(
         self,
         graph_id: str,
@@ -591,6 +635,145 @@ class AnalysisService:
             )
         )
         return items[:limit]
+
+    async def _get_attack_paths(
+        self,
+        graph_id: str,
+    ) -> list[AttackPathDetailResponse]:
+        db = self._require_db()
+        columns = await self._get_table_columns("attack_paths")
+        if not columns:
+            return []
+
+        public_id_col = self._pick_column(columns, "path_id", "attack_path_id", "id")
+        if not public_id_col:
+            return []
+        row_id_col = self._pick_column(columns, "id")
+        title_col = self._pick_column(columns, "title", "name")
+        severity_col = self._pick_column(columns, "severity", "risk_level")
+        risk_score_col = self._pick_column(columns, "risk_score")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        hop_count_col = self._pick_column(columns, "hop_count")
+        entry_col = self._pick_column(columns, "entry_node_id")
+        target_col = self._pick_column(columns, "target_node_id")
+        node_ids_col = self._pick_column(columns, "node_ids", "path_nodes", "path_node_ids")
+
+        select_parts = [
+            f"{public_id_col} AS path_id",
+            f"{row_id_col} AS persisted_path_id" if row_id_col else f"{public_id_col} AS persisted_path_id",
+            f"{title_col} AS title" if title_col else "NULL AS title",
+            f"{severity_col} AS risk_level" if severity_col else "NULL AS risk_level",
+            f"{risk_score_col} AS risk_score" if risk_score_col else "NULL AS risk_score",
+            f"{raw_final_risk_col} AS raw_final_risk" if raw_final_risk_col else "NULL AS raw_final_risk",
+            f"{hop_count_col} AS hop_count" if hop_count_col else "NULL AS hop_count",
+            f"{entry_col} AS entry_node_id" if entry_col else "NULL AS entry_node_id",
+            f"{target_col} AS target_node_id" if target_col else "NULL AS target_node_id",
+            f"{node_ids_col} AS node_ids" if node_ids_col else "NULL AS node_ids",
+        ]
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM attack_paths
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().all()
+
+        edge_ids_by_pair = await self._get_graph_edge_ids_by_pair(graph_id)
+        items: list[AttackPathDetailResponse] = []
+        for row in rows:
+            node_ids = self._normalize_string_list(row.get("node_ids"))
+            edges = await self._get_attack_path_edge_sequence(str(row.get("persisted_path_id")))
+            edge_ids = self._edge_ids_from_pairs(
+                [(edge.source_node_id, edge.target_node_id) for edge in edges],
+                edge_ids_by_pair,
+            )
+            if not edge_ids:
+                edge_ids = self._derive_edge_ids(node_ids, edge_ids_by_pair)
+
+            items.append(
+                AttackPathDetailResponse(
+                    path_id=str(row["path_id"]),
+                    title=self._normalize_path_title(row.get("title"), row.get("path_id"), node_ids),
+                    risk_level=self._normalize_severity(row.get("risk_level")),
+                    risk_score=self._normalize_float(row.get("risk_score")),
+                    raw_final_risk=self._normalize_float(row.get("raw_final_risk")),
+                    hop_count=self._normalize_int(row.get("hop_count")) or max(len(node_ids) - 1, 0),
+                    entry_node_id=self._normalize_optional_str(row.get("entry_node_id")),
+                    target_node_id=self._normalize_optional_str(row.get("target_node_id")),
+                    node_ids=node_ids,
+                    edge_ids=edge_ids,
+                    edges=edges,
+                )
+            )
+
+        items.sort(
+            key=lambda item: (
+                SEVERITY_ORDER.get(item.risk_level, 99),
+                -(item.raw_final_risk or -1.0),
+                item.hop_count,
+                item.path_id,
+            )
+        )
+        return items
+
+    async def _get_attack_path_edge_sequence(
+        self,
+        persisted_path_id: str,
+    ) -> list[AttackPathEdgeSequenceResponse]:
+        db = self._require_db()
+        columns = await self._get_table_columns("attack_path_edges")
+        if not columns:
+            return []
+
+        edge_id_col = self._pick_column(columns, "id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        if not edge_id_col or not source_col or not target_col or not type_col:
+            return []
+
+        index_col = self._pick_column(columns, "edge_index", "path_edge_index", "sequence")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+        select_parts = [
+            f"{edge_id_col} AS edge_id",
+            f"{index_col} AS edge_index" if index_col else "NULL AS edge_index",
+            f"{source_col} AS source_node_id",
+            f"{target_col} AS target_node_id",
+            f"{type_col} AS edge_type",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+        ]
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM attack_path_edges
+                    WHERE path_id = :path_id
+                    """
+                ),
+                {"path_id": persisted_path_id},
+            )
+        ).mappings().all()
+
+        edges = [
+            AttackPathEdgeSequenceResponse(
+                edge_id=str(row["edge_id"]),
+                edge_index=self._normalize_int(row.get("edge_index")) or 0,
+                source_node_id=str(row["source_node_id"]),
+                target_node_id=str(row["target_node_id"]),
+                edge_type=str(row["edge_type"]),
+                metadata=self._normalize_object(row.get("metadata")),
+            )
+            for row in rows
+        ]
+        return sorted(edges, key=lambda edge: (edge.edge_index, edge.edge_id))
 
     async def _get_remediation_preview(
         self,
@@ -695,6 +878,109 @@ class AnalysisService:
             )
         )
         return items[:limit]
+
+    async def _get_remediation_recommendations(
+        self,
+        graph_id: str,
+    ) -> list[RemediationRecommendationDetailResponse]:
+        db = self._require_db()
+        columns = await self._get_table_columns("remediation_recommendations")
+        if not columns:
+            return []
+
+        id_col = self._pick_column(columns, "recommendation_id", "id")
+        rank_col = self._pick_column(columns, "recommendation_rank", "rank", "position")
+        if not id_col or not rank_col:
+            return []
+
+        source_col = self._pick_column(columns, "edge_source", "source_node_id", "source")
+        target_col = self._pick_column(columns, "edge_target", "target_node_id", "target")
+        type_col = self._pick_column(columns, "edge_type", "type")
+        fix_type_col = self._pick_column(columns, "fix_type")
+        fix_desc_col = self._pick_column(columns, "fix_description", "description")
+        blocked_ids_col = self._pick_column(columns, "blocked_path_ids")
+        blocked_indices_col = self._pick_column(columns, "blocked_path_indices")
+        fix_cost_col = self._pick_column(columns, "fix_cost")
+        edge_score_col = self._pick_column(columns, "edge_score", "score")
+        covered_risk_col = self._pick_column(columns, "covered_risk")
+        cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
+        metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+        llm_explanation_col = self._pick_column(columns, "llm_explanation")
+        llm_provider_col = self._pick_column(columns, "llm_provider")
+        llm_model_col = self._pick_column(columns, "llm_model")
+        llm_status_col = self._pick_column(columns, "llm_status")
+        llm_generated_at_col = self._pick_column(columns, "llm_generated_at")
+        llm_error_message_col = self._pick_column(columns, "llm_error_message")
+
+        select_parts = [
+            f"{id_col} AS recommendation_id",
+            f"{rank_col} AS recommendation_rank",
+            f"{source_col} AS edge_source" if source_col else "NULL AS edge_source",
+            f"{target_col} AS edge_target" if target_col else "NULL AS edge_target",
+            f"{type_col} AS edge_type" if type_col else "NULL AS edge_type",
+            f"{fix_type_col} AS fix_type" if fix_type_col else "NULL AS fix_type",
+            f"{fix_desc_col} AS fix_description" if fix_desc_col else "NULL AS fix_description",
+            f"{blocked_ids_col} AS blocked_path_ids" if blocked_ids_col else "NULL AS blocked_path_ids",
+            f"{blocked_indices_col} AS blocked_path_indices" if blocked_indices_col else "NULL AS blocked_path_indices",
+            f"{fix_cost_col} AS fix_cost" if fix_cost_col else "NULL AS fix_cost",
+            f"{edge_score_col} AS edge_score" if edge_score_col else "NULL AS edge_score",
+            f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
+            f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
+            f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+            f"{llm_explanation_col} AS llm_explanation" if llm_explanation_col else "NULL AS llm_explanation",
+            f"{llm_provider_col} AS llm_provider" if llm_provider_col else "NULL AS llm_provider",
+            f"{llm_model_col} AS llm_model" if llm_model_col else "NULL AS llm_model",
+            f"{llm_status_col} AS llm_status" if llm_status_col else "NULL AS llm_status",
+            f"{llm_generated_at_col} AS llm_generated_at" if llm_generated_at_col else "NULL AS llm_generated_at",
+            f"{llm_error_message_col} AS llm_error_message" if llm_error_message_col else "NULL AS llm_error_message",
+        ]
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(select_parts)}
+                    FROM remediation_recommendations
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().all()
+
+        items = [
+            RemediationRecommendationDetailResponse(
+                recommendation_id=str(row["recommendation_id"]),
+                recommendation_rank=self._normalize_int(row.get("recommendation_rank")) or 0,
+                edge_source=self._normalize_optional_str(row.get("edge_source")),
+                edge_target=self._normalize_optional_str(row.get("edge_target")),
+                edge_type=self._normalize_optional_str(row.get("edge_type")),
+                fix_type=self._normalize_optional_str(row.get("fix_type")),
+                fix_description=self._normalize_optional_str(row.get("fix_description")),
+                blocked_path_ids=self._normalize_string_list(row.get("blocked_path_ids")),
+                blocked_path_indices=self._normalize_int_list(row.get("blocked_path_indices")),
+                fix_cost=self._normalize_float(row.get("fix_cost")),
+                edge_score=self._normalize_float(row.get("edge_score")),
+                covered_risk=self._normalize_float(row.get("covered_risk")),
+                cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
+                metadata=self._normalize_object(row.get("metadata")),
+                llm_explanation=self._normalize_optional_str(row.get("llm_explanation")),
+                llm_provider=self._normalize_optional_str(row.get("llm_provider")),
+                llm_model=self._normalize_optional_str(row.get("llm_model")),
+                llm_status=self._normalize_optional_str(row.get("llm_status")) or "not_generated",
+                llm_generated_at=row.get("llm_generated_at"),
+                llm_error_message=self._normalize_optional_str(row.get("llm_error_message")),
+            )
+            for row in rows
+        ]
+        items.sort(
+            key=lambda item: (
+                item.recommendation_rank,
+                -(item.cumulative_risk_reduction or -1.0),
+                item.recommendation_id,
+            )
+        )
+        return items
 
     def _build_analysis_result_links(self, job: AnalysisJobDetailResponse) -> AnalysisResultLinksResponse:
         cluster_id = job.cluster_id
@@ -851,6 +1137,56 @@ class AnalysisService:
             )
         ).mappings().first()
         return int(row["cnt"]) if row else 0
+
+    async def _get_graph_edge_ids_by_pair(self, graph_id: str) -> dict[tuple[str, str], str]:
+        db = self._require_db()
+        columns = await self._get_table_columns("graph_edges")
+        if not columns:
+            return {}
+
+        id_col = self._pick_column(columns, "id")
+        source_col = self._pick_column(columns, "source_node_id", "source")
+        target_col = self._pick_column(columns, "target_node_id", "target")
+        if not id_col or not source_col or not target_col:
+            return {}
+
+        rows = (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT {id_col} AS id, {source_col} AS source_node_id, {target_col} AS target_node_id
+                    FROM graph_edges
+                    WHERE graph_id = :graph_id
+                    """
+                ),
+                {"graph_id": graph_id},
+            )
+        ).mappings().all()
+        return {
+            (str(row["source_node_id"]), str(row["target_node_id"])): str(row["id"])
+            for row in rows
+        }
+
+    @staticmethod
+    def _edge_ids_from_pairs(
+        edge_pairs: list[tuple[str, str]],
+        edge_ids_by_pair: dict[tuple[str, str], str],
+    ) -> list[str]:
+        edge_ids: list[str] = []
+        for source, target in edge_pairs:
+            edge_id = edge_ids_by_pair.get((source, target))
+            if edge_id:
+                edge_ids.append(edge_id)
+        return edge_ids
+
+    @staticmethod
+    def _derive_edge_ids(node_ids: list[str], edge_ids_by_pair: dict[tuple[str, str], str]) -> list[str]:
+        derived: list[str] = []
+        for source, target in zip(node_ids, node_ids[1:]):
+            edge_id = edge_ids_by_pair.get((source, target))
+            if edge_id:
+                derived.append(edge_id)
+        return derived
 
     @staticmethod
     def _pick_column(columns: set[str], *candidates: str) -> str | None:

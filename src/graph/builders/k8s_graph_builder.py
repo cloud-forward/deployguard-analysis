@@ -149,7 +149,7 @@ class K8sGraphBuilder:
                 )
             )
 
-        for secret in k8s_scan.get("secrets", []):
+        for secret in self._secrets(k8s_scan):
             metadata = secret.get("metadata", {})
             namespace = secret.get("namespace") or metadata.get("namespace")
             name = secret.get("name") or metadata.get("name")
@@ -251,6 +251,20 @@ class K8sGraphBuilder:
                 metadata={"discovered_from": "fact_fallback"},
             )
         )
+
+    @staticmethod
+    def _secrets(k8s_scan: dict[str, Any]) -> list[dict[str, Any]]:
+        secrets = k8s_scan.get("secrets")
+        if isinstance(secrets, list):
+            return secrets
+
+        resources = k8s_scan.get("resources")
+        if isinstance(resources, dict):
+            nested = resources.get("secrets")
+            if isinstance(nested, list):
+                return nested
+
+        return []
 
     def _container_images(self, pod: dict[str, Any]) -> list[str]:
         images: list[str] = []

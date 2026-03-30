@@ -245,6 +245,58 @@ def test_secret_node_metadata_preserves_precomputed_key_lists():
     ]
 
 
+def test_nested_resources_secret_is_materialized_as_real_node_not_fact_fallback():
+    builder = K8sGraphBuilder()
+    facts = [
+        Fact(
+            fact_type=FactType.POD_MOUNTS_SECRET.value,
+            subject_id="pod:dg-demo:api-pod",
+            subject_type=NodeType.POD.value,
+            object_id="secret:dg-demo:db-credentials",
+            object_type=NodeType.SECRET.value,
+            metadata={"mount_path": "/var/run/secrets/db"},
+        )
+    ]
+    k8s_scan = {
+        "scan_id": "scan-k8s-001",
+        "cluster_id": "cluster-001",
+        "pods": [
+            {
+                "namespace": "dg-demo",
+                "name": "api-pod",
+                "containers": [{"name": "api", "image": "api:latest"}],
+            }
+        ],
+        "resources": {
+            "secrets": [
+                {
+                    "metadata": {
+                        "namespace": "dg-demo",
+                        "name": "db-credentials",
+                    },
+                    "data": {
+                        "DB_HOST": "rds-for-eks.abc123.us-east-1.rds.amazonaws.com",
+                        "DB_USER": "appuser",
+                        "DB_PASSWORD": "super-secret",
+                        "DB_PORT": "5432",
+                    },
+                }
+            ]
+        },
+    }
+
+    result = builder.build(facts, k8s_scan, scan_id="scan-k8s-001")
+    nodes_by_id = {node.id: node for node in result.nodes}
+
+    assert nodes_by_id["secret:dg-demo:db-credentials"].metadata["data_keys"] == [
+        "DB_HOST",
+        "DB_PASSWORD",
+        "DB_PORT",
+        "DB_USER",
+    ]
+    assert "discovered_from" not in nodes_by_id["secret:dg-demo:db-credentials"].metadata
+
+
 def test_missing_internal_nodes_referenced_by_facts_are_created_as_fallback():
     builder = K8sGraphBuilder()
     facts = [

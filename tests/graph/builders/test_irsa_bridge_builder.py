@@ -591,6 +591,30 @@ def test_bridge_builder_credentials_from_secret_key_metadata_only():
     assert result.skipped_credentials == 0
 
 
+def test_bridge_builder_credentials_from_demo_style_secret_key_metadata_only():
+    """Demo-style DB_* key metadata must still produce the RDS bridge."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "namespace": "dg-demo",
+                "name": "db-credentials",
+                "data_keys": ["DB_HOST", "DB_NAME", "DB_PASSWORD", "DB_PORT", "DB_USER"],
+            },
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.credential_facts) == 1
+    assert result.credential_facts[0].target_type == "rds"
+    assert result.credential_facts[0].target_id == "production-db"
+    assert result.credential_facts[0].matched_keys == ["DB_HOST", "DB_PASSWORD", "DB_PORT", "DB_USER"]
+    assert result.credential_facts[0].confidence == "medium"
+    assert result.skipped_credentials == 0
+
+
 def test_bridge_builder_flat_format_feeds_into_aws_graph_builder():
     """End-to-end: flat-format K8s scan -> bridge -> AWS graph edges."""
     bridge_builder = IRSABridgeBuilder()

@@ -90,13 +90,10 @@ class SecretCredentialsExtractor:
             logger.warning("Skipping Secret with missing name in namespace %s", namespace)
             return []
 
-        data = secret.get("data")
-        string_data = secret.get("stringData")
-        if not isinstance(data, dict) and not isinstance(string_data, dict):
-            logger.warning("Skipping Secret %s/%s with invalid data structure", namespace, name)
+        detected_keys = self._detected_key_names_for_secret(secret)
+        if not detected_keys:
+            logger.warning("Skipping Secret %s/%s with no usable key metadata", namespace, name)
             return []
-
-        detected_keys = self._detected_key_names(data, string_data)
         facts: list[SecretContainsCredentialsFact] = []
 
         iam_fact = self._extract_iam_user_fact(
@@ -233,6 +230,23 @@ class SecretCredentialsExtractor:
 
         host_value = self._find_first_value(secret, matched_host_keys)
         if host_value is None:
+            if self._has_precomputed_key_metadata(secret) and len(rds_identifiers) == 1:
+                matched_keys = [
+                    key for key in detected_keys
+                    if key in RDS_HOST_KEYS
+                    or key in RDS_USERNAME_KEYS
+                    or key in RDS_PASSWORD_KEYS
+                    or key in RDS_PORT_KEYS
+                ]
+                return SecretContainsCredentialsFact(
+                    secret_namespace=namespace,
+                    secret_name=name,
+                    target_type="rds",
+                    target_id=rds_identifiers[0],
+                    matched_keys=matched_keys,
+                    confidence="medium",
+                )
+
             logger.warning(
                 "Skipping Secret %s/%s because RDS host value is missing or invalid",
                 namespace,
@@ -377,6 +391,33 @@ class SecretCredentialsExtractor:
                     return value
         return None
 
+    def _detected_key_names_for_secret(self, secret: dict[str, Any]) -> list[str]:
+        metadata = secret.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return self._detected_key_names(
+            secret.get("data"),
+            secret.get("stringData"),
+            secret.get("data_keys"),
+            secret.get("string_data_keys"),
+            metadata.get("data_keys"),
+            metadata.get("string_data_keys"),
+        )
+
+    def _has_precomputed_key_metadata(self, secret: dict[str, Any]) -> bool:
+        metadata = secret.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return any(
+            isinstance(value, list) and any(isinstance(key, str) for key in value)
+            for value in (
+                secret.get("data_keys"),
+                secret.get("string_data_keys"),
+                metadata.get("data_keys"),
+                metadata.get("string_data_keys"),
+            )
+        )
+
     def _index_rds_endpoints(
         self,
         rds_instances: list[RDSInstanceScan | dict[str, Any] | Any],
@@ -453,12 +494,15 @@ class SecretCredentialsExtractor:
 
     def _detected_key_names(
         self,
-        data: Any,
-        string_data: Any,
+        *sources: Any,
     ) -> list[str]:
         keys: list[str] = []
-        for source in (data, string_data):
+        for source in sources:
             if not isinstance(source, dict):
+                if isinstance(source, list):
+                    for key in source:
+                        if isinstance(key, str) and key not in keys:
+                            keys.append(key)
                 continue
             for key in source:
                 if isinstance(key, str) and key not in keys:

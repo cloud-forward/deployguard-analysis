@@ -567,6 +567,30 @@ def test_bridge_builder_credentials_from_flat_format_secrets():
     assert facts_by_type["s3"].target_id == "sensitive-data-bucket"
 
 
+def test_bridge_builder_credentials_from_secret_key_metadata_only():
+    """Secrets with preserved key metadata must still produce the demo RDS bridge."""
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "secrets": [
+            {
+                "namespace": "production",
+                "name": "db-credentials",
+                "data_keys": ["database", "host", "password", "port", "username"],
+            },
+        ],
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.credential_facts) == 1
+    assert result.credential_facts[0].target_type == "rds"
+    assert result.credential_facts[0].target_id == "production-db"
+    assert result.credential_facts[0].matched_keys == ["host", "password", "port", "username"]
+    assert result.credential_facts[0].confidence == "medium"
+    assert result.skipped_credentials == 0
+
+
 def test_bridge_builder_flat_format_feeds_into_aws_graph_builder():
     """End-to-end: flat-format K8s scan -> bridge -> AWS graph edges."""
     bridge_builder = IRSABridgeBuilder()

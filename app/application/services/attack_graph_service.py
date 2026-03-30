@@ -489,8 +489,8 @@ class AttackGraphService:
 
         title_col = self._pick_column(columns, "title", "name")
         severity_col = self._pick_column(columns, "severity", "risk_level")
-        risk_score_col = self._pick_column(columns, "risk_score")
-        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        risk_score_col = self._pick_column(columns, "risk_score", "base_risk")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk", "final_risk")
         hop_count_col = self._pick_column(columns, "hop_count")
         entry_col = self._pick_column(columns, "entry_node_id")
         target_col = self._pick_column(columns, "target_node_id")
@@ -556,8 +556,8 @@ class AttackGraphService:
 
         title_col = self._pick_column(columns, "title", "name")
         severity_col = self._pick_column(columns, "severity", "risk_level")
-        risk_score_col = self._pick_column(columns, "risk_score")
-        raw_final_risk_col = self._pick_column(columns, "raw_final_risk")
+        risk_score_col = self._pick_column(columns, "risk_score", "base_risk")
+        raw_final_risk_col = self._pick_column(columns, "raw_final_risk", "final_risk")
         hop_count_col = self._pick_column(columns, "hop_count")
         entry_col = self._pick_column(columns, "entry_node_id")
         target_col = self._pick_column(columns, "target_node_id")

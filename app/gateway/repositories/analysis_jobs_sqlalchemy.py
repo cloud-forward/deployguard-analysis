@@ -745,8 +745,16 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             row["risk_level"] = self._risk_level(path.get("raw_final_risk", path.get("risk_score")))
         if "risk_score" in attack_path_columns:
             row["risk_score"] = self._as_float(path.get("risk_score"))
+        elif "base_risk" in attack_path_columns:
+            row["base_risk"] = self._as_float(path.get("risk_score"))
         if "raw_final_risk" in attack_path_columns:
             row["raw_final_risk"] = self._as_float(path.get("raw_final_risk", path.get("risk_score")))
+        elif "final_risk" in attack_path_columns:
+            row["final_risk"] = self._as_float(path.get("raw_final_risk", path.get("risk_score")))
+        if "name" in attack_path_columns and "title" not in attack_path_columns:
+            title = path.get("title") or path.get("name")
+            if title is not None:
+                row["name"] = str(title)
         if "hop_count" in attack_path_columns:
             row["hop_count"] = max(len(node_ids) - 1, 0)
         if "entry_node_id" in attack_path_columns:

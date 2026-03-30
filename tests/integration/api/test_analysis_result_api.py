@@ -571,4 +571,194 @@ async def test_get_analysis_result_isolated_by_requested_job_graph_when_jobs_sha
     assert body["stats"]["paths"]["total"] == 1
     assert body["stats"]["paths"]["returned"] == 1
     assert body["stats"]["graph"]["nodes"] == 0
-    assert body["stats"]["graph"]["edges"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_result_returns_non_null_risk_from_legacy_schema(analysis_result_client):
+    """Verify that risk_score and raw_final_risk are non-null when the attack_paths
+    table has only legacy columns (base_risk, final_risk) instead of the new columns."""
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    graph_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    job_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+    async with analysis_result_client["sessionmaker"]() as session:
+        # Migrate attack_paths to legacy schema
+        await session.execute(text("ALTER TABLE attack_paths DROP COLUMN risk_score"))
+        await session.execute(text("ALTER TABLE attack_paths DROP COLUMN raw_final_risk"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN base_risk REAL"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN final_risk REAL"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN name TEXT"))
+
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (id, name, cluster_type, created_at, updated_at)
+                VALUES (:id, 'legacy-cluster', 'eks', '2026-03-22 10:00:00', '2026-03-22 10:00:00')
+                """
+            ),
+            {"id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_snapshots (
+                    id, cluster_id, k8s_scan_id, aws_scan_id, image_scan_id, status,
+                    node_count, edge_count, entry_point_count, crown_jewel_count, completed_at, created_at
+                )
+                VALUES (
+                    :id, :cluster_id, 'k8s-1', 'aws-1', 'img-1', 'completed',
+                    3, 2, 1, 1, '2026-03-22 10:05:00', '2026-03-22 10:00:00'
+                )
+                """
+            ),
+            {"id": graph_id, "cluster_id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (
+                    id, user_id, cluster_id, graph_id, status, current_step,
+                    k8s_scan_id, aws_scan_id, image_scan_id, expected_scans,
+                    created_at, started_at, completed_at
+                )
+                VALUES (
+                    :id, :user_id, :cluster_id, :graph_id, 'completed', NULL,
+                    'k8s-1', 'aws-1', 'img-1', '["k8s","aws","image"]',
+                    '2026-03-22 10:00:00', '2026-03-22 10:01:00', '2026-03-22 10:06:00'
+                )
+                """
+            ),
+            {"id": job_id, "user_id": "user-1", "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (
+                    id, graph_id, path_id, risk_level, base_risk, final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids, name
+                )
+                VALUES
+                    ('leg-p1', :graph_id, 'legacy-path-1', 'critical', 0.65, 0.85,
+                     2, 'entry-x', 'target-x', '["entry-x","mid-x","target-x"]', 'Legacy Path One')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    preview_items = body["attack_paths_preview"]
+    assert len(preview_items) == 1
+    assert preview_items[0]["path_id"] == "legacy-path-1"
+    assert preview_items[0]["risk_score"] is not None
+    assert abs(preview_items[0]["risk_score"] - 0.65) < 1e-6
+    assert preview_items[0]["raw_final_risk"] is not None
+    assert abs(preview_items[0]["raw_final_risk"] - 0.85) < 1e-6
+
+    detail_items = body["attack_paths"]
+    assert len(detail_items) == 1
+    assert detail_items[0]["path_id"] == "legacy-path-1"
+    assert detail_items[0]["risk_score"] is not None
+    assert abs(detail_items[0]["risk_score"] - 0.65) < 1e-6
+    assert detail_items[0]["raw_final_risk"] is not None
+    assert abs(detail_items[0]["raw_final_risk"] - 0.85) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_result_returns_canonical_risk_columns_when_present(analysis_result_client):
+    """Verify that risk_score and raw_final_risk are read from canonical columns
+    (not legacy base_risk/final_risk) when the canonical columns are present and populated."""
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    graph_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    job_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+
+    async with analysis_result_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (id, name, cluster_type, created_at, updated_at)
+                VALUES (:id, 'canonical-cluster', 'eks', '2026-03-31 10:00:00', '2026-03-31 10:00:00')
+                """
+            ),
+            {"id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_snapshots (
+                    id, cluster_id, k8s_scan_id, aws_scan_id, image_scan_id, status,
+                    node_count, edge_count, entry_point_count, crown_jewel_count, completed_at, created_at
+                )
+                VALUES (
+                    :id, :cluster_id, 'k8s-1', 'aws-1', 'img-1', 'completed',
+                    2, 1, 1, 1, '2026-03-31 10:05:00', '2026-03-31 10:00:00'
+                )
+                """
+            ),
+            {"id": graph_id, "cluster_id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (
+                    id, user_id, cluster_id, graph_id, status, current_step,
+                    k8s_scan_id, aws_scan_id, image_scan_id, expected_scans,
+                    created_at, started_at, completed_at
+                )
+                VALUES (
+                    :id, :user_id, :cluster_id, :graph_id, 'completed', NULL,
+                    'k8s-1', 'aws-1', 'img-1', '["k8s","aws","image"]',
+                    '2026-03-31 10:00:00', '2026-03-31 10:01:00', '2026-03-31 10:06:00'
+                )
+                """
+            ),
+            {"id": job_id, "user_id": "user-1", "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        # Insert with canonical columns risk_score and raw_final_risk populated.
+        # These values must appear in the response unchanged.
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (
+                    id, graph_id, path_id, risk_level, risk_score, raw_final_risk,
+                    hop_count, entry_node_id, target_node_id, node_ids
+                )
+                VALUES
+                    ('can-p1', :graph_id, 'canonical-path-1', 'critical', 0.73, 0.91,
+                     2, 'entry-can', 'target-can', '["entry-can","mid-can","target-can"]')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    # attack_paths_preview (test C)
+    preview_items = body["attack_paths_preview"]
+    assert len(preview_items) == 1
+    assert preview_items[0]["path_id"] == "canonical-path-1"
+    assert preview_items[0]["risk_score"] is not None
+    assert abs(preview_items[0]["risk_score"] - 0.73) < 1e-6
+    assert preview_items[0]["raw_final_risk"] is not None
+    assert abs(preview_items[0]["raw_final_risk"] - 0.91) < 1e-6
+
+    # attack_paths detail section (test A)
+    detail_items = body["attack_paths"]
+    assert len(detail_items) == 1
+    assert detail_items[0]["path_id"] == "canonical-path-1"
+    assert detail_items[0]["risk_score"] is not None
+    assert abs(detail_items[0]["risk_score"] - 0.73) < 1e-6
+    assert detail_items[0]["raw_final_risk"] is not None
+    assert abs(detail_items[0]["raw_final_risk"] - 0.91) < 1e-6

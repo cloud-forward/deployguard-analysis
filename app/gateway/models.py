@@ -390,6 +390,12 @@ class RemediationRecommendation(Base):
     covered_risk: Mapped[float | None] = mapped_column(nullable=True)
     cumulative_risk_reduction: Mapped[float | None] = mapped_column(nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
+    llm_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    llm_status: Mapped[str | None] = mapped_column(String(20), nullable=True, default="not_generated")
+    llm_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    llm_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class LLMProviderConfig(Base):

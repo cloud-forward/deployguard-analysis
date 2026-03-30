@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 XAI_DEFAULT_MODEL = "grok-3-mini"
+GENERIC_LLM_FAILURE_MESSAGE = "LLM generation failed"
 PROVIDER_DEFAULT_MODELS = {
     "openai": OPENAI_DEFAULT_MODEL,
     "xai": XAI_DEFAULT_MODEL,
@@ -51,10 +52,12 @@ class RecommendationExplanationService:
         self,
         attack_graph_service,
         provider_config_repository,
+        analysis_jobs_repository,
         providers: dict[str, ExplanationProvider],
     ) -> None:
         self._attack_graph_service = attack_graph_service
         self._provider_configs = provider_config_repository
+        self._analysis_jobs = analysis_jobs_repository
         self._providers = providers
 
     async def explain_recommendation(
@@ -81,6 +84,7 @@ class RecommendationExplanationService:
                 await self._attack_graph_service.get_remediation_recommendation_detail(
                     cluster_id=cluster_id,
                     recommendation_id=recommendation_id,
+                    user_id=user_id,
                 )
             )
         except HTTPException as exc:
@@ -177,6 +181,10 @@ class RecommendationExplanationService:
             )
 
         base_explanation = self._build_base_explanation(recommendation)
+        graph_id = await self._attack_graph_service.get_latest_analysis_graph_id(
+            cluster_id,
+            user_id=user_id,
+        )
         resolution = await self._resolve_provider(
             user_id,
             requested_provider,
@@ -263,6 +271,38 @@ class RecommendationExplanationService:
             )
             result = await provider.generate_explanation(prompt)
         except Exception as exc:
+            try:
+                if graph_id:
+                    await self._analysis_jobs.save_llm_explanation_failure(
+                        graph_id=graph_id,
+                        recommendation_id=recommendation.recommendation_id,
+                        error_message=GENERIC_LLM_FAILURE_MESSAGE,
+                        provider=resolution.provider_name or "",
+                        model=resolution.model or "",
+                    )
+                else:
+                    logger.warning(
+                        "remediation_explanation_persistence_skipped",
+                        extra={
+                            "cluster_id": cluster_id,
+                            "recommendation_id": recommendation.recommendation_id,
+                            "user_id": user_id,
+                            "stage": "save_llm_explanation_failure",
+                            "reason": "missing_graph_id",
+                        },
+                    )
+            except Exception:
+                logger.exception(
+                    "remediation_explanation_persistence_failed",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "recommendation_id": recommendation.recommendation_id,
+                        "user_id": user_id,
+                        "stage": "save_llm_explanation_failure",
+                        "provider": resolution.provider_name,
+                        "model": resolution.model,
+                    },
+                )
             logger.exception(
                 "remediation_provider_call_failed",
                 extra={
@@ -301,9 +341,41 @@ class RecommendationExplanationService:
                 "used_llm": True,
                 "provider_call_attempted": True,
                 "explanation_status": "llm_generated",
-                "response_length": len(result.text),
-            },
-        )
+                    "response_length": len(result.text),
+                },
+            )
+        try:
+            if graph_id:
+                await self._analysis_jobs.save_llm_explanation_success(
+                    graph_id=graph_id,
+                    recommendation_id=recommendation.recommendation_id,
+                    explanation=result.text,
+                    provider=result.provider,
+                    model=result.model,
+                )
+            else:
+                logger.warning(
+                    "remediation_explanation_persistence_skipped",
+                    extra={
+                        "cluster_id": cluster_id,
+                        "recommendation_id": recommendation.recommendation_id,
+                        "user_id": user_id,
+                        "stage": "save_llm_explanation_success",
+                        "reason": "missing_graph_id",
+                    },
+                )
+        except Exception:
+            logger.exception(
+                "remediation_explanation_persistence_failed",
+                extra={
+                    "cluster_id": cluster_id,
+                    "recommendation_id": recommendation.recommendation_id,
+                    "user_id": user_id,
+                    "stage": "save_llm_explanation_success",
+                    "provider": result.provider,
+                    "model": result.model,
+                },
+            )
         return RecommendationExplanationResponse(
             cluster_id=cluster_id,
             recommendation_id=recommendation.recommendation_id,

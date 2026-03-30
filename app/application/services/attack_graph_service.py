@@ -380,6 +380,19 @@ class AttackGraphService:
             )
             raise
 
+    async def get_latest_analysis_graph_id(
+        self,
+        cluster_id: str,
+        user_id: str | None = None,
+    ) -> str | None:
+        cluster = await self._clusters.get_by_id(cluster_id, user_id=user_id)
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        analysis = await self._get_latest_analysis_context(cluster_id)
+        graph_id = analysis.get("graph_id") if analysis else None
+        return str(graph_id) if graph_id else None
+
     async def _get_latest_analysis_context(self, cluster_id: str) -> Optional[dict[str, Any]]:
         query_with_graph = text(
             """
@@ -723,6 +736,12 @@ class AttackGraphService:
         covered_risk_col = self._pick_column(columns, "covered_risk")
         cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
         metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+        llm_explanation_col = self._pick_column(columns, "llm_explanation")
+        llm_provider_col = self._pick_column(columns, "llm_provider")
+        llm_model_col = self._pick_column(columns, "llm_model")
+        llm_status_col = self._pick_column(columns, "llm_status")
+        llm_generated_at_col = self._pick_column(columns, "llm_generated_at")
+        llm_error_message_col = self._pick_column(columns, "llm_error_message")
 
         select_parts = [
             f"{id_col} AS recommendation_id",
@@ -739,6 +758,12 @@ class AttackGraphService:
             f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
             f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
             f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+            f"{llm_explanation_col} AS llm_explanation" if llm_explanation_col else "NULL AS llm_explanation",
+            f"{llm_provider_col} AS llm_provider" if llm_provider_col else "NULL AS llm_provider",
+            f"{llm_model_col} AS llm_model" if llm_model_col else "NULL AS llm_model",
+            f"{llm_status_col} AS llm_status" if llm_status_col else "NULL AS llm_status",
+            f"{llm_generated_at_col} AS llm_generated_at" if llm_generated_at_col else "NULL AS llm_generated_at",
+            f"{llm_error_message_col} AS llm_error_message" if llm_error_message_col else "NULL AS llm_error_message",
         ]
 
         try:
@@ -794,6 +819,12 @@ class AttackGraphService:
                     covered_risk=self._normalize_float(row.get("covered_risk")),
                     cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
                     metadata=self._normalize_object(row.get("metadata")),
+                    llm_explanation=self._normalize_optional_str(row.get("llm_explanation")),
+                    llm_provider=self._normalize_optional_str(row.get("llm_provider")),
+                    llm_model=self._normalize_optional_str(row.get("llm_model")),
+                    llm_status=self._normalize_optional_str(row.get("llm_status")) or "not_generated",
+                    llm_generated_at=row.get("llm_generated_at"),
+                    llm_error_message=self._normalize_optional_str(row.get("llm_error_message")),
                 )
                 for row in rows
             ]
@@ -875,6 +906,12 @@ class AttackGraphService:
         covered_risk_col = self._pick_column(columns, "covered_risk")
         cumulative_col = self._pick_column(columns, "cumulative_risk_reduction")
         metadata_col = self._pick_column(columns, "metadata", "properties", "attributes")
+        llm_explanation_col = self._pick_column(columns, "llm_explanation")
+        llm_provider_col = self._pick_column(columns, "llm_provider")
+        llm_model_col = self._pick_column(columns, "llm_model")
+        llm_status_col = self._pick_column(columns, "llm_status")
+        llm_generated_at_col = self._pick_column(columns, "llm_generated_at")
+        llm_error_message_col = self._pick_column(columns, "llm_error_message")
 
         select_parts = [
             f"{id_col} AS recommendation_id",
@@ -891,6 +928,12 @@ class AttackGraphService:
             f"{covered_risk_col} AS covered_risk" if covered_risk_col else "NULL AS covered_risk",
             f"{cumulative_col} AS cumulative_risk_reduction" if cumulative_col else "NULL AS cumulative_risk_reduction",
             f"{metadata_col} AS metadata" if metadata_col else "NULL AS metadata",
+            f"{llm_explanation_col} AS llm_explanation" if llm_explanation_col else "NULL AS llm_explanation",
+            f"{llm_provider_col} AS llm_provider" if llm_provider_col else "NULL AS llm_provider",
+            f"{llm_model_col} AS llm_model" if llm_model_col else "NULL AS llm_model",
+            f"{llm_status_col} AS llm_status" if llm_status_col else "NULL AS llm_status",
+            f"{llm_generated_at_col} AS llm_generated_at" if llm_generated_at_col else "NULL AS llm_generated_at",
+            f"{llm_error_message_col} AS llm_error_message" if llm_error_message_col else "NULL AS llm_error_message",
         ]
 
         row = (
@@ -942,6 +985,12 @@ class AttackGraphService:
                 covered_risk=self._normalize_float(row.get("covered_risk")),
                 cumulative_risk_reduction=self._normalize_float(row.get("cumulative_risk_reduction")),
                 metadata=self._normalize_object(row.get("metadata")),
+                llm_explanation=self._normalize_optional_str(row.get("llm_explanation")),
+                llm_provider=self._normalize_optional_str(row.get("llm_provider")),
+                llm_model=self._normalize_optional_str(row.get("llm_model")),
+                llm_status=self._normalize_optional_str(row.get("llm_status")) or "not_generated",
+                llm_generated_at=row.get("llm_generated_at"),
+                llm_error_message=self._normalize_optional_str(row.get("llm_error_message")),
             )
         except Exception as exc:
             logger.exception(

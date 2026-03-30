@@ -13,6 +13,7 @@ from app.application.services.cluster_service import ClusterService
 from app.application.services.recommendation_explanation_service import RecommendationExplanationService
 from app.gateway.db.base import Base
 from app.gateway.repositories.cluster_repository import SQLAlchemyClusterRepository
+from app.gateway.repositories.analysis_jobs_sqlalchemy import SqlAlchemyAnalysisJobRepository
 from app.main import app
 from app.security.passwords import hash_password
 
@@ -350,7 +351,13 @@ async def attack_graph_client(tmp_path):
                 edge_score REAL,
                 covered_risk REAL,
                 cumulative_risk_reduction REAL,
-                metadata TEXT
+                metadata TEXT,
+                llm_explanation TEXT,
+                llm_provider TEXT,
+                llm_model TEXT,
+                llm_status TEXT,
+                llm_generated_at TEXT,
+                llm_error_message TEXT
             )
         """))
 
@@ -762,6 +769,12 @@ async def test_get_remediation_recommendations_returns_ranked_cluster_scoped_lis
         "covered_risk": 1.5,
         "cumulative_risk_reduction": 1.5,
         "metadata": {"edge_source_type": "ingress"},
+        "llm_explanation": None,
+        "llm_provider": None,
+        "llm_model": None,
+        "llm_status": "not_generated",
+        "llm_generated_at": None,
+        "llm_error_message": None,
     }
 
 
@@ -962,6 +975,12 @@ async def test_get_remediation_recommendation_detail_returns_persisted_row(attac
         "covered_risk": 0.9,
         "cumulative_risk_reduction": 0.9,
         "metadata": {"secret_type": "db"},
+        "llm_explanation": None,
+        "llm_provider": None,
+        "llm_model": None,
+        "llm_status": "not_generated",
+        "llm_generated_at": None,
+        "llm_error_message": None,
     }
 
 
@@ -1010,6 +1029,14 @@ class _RecordingProvider:
                 "model": prompt.model,
             },
         )()
+
+
+class _NoopAnalysisJobsRepo:
+    async def save_llm_explanation_success(self, graph_id: str, recommendation_id: str, explanation: str, provider: str, model: str):
+        return None
+
+    async def save_llm_explanation_failure(self, graph_id: str, recommendation_id: str, error_message: str, provider: str, model: str):
+        return None
 
 
 @pytest.mark.parametrize(
@@ -1091,6 +1118,7 @@ async def test_post_remediation_recommendation_explanation_returns_no_target_whe
                     db=session,
                 ),
                 provider_config_repository=_MissingConfigRepo(),
+                analysis_jobs_repository=_NoopAnalysisJobsRepo(),
                 providers={"openai": provider},
             )
 
@@ -1165,6 +1193,7 @@ async def test_post_remediation_recommendation_explanation_returns_llm_generated
                     db=session,
                 ),
                 provider_config_repository=_ActiveConfigRepo(),
+                analysis_jobs_repository=_NoopAnalysisJobsRepo(),
                 providers={"openai": provider},
             )
 
@@ -1186,6 +1215,198 @@ async def test_post_remediation_recommendation_explanation_returns_llm_generated
     assert body["model"] == "gpt-4o-mini"
     assert body["final_explanation"] == "LLM enriched explanation."
     assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_remediation_explanation_persists_llm_fields_and_read_endpoints_return_them(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    graph_id = "graph-recommendations-llm-persisted"
+    analysis_run_id = "analysis-recommendations-llm-persisted"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:10:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES (:id, :cluster_id, :graph_id, 'completed', '2026-03-22 15:10:00', '2026-03-22 15:15:00')
+                """
+            ),
+            {"id": analysis_run_id, "cluster_id": cluster_id, "graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES (
+                    :graph_id, 'rotate-credentials-1', 0, 'secret:prod:db-creds', 'rds:prod-db', 'secret_contains_credentials',
+                    'rotate_credentials', '노출된 데이터베이스 자격 증명을 교체합니다.', '["path-db"]', '[4]', 1.3, 0.9,
+                    0.9, 0.9, '{"impact_reason":"이 secret에 재사용 가능한 자격 증명이 포함되어 있기 때문입니다"}'
+                )
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider(text="Persisted explanation.")
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_ActiveConfigRepo(),
+                analysis_jobs_repository=SqlAlchemyAnalysisJobRepository(session),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    post_response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1/explanation",
+        json={},
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert post_response.status_code == 200
+    assert post_response.json()["explanation_status"] == "llm_generated"
+
+    list_response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    assert list_response.status_code == 200
+    list_body = list_response.json()
+    assert list_body["items"][0]["llm_explanation"] == "Persisted explanation."
+    assert list_body["items"][0]["llm_provider"] == "openai"
+    assert list_body["items"][0]["llm_model"] == "gpt-4o-mini"
+    assert list_body["items"][0]["llm_status"] == "generated"
+    assert list_body["items"][0]["llm_generated_at"] is not None
+    assert list_body["items"][0]["llm_error_message"] is None
+
+    detail_response = attack_graph_client["client"].get(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/rotate-credentials-1",
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    assert detail_response.status_code == 200
+    detail_body = detail_response.json()
+    assert detail_body["recommendation"]["llm_explanation"] == "Persisted explanation."
+    assert detail_body["recommendation"]["llm_provider"] == "openai"
+    assert detail_body["recommendation"]["llm_model"] == "gpt-4o-mini"
+    assert detail_body["recommendation"]["llm_status"] == "generated"
+    assert detail_body["recommendation"]["llm_generated_at"] is not None
+    assert detail_body["recommendation"]["llm_error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_remediation_explanation_update_is_scoped_to_latest_graph_row_only(attack_graph_client):
+    cluster_id = attack_graph_client["cluster_id"]
+    old_graph_id = "graph-recommendations-shared-id-old"
+    latest_graph_id = "graph-recommendations-shared-id-latest"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": old_graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:20:00"},
+        )
+        await session.execute(
+            text("INSERT INTO graph_snapshots (id, cluster_id, created_at) VALUES (:id, :cluster_id, :created_at)"),
+            {"id": latest_graph_id, "cluster_id": cluster_id, "created_at": "2026-03-22 15:30:00"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (id, cluster_id, graph_id, status, created_at, completed_at)
+                VALUES
+                    ('analysis-shared-id-old', :cluster_id, :old_graph_id, 'completed', '2026-03-22 15:20:00', '2026-03-22 15:25:00'),
+                    ('analysis-shared-id-latest', :cluster_id, :latest_graph_id, 'completed', '2026-03-22 15:30:00', '2026-03-22 15:35:00')
+                """
+            ),
+            {"cluster_id": cluster_id, "old_graph_id": old_graph_id, "latest_graph_id": latest_graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    (:old_graph_id, 'shared-rec', 0, 'secret:old', 'rds:old', 'secret_contains_credentials',
+                     'rotate_credentials', 'old row', '["path-old"]', '[1]', 1.0, 0.5, 0.5, 0.5, '{"impact_reason":"old"}'),
+                    (:latest_graph_id, 'shared-rec', 0, 'secret:new', 'rds:new', 'secret_contains_credentials',
+                     'rotate_credentials', 'new row', '["path-new"]', '[2]', 1.0, 0.7, 0.7, 0.7, '{"impact_reason":"new"}')
+                """
+            ),
+            {"old_graph_id": old_graph_id, "latest_graph_id": latest_graph_id},
+        )
+        await session.commit()
+
+    provider = _RecordingProvider(text="Scoped explanation.")
+
+    async def override_get_recommendation_explanation_service():
+        async with attack_graph_client["sessionmaker"]() as session:
+            yield RecommendationExplanationService(
+                attack_graph_service=AttackGraphService(
+                    cluster_repository=SQLAlchemyClusterRepository(session),
+                    db=session,
+                ),
+                provider_config_repository=_ActiveConfigRepo(),
+                analysis_jobs_repository=SqlAlchemyAnalysisJobRepository(session),
+                providers={"openai": provider},
+            )
+
+    app.dependency_overrides[get_recommendation_explanation_service] = override_get_recommendation_explanation_service
+    response = attack_graph_client["client"].post(
+        f"/api/v1/clusters/{cluster_id}/remediation-recommendations/shared-rec/explanation",
+        json={},
+        headers=_auth_headers(attack_graph_client["client"], "user-1"),
+    )
+    app.dependency_overrides.pop(get_recommendation_explanation_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["explanation_status"] == "llm_generated"
+
+    async with attack_graph_client["sessionmaker"]() as session:
+        rows = (
+            await session.execute(
+                text(
+                    """
+                    SELECT graph_id, llm_explanation, llm_provider, llm_model, llm_status, llm_generated_at, llm_error_message
+                    FROM remediation_recommendations
+                    WHERE recommendation_id = 'shared-rec'
+                    ORDER BY graph_id
+                    """
+                )
+            )
+        ).mappings().all()
+
+    assert len(rows) == 2
+    by_graph_id = {row["graph_id"]: row for row in rows}
+    assert by_graph_id[latest_graph_id]["llm_explanation"] == "Scoped explanation."
+    assert by_graph_id[latest_graph_id]["llm_provider"] == "openai"
+    assert by_graph_id[latest_graph_id]["llm_model"] == "gpt-4o-mini"
+    assert by_graph_id[latest_graph_id]["llm_status"] == "generated"
+    assert by_graph_id[latest_graph_id]["llm_generated_at"] is not None
+    assert by_graph_id[latest_graph_id]["llm_error_message"] is None
+
+    assert by_graph_id[old_graph_id]["llm_explanation"] is None
+    assert by_graph_id[old_graph_id]["llm_provider"] is None
+    assert by_graph_id[old_graph_id]["llm_model"] is None
+    assert by_graph_id[old_graph_id]["llm_status"] is None
+    assert by_graph_id[old_graph_id]["llm_generated_at"] is None
+    assert by_graph_id[old_graph_id]["llm_error_message"] is None
 
 
 @pytest.mark.asyncio

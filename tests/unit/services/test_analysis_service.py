@@ -1057,6 +1057,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
     service._unified_graph_builder.build.assert_called_once_with(k8s_result, aws_result)
     service._graph_builder.build_from_unified_result.assert_awaited_once_with(unified_result)
     jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        analysis_job_id=None,
         cluster_id="cluster-1",
         graph_id="k8s-1-graph",
         k8s_scan_id="k8s-1",
@@ -1084,6 +1085,7 @@ async def test_execute_analysis_uses_domain_results_and_unified_merge(service, j
     assert facts_by_type["pod_uses_service_account"] == "k8s-1"
     assert facts_by_type["service_account_assumes_iam_role"] == "aws-1"
     jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
+        analysis_job_id=None,
         cluster_id="cluster-1",
         graph_id="11111111-1111-1111-1111-111111111111",
         k8s_scan_id="k8s-1",
@@ -1148,6 +1150,7 @@ async def test_execute_analysis_returns_zero_paths_when_entry_and_crown_have_no_
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
     jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        analysis_job_id=None,
         cluster_id="cluster-1",
         graph_id="k8s-1-graph",
         k8s_scan_id="k8s-1",
@@ -1156,6 +1159,7 @@ async def test_execute_analysis_returns_zero_paths_when_entry_and_crown_have_no_
         attack_paths=[],
     )
     jobs_repo.persist_remediation_recommendations.assert_awaited_once_with(
+        analysis_job_id=None,
         cluster_id="cluster-1",
         graph_id="11111111-1111-1111-1111-111111111111",
         k8s_scan_id="k8s-1",
@@ -1234,6 +1238,7 @@ async def test_execute_analysis_skips_self_entry_target_pairs(service, jobs_repo
     result = await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1")
 
     jobs_repo.persist_attack_paths.assert_awaited_once_with(
+        analysis_job_id=None,
         cluster_id="cluster-1",
         graph_id="k8s-1-graph",
         k8s_scan_id="k8s-1",
@@ -1283,6 +1288,10 @@ async def test_execute_analysis_updates_job_steps_when_analysis_job_id_present(s
 
     await service.execute_analysis("cluster-1", "k8s-1", "aws-1", "img-1", analysis_job_id="job-123")
 
+    jobs_repo.persist_attack_paths.assert_awaited_once()
+    assert jobs_repo.persist_attack_paths.await_args.kwargs["analysis_job_id"] == "job-123"
+    jobs_repo.persist_remediation_recommendations.assert_awaited_once()
+    assert jobs_repo.persist_remediation_recommendations.await_args.kwargs["analysis_job_id"] == "job-123"
     assert [call.args for call in jobs_repo.update_current_step.await_args_list] == [
         ("job-123", "fact_extraction"),
         ("job-123", "graph_building"),

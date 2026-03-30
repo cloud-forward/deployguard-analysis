@@ -240,6 +240,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         )
 
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=job_id,
             cluster_id=cluster_id,
             graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
@@ -314,6 +315,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         await session.commit()
 
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
@@ -365,6 +367,43 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert [row["position"] for row in node_rows] == [0, 1, 2]
 
     @pytest.mark.asyncio
+    async def test_persist_attack_paths_links_only_explicit_job_when_scan_tuple_is_duplicated(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        first_job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            expected_scans=["k8s", "aws", "image"],
+        )
+        second_job_id = await repo.create_analysis_job(
+            cluster_id=cluster_id,
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            expected_scans=["k8s", "aws", "image"],
+        )
+
+        graph_id = await repo.persist_attack_paths(
+            analysis_job_id=first_job_id,
+            cluster_id=cluster_id,
+            graph_id="k8s-1-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[],
+        )
+
+        first_job = await session.get(AnalysisJob, first_job_id)
+        second_job = await session.get(AnalysisJob, second_job_id)
+
+        assert first_job is not None
+        assert second_job is not None
+        assert first_job.graph_id == graph_id
+        assert second_job.graph_id is None
+
+    @pytest.mark.asyncio
     async def test_persist_attack_paths_supports_long_canonical_identifiers(self, repo_and_session):
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -378,6 +417,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         assert len(long_target_node_id) > 255
 
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
@@ -422,6 +462,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
@@ -460,6 +501,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         )
 
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=job_id,
             cluster_id=cluster_id,
             graph_id="k8s-1-graph",
             k8s_scan_id="k8s-1",
@@ -469,6 +511,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         )
 
         await repo.persist_remediation_recommendations(
+            analysis_job_id=job_id,
             cluster_id=cluster_id,
             graph_id=graph_id,
             k8s_scan_id="k8s-1",
@@ -539,6 +582,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="11111111-1111-1111-1111-111111111111",
             k8s_scan_id="k8s-1",
@@ -608,6 +652,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="11111111-1111-1111-1111-111111111111",
             k8s_scan_id="k8s-1",
@@ -691,6 +736,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="11111111-1111-1111-1111-111111111111",
             k8s_scan_id="k8s-1",
@@ -754,6 +800,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="11111111-1111-1111-1111-111111111111",
             k8s_scan_id="k8s-1",
@@ -843,6 +890,7 @@ class TestSqlAlchemyAnalysisJobRepository:
         repo, session = repo_and_session
         cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
             cluster_id=cluster_id,
             graph_id="11111111-1111-1111-1111-111111111111",
             k8s_scan_id="k8s-1",

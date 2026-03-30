@@ -19,6 +19,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -147,18 +148,44 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
         await session.execute(
             text(
                 """
+                INSERT INTO attack_path_edges (id, path_id, sequence, source_node_id, target_node_id, edge_type)
+                VALUES
+                    ('ape-critical-0', 'p-critical', 0, 'entry-c', 'mid-c1', 'ingress_exposes_service'),
+                    ('ape-critical-1', 'p-critical', 1, 'mid-c1', 'mid-c2', 'lateral_move'),
+                    ('ape-critical-2', 'p-critical', 2, 'mid-c2', 'target-c', 'iam_role_access_resource'),
+                    ('ape-high-a-0', 'p-high-a', 0, 'entry-a', 'target-a', 'secret_contains_credentials')
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_edges (id, graph_id, source_node_id, target_node_id, edge_type, metadata)
+                VALUES
+                    ('ge-critical-0', :graph_id, 'entry-c', 'mid-c1', 'ingress_exposes_service', '{"channel":"ingress"}'),
+                    ('ge-critical-1', :graph_id, 'mid-c1', 'mid-c2', 'lateral_move', '{"channel":"east-west"}'),
+                    ('ge-critical-2', :graph_id, 'mid-c2', 'target-c', 'iam_role_access_resource', '{"channel":"iam"}'),
+                    ('ge-high-a-0', :graph_id, 'entry-a', 'target-a', 'secret_contains_credentials', '{"channel":"secret"}')
+                """
+            ),
+            {"graph_id": graph_id},
+        )
+        await session.execute(
+            text(
+                """
                 INSERT INTO remediation_recommendations (
                     id, graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
                     fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
-                    covered_risk, cumulative_risk_reduction, metadata
+                    covered_risk, cumulative_risk_reduction, metadata,
+                    llm_explanation, llm_provider, llm_model, llm_status, llm_generated_at, llm_error_message
                 )
                 VALUES
-                    ('r3', :graph_id, 'rec-z', 2, 'a', 'b', 'type-z', 'fix-z', 'desc-z', '[]', '[]', 3.0, 0.1, 0.1, 0.9, '{}'),
-                    ('r2', :graph_id, 'rec-b', 1, 'a', 'b', 'type-b', 'fix-b', 'desc-b', '[]', '[]', 2.0, 0.2, 0.2, 0.8, '{}'),
-                    ('r1', :graph_id, 'rec-a', 1, 'a', 'b', 'type-a', 'fix-a', 'desc-a', '[]', '[]', 1.0, 0.3, 0.3, 1.0, '{}'),
-                    ('r0', :graph_id, 'rec-0', 0, 'a', 'b', 'type-0', 'fix-0', 'desc-0', '[]', '[]', 1.5, 0.4, 0.4, 0.7, '{}'),
-                    ('r4', :graph_id, 'rec-4', 4, 'a', 'b', 'type-4', 'fix-4', 'desc-4', '[]', '[]', 4.0, 0.05, 0.05, 1.0, '{}'),
-                    ('r5', :graph_id, 'rec-5', 5, 'a', 'b', 'type-5', 'fix-5', 'desc-5', '[]', '[]', 5.0, 0.01, 0.01, 1.0, '{}')
+                    ('r3', :graph_id, 'rec-z', 2, 'a', 'b', 'type-z', 'fix-z', 'desc-z', '[]', '[]', 3.0, 0.1, 0.1, 0.9, '{}', NULL, NULL, NULL, NULL, NULL, NULL),
+                    ('r2', :graph_id, 'rec-b', 1, 'a', 'b', 'type-b', 'fix-b', 'desc-b', '[]', '[]', 2.0, 0.2, 0.2, 0.8, '{}', NULL, NULL, NULL, NULL, NULL, NULL),
+                    ('r1', :graph_id, 'rec-a', 1, 'a', 'b', 'type-a', 'fix-a', 'desc-a', '[]', '[]', 1.0, 0.3, 0.3, 1.0, '{}', 'Use IAM scoping.', 'openai', 'gpt-5.4', 'generated', '2026-03-22 10:07:00', NULL),
+                    ('r0', :graph_id, 'rec-0', 0, 'a', 'b', 'type-0', 'fix-0', 'desc-0', '[]', '[]', 1.5, 0.4, 0.4, 0.7, '{}', NULL, 'openai', 'gpt-5.4-mini', 'failed', NULL, 'timeout'),
+                    ('r4', :graph_id, 'rec-4', 4, 'a', 'b', 'type-4', 'fix-4', 'desc-4', '[]', '[]', 4.0, 0.05, 0.05, 1.0, '{}', NULL, NULL, NULL, NULL, NULL, NULL),
+                    ('r5', :graph_id, 'rec-5', 5, 'a', 'b', 'type-5', 'fix-5', 'desc-5', '[]', '[]', 5.0, 0.01, 0.01, 1.0, '{}', NULL, NULL, NULL, NULL, NULL, NULL)
                 """
             ),
             {"graph_id": graph_id},
@@ -192,6 +219,37 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
         "path-medium",
         "path-low",
     ]
+    assert [item["path_id"] for item in body["attack_paths"][:2]] == [
+        "path-critical",
+        "path-high-a",
+    ]
+    assert body["attack_paths"][0]["edge_ids"] == ["ge-critical-0", "ge-critical-1", "ge-critical-2"]
+    assert body["attack_paths"][0]["edges"] == [
+        {
+            "edge_id": "ape-critical-0",
+            "edge_index": 0,
+            "source_node_id": "entry-c",
+            "target_node_id": "mid-c1",
+            "edge_type": "ingress_exposes_service",
+            "metadata": {},
+        },
+        {
+            "edge_id": "ape-critical-1",
+            "edge_index": 1,
+            "source_node_id": "mid-c1",
+            "target_node_id": "mid-c2",
+            "edge_type": "lateral_move",
+            "metadata": {},
+        },
+        {
+            "edge_id": "ape-critical-2",
+            "edge_index": 2,
+            "source_node_id": "mid-c2",
+            "target_node_id": "target-c",
+            "edge_type": "iam_role_access_resource",
+            "metadata": {},
+        },
+    ]
     assert [item["recommendation_id"] for item in body["remediation_preview"]] == [
         "rec-0",
         "rec-a",
@@ -199,12 +257,38 @@ async def test_get_analysis_result_returns_job_scoped_persisted_static_result(an
         "rec-z",
         "rec-4",
     ]
+    assert [item["recommendation_id"] for item in body["remediation_recommendations"][:4]] == [
+        "rec-0",
+        "rec-a",
+        "rec-b",
+        "rec-z",
+    ]
+    assert body["remediation_recommendations"][0]["llm_status"] == "failed"
+    assert body["remediation_recommendations"][0]["llm_error_message"] == "timeout"
+    assert body["remediation_recommendations"][1]["llm_explanation"] == "Use IAM scoping."
+    assert body["remediation_recommendations"][1]["llm_provider"] == "openai"
+    assert body["remediation_recommendations"][1]["llm_model"] == "gpt-5.4"
+    assert body["remediation_recommendations"][1]["llm_status"] == "generated"
+    assert body["remediation_recommendations"][1]["llm_generated_at"] == "2026-03-22T10:07:00"
     assert body["links"] == {
         "analysis_job": f"/api/v1/analysis/jobs/{job_id}",
         "attack_graph": f"/api/v1/clusters/{cluster_id}/attack-graph",
         "attack_paths": f"/api/v1/clusters/{cluster_id}/attack-paths",
         "remediation_recommendations": f"/api/v1/clusters/{cluster_id}/remediation-recommendations",
         "link_scope": "cluster_latest_view",
+    }
+    assert body["stats"] == {
+        "facts": {"total": 0},
+        "graph": {
+            "nodes": 7,
+            "edges": 8,
+            "entry_points": 2,
+            "crown_jewels": 1,
+        },
+        "paths": {
+            "total": 6,
+            "returned": 6,
+        },
     }
 
 
@@ -271,7 +355,10 @@ async def test_get_analysis_result_returns_empty_sections_when_job_has_no_graph(
     }
     assert body["attack_paths_preview"] == []
     assert body["remediation_preview"] == []
+    assert body["attack_paths"] == []
+    assert body["remediation_recommendations"] == []
     assert body["links"]["analysis_job"] == f"/api/v1/analysis/jobs/{job_id}"
+    assert body["stats"] is None
 
 
 @pytest.mark.asyncio
@@ -377,3 +464,111 @@ async def test_get_analysis_result_returns_persisted_state_for_non_completed_job
     }
     assert [item["path_id"] for item in body["attack_paths_preview"]] == ["running-path"]
     assert [item["recommendation_id"] for item in body["remediation_preview"]] == ["running-rec"]
+    assert [item["path_id"] for item in body["attack_paths"]] == ["running-path"]
+    assert [item["recommendation_id"] for item in body["remediation_recommendations"]] == ["running-rec"]
+    assert body["stats"] == {
+        "facts": {"total": 0},
+        "graph": {
+            "nodes": 3,
+            "edges": 2,
+            "entry_points": 1,
+            "crown_jewels": 1,
+        },
+        "paths": {
+            "total": 1,
+            "returned": 1,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_result_isolated_by_requested_job_graph_when_jobs_share_scan_tuple(analysis_result_client):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    first_graph_id = "77777777-7777-7777-7777-777777777777"
+    second_graph_id = "88888888-8888-8888-8888-888888888888"
+    first_job_id = "99999999-9999-9999-9999-999999999999"
+    second_job_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    async with analysis_result_client["sessionmaker"]() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO clusters (id, name, cluster_type, created_at, updated_at)
+                VALUES (:id, :name, 'eks', '2026-03-22 10:00:00', '2026-03-22 10:00:00')
+                """
+            ),
+            {"id": cluster_id, "name": "duplicated-scan-tuple-cluster"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO graph_snapshots (id, cluster_id, k8s_scan_id, aws_scan_id, image_scan_id, status, created_at)
+                VALUES
+                    (:first_graph_id, :cluster_id, 'k8s-1', 'aws-1', 'img-1', 'completed', '2026-03-22 10:00:00'),
+                    (:second_graph_id, :cluster_id, 'k8s-1', 'aws-1', 'img-1', 'completed', '2026-03-22 10:10:00')
+                """
+            ),
+            {"first_graph_id": first_graph_id, "second_graph_id": second_graph_id, "cluster_id": cluster_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (
+                    id, user_id, cluster_id, graph_id, status,
+                    k8s_scan_id, aws_scan_id, image_scan_id, expected_scans, created_at
+                )
+                VALUES
+                    (:first_job_id, 'user-1', :cluster_id, :first_graph_id, 'completed', 'k8s-1', 'aws-1', 'img-1', '["k8s","aws","image"]', '2026-03-22 10:00:00'),
+                    (:second_job_id, 'user-1', :cluster_id, :second_graph_id, 'completed', 'k8s-1', 'aws-1', 'img-1', '["k8s","aws","image"]', '2026-03-22 10:10:00')
+                """
+            ),
+            {
+                "first_job_id": first_job_id,
+                "second_job_id": second_job_id,
+                "cluster_id": cluster_id,
+                "first_graph_id": first_graph_id,
+                "second_graph_id": second_graph_id,
+            },
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO attack_paths (id, graph_id, path_id, risk_level, risk_score, raw_final_risk, hop_count, entry_node_id, target_node_id, node_ids)
+                VALUES
+                    ('first-path-row', :first_graph_id, 'first-path', 'high', 0.8, 0.8, 1, 'entry-1', 'target-1', '["entry-1","target-1"]'),
+                    ('second-path-row', :second_graph_id, 'second-path', 'low', 0.2, 0.2, 1, 'entry-2', 'target-2', '["entry-2","target-2"]')
+                """
+            ),
+            {"first_graph_id": first_graph_id, "second_graph_id": second_graph_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO remediation_recommendations (
+                    id, graph_id, recommendation_id, recommendation_rank, edge_source, edge_target, edge_type,
+                    fix_type, fix_description, blocked_path_ids, blocked_path_indices, fix_cost, edge_score,
+                    covered_risk, cumulative_risk_reduction, metadata
+                )
+                VALUES
+                    ('first-rec-row', :first_graph_id, 'first-rec', 0, 'entry-1', 'target-1', 'type-1', 'fix-1', 'desc-1', '["first-path"]', '[0]', 1.0, 0.8, 0.8, 0.8, '{}'),
+                    ('second-rec-row', :second_graph_id, 'second-rec', 0, 'entry-2', 'target-2', 'type-2', 'fix-2', 'desc-2', '["second-path"]', '[0]', 1.0, 0.2, 0.2, 0.2, '{}')
+                """
+            ),
+            {"first_graph_id": first_graph_id, "second_graph_id": second_graph_id},
+        )
+        await session.commit()
+
+    response = analysis_result_client["client"].get(
+        f"/api/v1/analysis/{first_job_id}/result",
+        headers=_auth_headers(analysis_result_client["client"], "user-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["summary"]["graph_id"] == first_graph_id
+    assert [item["path_id"] for item in body["attack_paths"]] == ["first-path"]
+    assert [item["recommendation_id"] for item in body["remediation_recommendations"]] == ["first-rec"]
+    assert body["stats"]["paths"]["total"] == 1
+    assert body["stats"]["paths"]["returned"] == 1
+    assert body["stats"]["graph"]["nodes"] == 0
+    assert body["stats"]["graph"]["edges"] == 0

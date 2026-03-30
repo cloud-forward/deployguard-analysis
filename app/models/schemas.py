@@ -903,6 +903,12 @@ class RemediationRecommendationListItemResponse(BaseModel):
     covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
     cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+    llm_explanation: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_status: str | None = "not_generated"
+    llm_generated_at: datetime | None = None
+    llm_error_message: str | None = None
 
 
 class RemediationRecommendationDetailResponse(BaseModel):
@@ -920,6 +926,12 @@ class RemediationRecommendationDetailResponse(BaseModel):
     covered_risk: float | None = Field(None, description="Risk reduced by this recommendation alone")
     cumulative_risk_reduction: float | None = Field(None, description="Running cumulative risk reduction through this rank")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Persisted recommendation metadata")
+    llm_explanation: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_status: str | None = "not_generated"
+    llm_generated_at: datetime | None = None
+    llm_error_message: str | None = None
 
 
 class RemediationRecommendationListResponse(BaseModel):

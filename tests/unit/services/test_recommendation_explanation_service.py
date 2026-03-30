@@ -44,6 +44,36 @@ class FakeProviderConfigRepository:
         return None
 
 
+class FakeAnalysisJobsRepository:
+    def __init__(self):
+        self.success_calls = []
+        self.failure_calls = []
+
+    async def save_llm_explanation_success(self, graph_id: str, recommendation_id: str, explanation: str, provider: str, model: str):
+        self.success_calls.append(
+            {
+                "graph_id": graph_id,
+                "recommendation_id": recommendation_id,
+                "explanation": explanation,
+                "provider": provider,
+                "model": model,
+            }
+        )
+        return None
+
+    async def save_llm_explanation_failure(self, graph_id: str, recommendation_id: str, error_message: str, provider: str, model: str):
+        self.failure_calls.append(
+            {
+                "graph_id": graph_id,
+                "recommendation_id": recommendation_id,
+                "error_message": error_message,
+                "provider": provider,
+                "model": model,
+            }
+        )
+        return None
+
+
 class FakeProvider:
     provider_name = "fake"
 
@@ -67,13 +97,19 @@ class FakeProvider:
 
 
 class FakeAttackGraphService:
-    def __init__(self, envelope):
+    def __init__(self, envelope, graph_id: str = "graph-1"):
         self.envelope = envelope
+        self.graph_id = graph_id
         self.calls = []
+        self.graph_calls = []
 
-    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str):
-        self.calls.append((cluster_id, recommendation_id))
+    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str, user_id: str | None = None):
+        self.calls.append((cluster_id, recommendation_id, user_id))
         return self.envelope
+
+    async def get_latest_analysis_graph_id(self, cluster_id: str, user_id: str | None = None):
+        self.graph_calls.append((cluster_id, user_id))
+        return self.graph_id
 
 
 class RaisingAttackGraphService:
@@ -81,8 +117,8 @@ class RaisingAttackGraphService:
         self.exc = exc
         self.calls = []
 
-    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str):
-        self.calls.append((cluster_id, recommendation_id))
+    async def get_remediation_recommendation_detail(self, cluster_id: str, recommendation_id: str, user_id: str | None = None):
+        self.calls.append((cluster_id, recommendation_id, user_id))
         raise self.exc
 
 
@@ -143,6 +179,7 @@ async def test_recommendation_missing_returns_no_target_and_skips_provider():
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -166,6 +203,7 @@ async def test_missing_recommendation_http_404_is_normalized_to_no_target_and_sk
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -206,6 +244,7 @@ async def test_minimum_explainable_input_missing_returns_not_explainable_and_ski
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -236,6 +275,7 @@ async def test_explainable_recommendation_with_missing_active_provider_config_re
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(active=None),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -269,6 +309,7 @@ async def test_explainable_recommendation_with_missing_api_key_returns_base_only
         provider_config_repository=FakeProviderConfigRepository(
             active={"user-1": FakeProviderConfig(provider="openai", api_key="", default_model="gpt-4o-mini", is_active=True)}
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -302,6 +343,7 @@ async def test_explainable_recommendation_with_unresolved_model_returns_specific
         provider_config_repository=FakeProviderConfigRepository(
             active={"user-1": FakeProviderConfig(provider="custom-provider", api_key="secret-key", default_model=None, is_active=True)}
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -330,11 +372,13 @@ async def test_provider_success_returns_llm_generated():
         )
     )
     provider = FakeProvider(text="LLM rewritten explanation.")
+    jobs_repo = FakeAnalysisJobsRepository()
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
             active={"user-1": FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)}
         ),
+        analysis_jobs_repository=jobs_repo,
         providers={"openai": provider},
     )
 
@@ -357,6 +401,18 @@ async def test_provider_success_returns_llm_generated():
     assert provider.calls[0].base_explanation.count("중요한 이유:") == 1
     assert provider.calls[0].base_explanation.count("예상 효과:") == 1
     assert provider.calls[0].base_explanation.startswith("권장 변경:")
+    assert attack_service.calls == [("cluster-1", "rotate-credentials-1", "user-1")]
+    assert attack_service.graph_calls == [("cluster-1", "user-1")]
+    assert jobs_repo.success_calls == [
+        {
+            "graph_id": "graph-1",
+            "recommendation_id": "rotate-credentials-1",
+            "explanation": "LLM rewritten explanation.",
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+        }
+    ]
+    assert jobs_repo.failure_calls == []
 
 
 @pytest.mark.asyncio
@@ -370,11 +426,13 @@ async def test_provider_failure_returns_llm_failed_fallback():
         )
     )
     provider = FakeProvider(error=RuntimeError("boom"))
+    jobs_repo = FakeAnalysisJobsRepository()
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=FakeProviderConfigRepository(
             active={"user-1": FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)}
         ),
+        analysis_jobs_repository=jobs_repo,
         providers={"openai": provider},
     )
 
@@ -390,6 +448,18 @@ async def test_provider_failure_returns_llm_failed_fallback():
     assert result.final_explanation == result.base_explanation
     assert result.fallback_reason == "provider_call_failed"
     assert len(provider.calls) == 1
+    assert attack_service.calls == [("cluster-1", "rotate-credentials-1", "user-1")]
+    assert attack_service.graph_calls == [("cluster-1", "user-1")]
+    assert jobs_repo.success_calls == []
+    assert jobs_repo.failure_calls == [
+        {
+            "graph_id": "graph-1",
+            "recommendation_id": "rotate-credentials-1",
+            "error_message": "LLM generation failed",
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -409,6 +479,7 @@ async def test_request_time_provider_and_model_override_is_used_when_saved_confi
             active={"user-1": FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True)},
             by_provider={"user-1": {"xai": FakeProviderConfig(provider="xai", api_key="xai-key", default_model="grok-3-mini")}},
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"xai": provider},
     )
 
@@ -445,6 +516,7 @@ async def test_provider_override_with_no_saved_config_returns_specific_skip_stat
             active={"user-1": FakeProviderConfig(provider="openai", api_key="openai-key", default_model="gpt-4o-mini", is_active=True)},
             by_provider={},
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"xai": provider},
     )
 
@@ -476,6 +548,7 @@ async def test_missing_provider_adapter_returns_specific_skip_status():
         provider_config_repository=FakeProviderConfigRepository(
             active={"user-1": FakeProviderConfig(provider="openai", api_key="secret-key", default_model="gpt-4o-mini", is_active=True)}
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={},
     )
 
@@ -512,6 +585,7 @@ async def test_active_provider_config_lookup_is_scoped_by_user_id():
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=repo,
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 
@@ -547,6 +621,7 @@ async def test_provider_override_lookup_is_scoped_by_user_id():
     service = RecommendationExplanationService(
         attack_graph_service=attack_service,
         provider_config_repository=repo,
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"xai": provider},
     )
 
@@ -581,6 +656,7 @@ async def test_explanation_service_uses_requesting_users_config_not_another_user
                 "user-2": FakeProviderConfig(provider="openai", api_key="user-2-key", default_model="gpt-4o-mini", is_active=True),
             }
         ),
+        analysis_jobs_repository=FakeAnalysisJobsRepository(),
         providers={"openai": provider},
     )
 

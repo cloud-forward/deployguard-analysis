@@ -86,6 +86,28 @@ class AnalysisJobRepository(Protocol):
         """Persist remediation optimization recommendations for the linked graph snapshot."""
         ...
 
+    async def save_llm_explanation_success(
+        self,
+        graph_id: str,
+        recommendation_id: str,
+        explanation: str,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Save successful LLM explanation generation result."""
+        ...
+
+    async def save_llm_explanation_failure(
+        self,
+        graph_id: str,
+        recommendation_id: str,
+        error_message: str,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Save failed LLM explanation generation result. Preserves existing explanation if any."""
+        ...
+
     async def persist_graph(
         self,
         *,

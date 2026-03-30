@@ -1051,3 +1051,138 @@ class TestSqlAlchemyAnalysisJobRepository:
 
         rows = (await session.execute(text("SELECT fact_type FROM facts"))).all()
         assert [row.fact_type for row in rows] == ["new_fact"]
+
+    @pytest.mark.asyncio
+    async def test_persist_attack_paths_writes_canonical_risk_columns(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+        graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
+            cluster_id=cluster_id,
+            graph_id="canonical-risk-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:entry->target",
+                    "path": ["entry:node:a", "target:node:b"],
+                    "risk_score": 0.75,
+                    "raw_final_risk": 0.9,
+                    "length": 2,
+                    "edges": [
+                        {"source": "entry:node:a", "target": "target:node:b", "type": "lateral_move"},
+                    ],
+                }
+            ],
+        )
+
+        path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
+
+        assert path is not None
+        assert abs(path.risk_score - 0.75) < 1e-6
+        assert abs(path.raw_final_risk - 0.9) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_persist_attack_paths_overwrites_stale_canonical_risk_values(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+        # First call — persist with stale zero values
+        await repo.persist_attack_paths(
+            analysis_job_id=None,
+            cluster_id=cluster_id,
+            graph_id="stale-risk-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:entry->target",
+                    "path": ["entry:node:a", "target:node:b"],
+                    "risk_score": 0.0,
+                    "raw_final_risk": 0.0,
+                    "length": 2,
+                    "edges": [
+                        {"source": "entry:node:a", "target": "target:node:b", "type": "lateral_move"},
+                    ],
+                }
+            ],
+        )
+
+        # Second call with same graph_id — delete-then-insert replaces stale values
+        graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
+            cluster_id=cluster_id,
+            graph_id="stale-risk-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:entry->target",
+                    "path": ["entry:node:a", "target:node:b"],
+                    "risk_score": 0.75,
+                    "raw_final_risk": 0.9,
+                    "length": 2,
+                    "edges": [
+                        {"source": "entry:node:a", "target": "target:node:b", "type": "lateral_move"},
+                    ],
+                }
+            ],
+        )
+
+        session.expire_all()
+        path = await session.scalar(select(AttackPath).where(AttackPath.graph_id == graph_id))
+
+        assert path is not None
+        assert abs(path.risk_score - 0.75) < 1e-6
+        assert abs(path.raw_final_risk - 0.9) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_persist_attack_paths_falls_back_to_base_risk_and_final_risk_on_legacy_schema(self, repo_and_session):
+        repo, session = repo_and_session
+        cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+        # Migrate attack_paths to the legacy schema: drop new columns, add legacy ones
+        await session.execute(text("ALTER TABLE attack_paths DROP COLUMN risk_score"))
+        await session.execute(text("ALTER TABLE attack_paths DROP COLUMN raw_final_risk"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN base_risk REAL"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN final_risk REAL"))
+        await session.execute(text("ALTER TABLE attack_paths ADD COLUMN name TEXT"))
+        await session.commit()
+
+        graph_id = await repo.persist_attack_paths(
+            analysis_job_id=None,
+            cluster_id=cluster_id,
+            graph_id="legacy-graph",
+            k8s_scan_id="k8s-1",
+            aws_scan_id="aws-1",
+            image_scan_id="img-1",
+            attack_paths=[
+                {
+                    "path_id": "path:0:entry->target",
+                    "path": ["entry:node:a", "target:node:b"],
+                    "raw_final_risk": 0.75,
+                    "risk_score": 0.65,
+                    "title": "Entry to Target",
+                    "length": 2,
+                    "edges": [
+                        {"source": "entry:node:a", "target": "target:node:b", "type": "lateral_move"},
+                    ],
+                }
+            ],
+        )
+
+        row = (
+            await session.execute(
+                text("SELECT base_risk, final_risk, name FROM attack_paths WHERE graph_id = :graph_id"),
+                {"graph_id": graph_id},
+            )
+        ).mappings().first()
+
+        assert row is not None
+        assert abs(row["base_risk"] - 0.65) < 1e-6
+        assert abs(row["final_risk"] - 0.75) < 1e-6
+        assert row["name"] == "Entry to Target"

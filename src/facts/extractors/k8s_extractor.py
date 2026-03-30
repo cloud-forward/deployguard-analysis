@@ -655,10 +655,10 @@ class K8sFactExtractor(BaseExtractor):
         results = []
         
         if resource_type == "secrets":
-            for secret in scan.get("secrets", []):
+            for secret in self._secret_resources(scan):
                 metadata = secret.get("metadata")
                 if not isinstance(metadata, dict):
-                    continue
+                    metadata = secret
 
                 secret_ns = metadata.get("namespace")
                 secret_name = metadata.get("name")
@@ -694,6 +694,20 @@ class K8sFactExtractor(BaseExtractor):
                 ))
         
         return results
+
+    @staticmethod
+    def _secret_resources(scan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        secrets = scan.get("secrets")
+        if isinstance(secrets, list):
+            return secrets
+
+        resources = scan.get("resources")
+        if isinstance(resources, dict):
+            nested = resources.get("secrets")
+            if isinstance(nested, list):
+                return nested
+
+        return []
     
     def _create_role_grants_fact(
         self,

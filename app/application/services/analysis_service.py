@@ -1421,6 +1421,8 @@ class AnalysisService:
         payload.setdefault("scan_id", scan_id)
         payload.setdefault("cluster_id", str(cluster_id))
         payload.setdefault("scanner_type", scanner_type)
+        if scanner_type == SCANNER_TYPE_K8S:
+            payload = self._normalize_k8s_scan_payload(payload)
         return payload
 
     async def _resolve_analysis_job_inputs(
@@ -1492,6 +1494,21 @@ class AnalysisService:
             if s3_key.endswith("-snapshot.json"):
                 return s3_key
         raise ValueError("Unable to determine raw scan payload key from s3_keys")
+
+    @staticmethod
+    def _normalize_k8s_scan_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return payload
+
+        normalized = dict(payload)
+        if isinstance(normalized.get("secrets"), list):
+            return normalized
+
+        resources = normalized.get("resources")
+        if isinstance(resources, dict) and isinstance(resources.get("secrets"), list):
+            normalized["secrets"] = resources["secrets"]
+
+        return normalized
 
 
 def _params_dict(request: AnalysisRequest) -> Dict[str, Any]:

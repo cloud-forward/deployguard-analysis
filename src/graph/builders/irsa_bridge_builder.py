@@ -89,7 +89,16 @@ class IRSABridgeBuilder:
 
     def _secrets(self, k8s_scan: dict[str, Any]) -> list[dict[str, Any]]:
         secrets = k8s_scan.get("secrets")
-        return secrets if isinstance(secrets, list) else []
+        if isinstance(secrets, list):
+            return secrets
+
+        resources = k8s_scan.get("resources")
+        if isinstance(resources, dict):
+            nested = resources.get("secrets")
+            if isinstance(nested, list):
+                return nested
+
+        return []
 
     def _aws_list(self, aws_scan: Any, field_name: str) -> list[Any]:
         if isinstance(aws_scan, dict):

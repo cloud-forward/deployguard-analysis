@@ -615,6 +615,43 @@ def test_bridge_builder_credentials_from_demo_style_secret_key_metadata_only():
     assert result.skipped_credentials == 0
 
 
+def test_bridge_builder_reads_real_secrets_from_nested_resources_for_rds_bridge():
+    builder = IRSABridgeBuilder()
+    aws_scan = make_aws_scan()
+    k8s_scan = {
+        "resources": {
+            "secrets": [
+                {
+                    "metadata": {
+                        "namespace": "dg-demo",
+                        "name": "db-credentials",
+                    },
+                    "data": {
+                        "DB_HOST": "prod-db.example.us-east-1.rds.amazonaws.com",
+                        "DB_USER": "appuser",
+                        "DB_PASSWORD": "super-secret",
+                        "DB_PORT": "5432",
+                    },
+                }
+            ]
+        }
+    }
+
+    result = builder.build(k8s_scan, aws_scan)
+
+    assert len(result.credential_facts) == 1
+    assert result.credential_facts[0].target_type == "rds"
+    assert result.credential_facts[0].target_id == "production-db"
+    assert result.credential_facts[0].matched_keys == [
+        "DB_HOST",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_PORT",
+    ]
+    assert result.credential_facts[0].confidence == "high"
+    assert result.skipped_credentials == 0
+
+
 def test_bridge_builder_flat_format_feeds_into_aws_graph_builder():
     """End-to-end: flat-format K8s scan -> bridge -> AWS graph edges."""
     bridge_builder = IRSABridgeBuilder()

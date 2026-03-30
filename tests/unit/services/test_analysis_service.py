@@ -558,6 +558,112 @@ async def test_mixed_k8s_secret_to_aws_user_s3_chain_is_traversable_through_real
 
 
 @pytest.mark.asyncio
+async def test_nested_k8s_secret_to_rds_chain_is_traversable_through_real_build_flow(service):
+    k8s_scan = service._normalize_k8s_scan_payload(
+        {
+            "scan_id": "k8s-1",
+            "cluster_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "pods": [
+                {
+                    "namespace": "dg-demo",
+                    "name": "api",
+                    "containers": [
+                        {
+                            "name": "api",
+                            "image": "api:latest",
+                            "volume_mounts": [
+                                {
+                                    "source_type": "secret",
+                                    "source_name": "db-credentials",
+                                    "mount_path": "/var/run/secrets/db",
+                                    "read_only": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "service_accounts": [],
+            "roles": [],
+            "cluster_roles": [],
+            "role_bindings": [],
+            "cluster_role_bindings": [],
+            "services": [],
+            "ingresses": [],
+            "network_policies": [],
+            "resources": {
+                "secrets": [
+                    {
+                        "metadata": {
+                            "namespace": "dg-demo",
+                            "name": "db-credentials",
+                        },
+                        "data": {
+                            "DB_HOST": "rds-for-eks.abc123.us-east-1.rds.amazonaws.com",
+                            "DB_USER": "appuser",
+                            "DB_PASSWORD": "super-secret",
+                            "DB_PORT": "5432",
+                        },
+                    }
+                ]
+            },
+        }
+    )
+    aws_scan = {
+        "scan_id": "aws-1",
+        "aws_account_id": "244105859679",
+        "scanned_at": "2026-03-25T00:00:00Z",
+        "iam_roles": [],
+        "iam_users": [],
+        "s3_buckets": [],
+        "rds_instances": [
+            {
+                "identifier": "rds-for-eks",
+                "arn": "arn:aws:rds:us-east-1:244105859679:db:rds-for-eks",
+                "engine": "postgres",
+                "storage_encrypted": True,
+                "publicly_accessible": False,
+                "vpc_security_groups": [],
+                "endpoint": "rds-for-eks.abc123.us-east-1.rds.amazonaws.com",
+            }
+        ],
+        "ec2_instances": [],
+        "security_groups": [],
+    }
+
+    k8s_result = service._build_k8s_result(k8s_scan, "k8s-1")
+    aws_scan_result = service._coerce_aws_scan_result(aws_scan, "aws-1")
+    bridge_result = service._bridge_builder.build(k8s_scan, aws_scan_result)
+    aws_result = service._build_aws_result(aws_scan_result, bridge_result)
+    unified_result = service._unified_graph_builder.build(k8s_result, aws_result)
+    graph = await service._graph_builder.build_from_unified_result(unified_result)
+
+    pod_id = "pod:dg-demo:api"
+    secret_id = "secret:dg-demo:db-credentials"
+    rds_id = "rds:244105859679:rds-for-eks"
+
+    paths = service._path_finder.find_all_paths(
+        graph,
+        [pod_id],
+        [rds_id],
+        max_path_length=2,
+        max_paths=10,
+    )
+
+    assert paths == [[pod_id, secret_id, rds_id]]
+    assert graph.nodes[secret_id]["metadata"]["data_keys"] == [
+        "DB_HOST",
+        "DB_PASSWORD",
+        "DB_PORT",
+        "DB_USER",
+    ]
+    assert service._path_finder.get_path_edges(graph, paths[0]) == [
+        (pod_id, secret_id, "pod_mounts_secret"),
+        (secret_id, rds_id, "secret_contains_credentials"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_analysis_job_returns_detail(service, jobs_repo):
     jobs_repo.get_analysis_job.return_value = _make_job(
         "job-123",
@@ -850,6 +956,40 @@ async def test_load_scan_data_uses_explicit_scan_id_and_s3_payload(service, scan
     assert payload["scan_id"] == "k8s-1"
     assert payload["cluster_id"] == cluster_id
     assert payload["scanner_type"] == SCANNER_TYPE_K8S
+
+
+@pytest.mark.asyncio
+async def test_load_scan_data_normalizes_k8s_secrets_from_nested_resources(service, scan_repo, s3_service):
+    cluster_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    scan_repo.get_by_scan_id.return_value = _make_scan(
+        "k8s-1",
+        SCANNER_TYPE_K8S,
+        cluster_id=cluster_id,
+        s3_keys=["scans/test/k8s-1/k8s/k8s-snapshot.json"],
+    )
+    s3_service.load_json.return_value = {
+        "resources": {
+            "secrets": [
+                {
+                    "metadata": {
+                        "namespace": "dg-demo",
+                        "name": "db-credentials",
+                    },
+                    "data": {
+                        "DB_HOST": "rds-for-eks.abc123.us-east-1.rds.amazonaws.com",
+                        "DB_USER": "appuser",
+                        "DB_PASSWORD": "super-secret",
+                        "DB_PORT": "5432",
+                    },
+                }
+            ]
+        }
+    }
+
+    payload = await service._load_scan_data(cluster_id, "k8s-1", SCANNER_TYPE_K8S)
+
+    assert payload["secrets"] == s3_service.load_json.return_value["resources"]["secrets"]
+    assert payload["secrets"][0]["metadata"]["name"] == "db-credentials"
 
 
 @pytest.mark.asyncio

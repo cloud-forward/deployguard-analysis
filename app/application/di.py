@@ -98,6 +98,7 @@ def get_recommendation_explanation_service(
     cluster_repo = SQLAlchemyClusterRepository(session=db)
     attack_graph_service = AttackGraphService(cluster_repository=cluster_repo, db=db)
     config_repo = SQLAlchemyLLMProviderConfigRepository(session=db)
+    jobs_repo = SqlAlchemyAnalysisJobRepository(session=db)
     providers = {
         "openai": OpenAIExplanationClient(),
         "xai": XAIExplanationClient(),
@@ -112,6 +113,7 @@ def get_recommendation_explanation_service(
     return RecommendationExplanationService(
         attack_graph_service=attack_graph_service,
         provider_config_repository=config_repo,
+        analysis_jobs_repository=jobs_repo,
         providers=providers,
     )
 

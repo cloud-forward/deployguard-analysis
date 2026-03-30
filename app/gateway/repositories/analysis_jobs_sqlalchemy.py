@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
-from sqlalchemy import MetaData, Table, delete, inspect, select, text
+from sqlalchemy import MetaData, Table, delete, inspect, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.repositories.analysis_jobs import AnalysisJobRepository
 from app.gateway.models import (
@@ -287,6 +287,57 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
                 )
             )
 
+        await self._session.commit()
+
+    async def save_llm_explanation_success(
+        self,
+        graph_id: str,
+        recommendation_id: str,
+        explanation: str,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Save successful LLM explanation generation result."""
+        await self._session.execute(
+            update(RemediationRecommendation)
+            .where(
+                RemediationRecommendation.graph_id == graph_id,
+                RemediationRecommendation.recommendation_id == recommendation_id,
+            )
+            .values(
+                llm_explanation=explanation,
+                llm_provider=provider,
+                llm_model=model,
+                llm_status="generated",
+                llm_generated_at=datetime.now(timezone.utc),
+                llm_error_message=None,
+            )
+        )
+        await self._session.commit()
+
+    async def save_llm_explanation_failure(
+        self,
+        graph_id: str,
+        recommendation_id: str,
+        error_message: str,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Save failed LLM explanation generation result. Preserves existing explanation if any."""
+        await self._session.execute(
+            update(RemediationRecommendation)
+            .where(
+                RemediationRecommendation.graph_id == graph_id,
+                RemediationRecommendation.recommendation_id == recommendation_id,
+            )
+            .values(
+                llm_provider=provider,
+                llm_model=model,
+                llm_status="failed",
+                llm_generated_at=None,
+                llm_error_message=error_message,
+            )
+        )
         await self._session.commit()
 
     async def persist_graph(

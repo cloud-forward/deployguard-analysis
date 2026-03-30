@@ -19,6 +19,7 @@ class FakeUser:
     id: str
     email: str
     password_hash: str
+    name: str | None = None
     is_active: bool = True
 
 
@@ -86,6 +87,8 @@ def analysis_service():
         },
         "attack_paths_preview": [],
         "remediation_preview": [],
+        "attack_paths": [],
+        "remediation_recommendations": [],
         "links": {
             "analysis_job": "/api/v1/analysis/jobs/job-123",
             "attack_graph": "/api/v1/clusters/a1b2c3d4-e5f6-7890-abcd-ef1234567890/attack-graph",
@@ -93,6 +96,7 @@ def analysis_service():
             "remediation_recommendations": "/api/v1/clusters/a1b2c3d4-e5f6-7890-abcd-ef1234567890/remediation-recommendations",
             "link_scope": "cluster_latest_view",
         },
+        "stats": None,
     }
     service.execute_analysis_job.return_value = {"status": "ok"}
     return service
@@ -179,7 +183,10 @@ class TestAnalysisReadApi:
         assert body["summary"]["graph_id"] is None
         assert body["attack_paths_preview"] == []
         assert body["remediation_preview"] == []
+        assert body["attack_paths"] == []
+        assert body["remediation_recommendations"] == []
         assert body["links"]["link_scope"] == "cluster_latest_view"
+        assert body["stats"] is None
         analysis_service.get_analysis_result.assert_awaited_once_with("job-123", user_id="user-1")
 
     def test_get_analysis_result_does_not_call_execution_methods(self, client, analysis_service):

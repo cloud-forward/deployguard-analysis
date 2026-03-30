@@ -60,6 +60,7 @@ class AnalysisJobRepository(Protocol):
     async def persist_attack_paths(
         self,
         *,
+        analysis_job_id: str | None,
         cluster_id: str | UUID,
         graph_id: str | None,
         k8s_scan_id: str,
@@ -67,7 +68,7 @@ class AnalysisJobRepository(Protocol):
         image_scan_id: str,
         attack_paths: list[Dict[str, Any]],
     ) -> str:
-        """Persist attack paths and link them to the latest matching analysis job/graph snapshot.
+        """Persist attack paths and link them to the executing analysis job/graph snapshot.
 
         Returns the real persisted graph snapshot id.
         """
@@ -76,6 +77,7 @@ class AnalysisJobRepository(Protocol):
     async def persist_remediation_recommendations(
         self,
         *,
+        analysis_job_id: str | None,
         cluster_id: str | UUID,
         graph_id: str | None,
         k8s_scan_id: str,

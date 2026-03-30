@@ -130,6 +130,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
     async def persist_attack_paths(
         self,
         *,
+        analysis_job_id: str | None,
         cluster_id: str | UUID,
         graph_id: str | None,
         k8s_scan_id: str,
@@ -164,19 +165,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         await self._session.execute(delete(AttackPathEdge).where(AttackPathEdge.path_id.in_(path_ids_subquery)))
         await self._session.execute(delete(AttackPath).where(AttackPath.graph_id == persisted_graph_id))
 
-        matching_job = await self._session.scalar(
-            select(AnalysisJob)
-            .where(
-                AnalysisJob.cluster_id == normalized_cluster_id,
-                AnalysisJob.k8s_scan_id == k8s_scan_id,
-                AnalysisJob.aws_scan_id == aws_scan_id,
-                AnalysisJob.image_scan_id == image_scan_id,
-            )
-            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
-            .limit(1)
-        )
-        if matching_job is not None:
-            matching_job.graph_id = persisted_graph_id
+        await self._attach_graph_to_job(analysis_job_id=analysis_job_id, graph_id=persisted_graph_id)
 
         for path in attack_paths:
             path_id = str(path["path_id"])
@@ -231,6 +220,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
     async def persist_remediation_recommendations(
         self,
         *,
+        analysis_job_id: str | None,
         cluster_id: str | UUID,
         graph_id: str | None,
         k8s_scan_id: str,
@@ -247,19 +237,7 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
             image_scan_id=image_scan_id,
         )
 
-        matching_job = await self._session.scalar(
-            select(AnalysisJob)
-            .where(
-                AnalysisJob.cluster_id == normalized_cluster_id,
-                AnalysisJob.k8s_scan_id == k8s_scan_id,
-                AnalysisJob.aws_scan_id == aws_scan_id,
-                AnalysisJob.image_scan_id == image_scan_id,
-            )
-            .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
-            .limit(1)
-        )
-        if matching_job is not None:
-            matching_job.graph_id = persisted_graph_id
+        await self._attach_graph_to_job(analysis_job_id=analysis_job_id, graph_id=persisted_graph_id)
 
         await self._session.execute(
             delete(RemediationRecommendation).where(RemediationRecommendation.graph_id == persisted_graph_id)
@@ -533,6 +511,14 @@ class SqlAlchemyAnalysisJobRepository(AnalysisJobRepository):
         self._session.add(snapshot)
         await self._session.flush()
         return snapshot.id
+
+    async def _attach_graph_to_job(self, *, analysis_job_id: str | None, graph_id: str) -> None:
+        if analysis_job_id is None:
+            return
+        job = await self._session.get(AnalysisJob, analysis_job_id)
+        if job is None:
+            return
+        job.graph_id = graph_id
 
     @staticmethod
     def _risk_level(value: Any) -> str:
